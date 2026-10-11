@@ -101,6 +101,8 @@ import { registerReverseEngineeringTools } from "./registerReverseEngineeringToo
 import { CutterBridgeClient } from "../cutter/CutterBridgeClient.js";
 import { CutterBridgeService } from "../cutter/CutterBridgeService.js";
 import { registerCutterTools } from "./registerCutterTools.js";
+import { GdbSessionManager } from "../gdb/GdbSessionManager.js";
+import { registerGdbTools } from "./registerGdbTools.js";
 
 const TARGET_FREE_INSTRUCTIONS =
   "REA provides reverse-engineering tools for local artifacts, native binaries, managed code, browser pages, and runtimes. Use the tool that directly answers the question; discover targets or inspect inventory only when needed. Tool results include inline Evidence and report their coverage and limitations.";
@@ -246,6 +248,11 @@ export const createServer = (
     delivery,
     selectCompactInputSchemaPresentation(environment),
   );
+  const gdbSessions = new GdbSessionManager(
+    options.providerEnvironment === undefined
+      ? {}
+      : { environment: options.providerEnvironment },
+  );
   const android =
     options.androidAnalysis ?? createAndroidAnalysisProvider(environment);
   const wasmArtifact =
@@ -271,6 +278,7 @@ export const createServer = (
       artifactResources.close(),
       firmwareAnalysis.close(),
       options.browserScenarioCapture?.close?.() ?? Promise.resolve(),
+      gdbSessions.closeAll(),
     ])
       .then((results) => {
         const failures = results.flatMap((result) =>
@@ -326,6 +334,15 @@ export const createServer = (
     new CutterBridgeService(
       new CutterBridgeClient(options.providerEnvironment),
     ),
+    toolLogger,
+    delivery,
+    session === undefined
+      ? undefined
+      : (evidence) => session.recordEvidence(evidence),
+  );
+  registerGdbTools(
+    server,
+    gdbSessions,
     toolLogger,
     delivery,
     session === undefined

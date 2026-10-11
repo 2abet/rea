@@ -7,6 +7,7 @@ import { logCliCommand } from "../cliLogging.js";
 import type { CliInstance } from "./types.js";
 import { withCommandCancellation } from "./commandCancellation.js";
 import { CLI_COMMANDS } from "../cliCommandNames.js";
+import { GdbSessionManager } from "../gdb/GdbSessionManager.js";
 
 /** Add one-shot reverse-engineering commands using the shared service layer. */
 export const registerReverseEngineeringCommands = (
@@ -72,6 +73,58 @@ export const registerReverseEngineeringCommands = (
         logCliCommand(logger, CLI_COMMANDS.executeRizinCommand, async () => {
           const result = await service.executeRizinCommand(args, { signal });
           return result.ok ? result.value : projectAnalysisError(result.error);
+        }),
+      ),
+  });
+  cli.command(CLI_COMMANDS.debugWithGdb, {
+    description:
+      "Run one unrestricted GDB console command in an ephemeral MI session",
+    args: z.object({
+      command: z
+        .string()
+        .min(1)
+        .describe("One unrestricted GDB console command."),
+    }),
+    run: ({ args }) =>
+      withCommandCancellation((signal) =>
+        logCliCommand(logger, CLI_COMMANDS.debugWithGdb, async () => {
+          const manager = new GdbSessionManager({ environment });
+          const started = await manager.start(signal);
+          if (!started.ok) return projectAnalysisError(started.error);
+          try {
+            const executed = await manager.execute(
+              started.value.session_id,
+              args.command,
+              signal,
+            );
+            return executed.ok
+              ? executed.value.evidence
+              : projectAnalysisError(executed.error);
+          } finally {
+            const closed = await manager.close(started.value.session_id);
+            if (!closed.ok) {
+              logger.error(
+                {
+                  command: CLI_COMMANDS.debugWithGdb,
+                  cleanup: projectAnalysisError(closed.error),
+                },
+                "GDB cleanup failed after collecting command output",
+              );
+              process.exitCode = 1;
+              await manager.closeAll().catch((cause: unknown) => {
+                logger.error(
+                  {
+                    command: CLI_COMMANDS.debugWithGdb,
+                    cleanup:
+                      cause instanceof Error
+                        ? cause.message
+                        : "Unknown cleanup failure",
+                  },
+                  "GDB fallback cleanup failed",
+                );
+              });
+            }
+          }
         }),
       ),
   });

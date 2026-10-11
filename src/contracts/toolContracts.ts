@@ -24,6 +24,7 @@ import { ENHANCED_TOOL_CONTRACTS } from "./enhancedToolContracts.js";
 import { SESSION_TOOL_CONTRACTS } from "./sessionToolContracts.js";
 import { CUTTER_TOOL_CONTRACTS } from "./cutterToolContracts.js";
 import { REVERSE_ENGINEERING_TOOL_CONTRACTS } from "./reverseEngineeringToolContracts.js";
+import { GDB_TOOL_CONTRACTS } from "./gdbToolContracts.js";
 
 /** Complete ordered public inventory used by registration and verification. */
 export const TOOL_CONTRACTS = [
@@ -53,6 +54,7 @@ export const TOOL_CONTRACTS = [
   ...SESSION_TOOL_CONTRACTS,
   ...CUTTER_TOOL_CONTRACTS,
   ...REVERSE_ENGINEERING_TOOL_CONTRACTS,
+  ...GDB_TOOL_CONTRACTS,
 ] as const;
 
 /** Resolve a public contract by name while retaining its exact schema types. */
