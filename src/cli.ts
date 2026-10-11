@@ -40,6 +40,7 @@ import {
   type CliResultOutput,
 } from "./cli/streamedJsonOutput.js";
 import { registerReverseEngineeringCommands } from "./cli/reverseEngineeringCommands.js";
+import { registerCutterCommands } from "./cli/cutterCommands.js";
 
 /**
  * Build the one-shot Incur CLI without starting Hopper at import time.
@@ -73,6 +74,7 @@ export const createCli = (
 
   registerSetupCommands(cli, logger, environment);
   registerReverseEngineeringCommands(cli, logger, environment);
+  registerCutterCommands(cli, logger, environment);
   registerCoreAnalysisCommands(cli, logger, analysis.runDirectAnalysis);
   registerUtilityCommands(cli, logger, environment, analysis);
   registerWasmCommands(cli, logger, environment);
