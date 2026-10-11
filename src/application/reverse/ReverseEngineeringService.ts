@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { stat as statPath } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -10,7 +10,10 @@ import {
   AnalysisInputError,
   AnalysisTimeoutError,
 } from "../../domain/analysisErrorCore.js";
-import type { AnalysisError } from "../../domain/analysisErrorBase.js";
+import type {
+  AnalysisError,
+  AnalysisErrorOptions,
+} from "../../domain/analysisErrorBase.js";
 import { createEvidence, type Evidence } from "../../domain/evidence.js";
 import type { JsonValue } from "../../domain/jsonValue.js";
 import { err, ok, type Result } from "../../domain/result.js";
@@ -24,6 +27,7 @@ import {
   execFileOutput,
   execFileOutputFailure,
 } from "../../process/ExecFileOutput.js";
+import { OwnedCommandFailure, runOwnedCommand } from "../../process/OwnedCommand.js";
 import { rizinCommand } from "../../rizin/RizinCommand.js";
 import { RIZIN_PROVIDER_IDENTITY } from "../../rizin/RizinCommand.js";
 
@@ -46,7 +50,7 @@ export class ReverseEngineeringService {
     } = {},
   ) {
     this.#environment = options.environment ?? process.env;
-    this.#run = options.run ?? execFileOutput;
+    this.#run = options.run ?? runOwnedCommandOutput;
   }
 
   inspectWithObjdump(
@@ -126,6 +130,7 @@ export class ReverseEngineeringService {
     let signalName: string | null = null;
     let outputTruncated = false;
     let completionStatus: "complete" | "unknown" = "complete";
+    let failure: AnalysisError | undefined;
     try {
       const output = await this.#run(command, args, {
         env: {
@@ -144,17 +149,17 @@ export class ReverseEngineeringService {
       const capture = execFileOutputFailure(cause);
       const code =
         capture?.code ?? (cause as NodeJS.ErrnoException).code ?? undefined;
-      if (signal?.aborted || code === "ABORT_ERR")
-        return err(new AnalysisCancelledError(operation, { cause }));
-      if (code === "ETIMEDOUT")
-        return err(
-          new AnalysisTimeoutError(operation, DEFAULT_TIMEOUT_MS, { cause }),
-        );
-      if (code === "EACCES" || code === "EPERM")
-        return err(
-          new AnalysisAccessDeniedError(operation, command, code, { cause }),
-        );
       if (capture === undefined || code === "ENOENT") {
+        if (signal?.aborted || code === "ABORT_ERR")
+          return err(new AnalysisCancelledError(operation, { cause }));
+        if (code === "ETIMEDOUT")
+          return err(
+            new AnalysisTimeoutError(operation, DEFAULT_TIMEOUT_MS, { cause }),
+          );
+        if (code === "EACCES" || code === "EPERM")
+          return err(
+            new AnalysisAccessDeniedError(operation, command, code, { cause }),
+          );
         return err(
           new AnalysisCapabilityUnavailableError(
             operation === "inspect_with_objdump" ? "objdump" : "rizin",
@@ -169,16 +174,61 @@ export class ReverseEngineeringService {
       exitCode = capture.code;
       signalName = capture.signal;
       outputTruncated = capture.outputTruncated;
-      if (code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") {
+      const capturedOutput = {
+        stdout,
+        stderr,
+        truncated: outputTruncated,
+        stdout_bytes: Buffer.byteLength(stdout),
+        stderr_bytes: Buffer.byteLength(stderr),
+        exit_code: typeof capture.code === "number" ? capture.code : null,
+        signal: capture.signal,
+      };
+      if (signal?.aborted || code === "ABORT_ERR")
+        failure = new AnalysisCancelledError(operation, {
+          cause,
+          capturedOutput,
+          ...ownedCleanupOptions(cause),
+        });
+      else if (code === "ETIMEDOUT")
+        failure = new AnalysisTimeoutError(operation, DEFAULT_TIMEOUT_MS, {
+          cause,
+          capturedOutput,
+          ...ownedCleanupOptions(cause),
+        });
+      else if (code === "EACCES" || code === "EPERM")
+        failure = new AnalysisAccessDeniedError(operation, command, code, {
+          cause,
+          capturedOutput,
+        });
+      if (
+        code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" ||
+        capture.signal !== null ||
+        failure !== undefined
+      ) {
         exitCode = null;
         completionStatus = "unknown";
       }
     }
     let digestAfter: string | null = null;
     try {
-      digestAfter = await digestFile(absolutePath);
+      digestAfter = await digestFile(absolutePath, signal);
     } catch {
       // Preserve the provider's collected observations if the artifact vanished or became unreadable.
+    }
+    if (signal?.aborted && failure === undefined) {
+      failure = new AnalysisCancelledError(operation, {
+        capturedOutput: {
+          stdout,
+          stderr,
+          truncated: outputTruncated,
+          stdout_bytes: Buffer.byteLength(stdout),
+          stderr_bytes: Buffer.byteLength(stderr),
+          exit_code: typeof exitCode === "number" ? exitCode : null,
+          signal: signalName,
+        },
+      });
+      exitCode = null;
+      completionStatus = "unknown";
     }
     const artifactChanged =
       digestAfter === null ? null : digestAfter !== digest;
@@ -197,7 +247,7 @@ export class ReverseEngineeringService {
       "A non-zero process exit is preserved as an observed command result.",
       ...(completionStatus === "unknown"
         ? [
-            "The output buffer limit terminated the child process; captured output is partial and command completion is unknown.",
+            "The provider command ended before completion could be confirmed; captured output is partial.",
           ]
         : []),
       "Pre-run and post-run digests detect artifact changes across the provider call but cannot prove the exact bytes consumed during the call.",
@@ -208,7 +258,9 @@ export class ReverseEngineeringService {
         : []),
       ...(digestAfter === null
         ? [
-            "The post-run artifact digest is unknown because the artifact could not be read after the provider call.",
+            signal?.aborted
+              ? "The post-run artifact digest is unknown because cancellation interrupted the digest."
+              : "The post-run artifact digest is unknown because the artifact could not be read after the provider call.",
           ]
         : []),
     ];
@@ -220,16 +272,108 @@ export class ReverseEngineeringService {
       {
         predicateType: "rea.reverse-engineering.command-observation",
         operation,
-        parameters: { ...parameters, command, command_arguments: [...args] },
+      parameters: {
+        ...parameters,
+        provider_executable: command,
+        command_arguments: [...args],
+      },
         rawResult: result,
         result,
         limitations,
         locations: [{ kind: "artifact-path", path: absolutePath }],
       },
     );
-    return ok(evidence);
+    return failure === undefined
+      ? ok(evidence)
+      : err(failure.retainPartialObservation(evidence));
   }
 }
+
+const runOwnedCommandOutput: typeof execFileOutput = async (
+  command,
+  args,
+  options = {},
+) => {
+  const spawnEnv = { ...(options.env ?? process.env) };
+  try {
+    const snapshot = await runOwnedCommand(
+      {
+        command,
+        arguments: [...args],
+        runId: randomUUID(),
+        expectedCommand: null,
+        env: spawnEnv,
+        hostEnvironment: {},
+      },
+      {
+        timeoutMs: options.timeout ?? DEFAULT_TIMEOUT_MS,
+        diagnosticBytes:
+          options.maxBuffer ?? MAX_OUTPUT_BYTES_PER_STREAM * 2,
+        acceptNonZeroExit: true,
+      },
+      {
+        ...(options.signal === undefined ? {} : { signal: options.signal }),
+      },
+    );
+    if (snapshot.signal !== null && snapshot.signal !== undefined)
+      throw Object.assign(new Error("Provider command terminated by signal"), {
+        stdout: snapshot.stdout.text,
+        stderr: snapshot.stderr.text,
+        code: snapshot.exitCode ?? null,
+        signal: snapshot.signal,
+        killed: false,
+        outputTruncated: snapshot.diagnosticTruncated === true,
+      });
+    if (snapshot.exitCode !== 0)
+      throw Object.assign(new Error("Provider command exited unsuccessfully"), {
+        stdout: snapshot.stdout.text,
+        stderr: snapshot.stderr.text,
+        code: snapshot.exitCode ?? null,
+        signal: null,
+        killed: false,
+        outputTruncated: snapshot.diagnosticTruncated === true,
+      });
+    return { stdout: snapshot.stdout.text, stderr: snapshot.stderr.text };
+  } catch (cause) {
+    if (!(cause instanceof OwnedCommandFailure)) throw cause;
+    const snapshot = cause.snapshot;
+    const code =
+      cause.reason === "cancelled"
+        ? "ABORT_ERR"
+        : cause.reason === "timeout"
+          ? "ETIMEDOUT"
+          : cause.reason === "output-limit"
+            ? "ERR_CHILD_PROCESS_STDIO_MAXBUFFER"
+            : (snapshot?.exitCode ?? null);
+    throw Object.assign(new Error(cause.message, { cause }), {
+      stdout: snapshot?.stdout.text ?? "",
+      stderr: snapshot?.stderr.text ?? "",
+      code,
+      signal: snapshot?.signal ?? null,
+      killed: cause.reason === "cancelled" || cause.reason === "timeout",
+      outputTruncated:
+        cause.reason === "output-limit" ||
+        snapshot?.diagnosticTruncated === true,
+      cleanupFailure: cause.cleanupFailure,
+      resources: cause.resources,
+    });
+  }
+};
+
+const ownedCleanupOptions = (
+  cause: unknown,
+): Pick<AnalysisErrorOptions, "cleanup"> => {
+  if (!(cause instanceof Error)) return {};
+  const cleanupFailure = Reflect.get(cause, "cleanupFailure");
+  const resources = Reflect.get(cause, "resources");
+  if (
+    typeof cleanupFailure !== "string" ||
+    !Array.isArray(resources) ||
+    !resources.every((resource): resource is string => typeof resource === "string")
+  )
+    return {};
+  return { cleanup: { reason: cleanupFailure, resources } };
+};
 
 const digestFile = async (
   path: string,
