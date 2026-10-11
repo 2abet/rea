@@ -12,11 +12,7 @@ it("preserves every field of partial Rizin timeout Evidence", () => {
     backend: null,
   };
 
-  const evidence = createRizinCommandTimeoutEvidence(
-    "session-123",
-    "dr",
-    result,
-  );
+  const evidence = createRizinCommandTimeoutEvidence("session-123", "dr", result);
 
   expect(evidence.parameters).toEqual({
     session_id: "session-123",

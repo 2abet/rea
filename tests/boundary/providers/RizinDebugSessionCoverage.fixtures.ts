@@ -19,9 +19,7 @@ interface InjectedProcessControl {
 }
 
 type InjectedSpawnProcess = NonNullable<
-  NonNullable<
-    ConstructorParameters<typeof RizinDebugSessionManager>[1]
-  >["spawnProcess"]
+  NonNullable<ConstructorParameters<typeof RizinDebugSessionManager>[1]>["spawnProcess"]
 >;
 
 export const incompleteStop: typeof stopOwnedDebuggerProcess = async (
@@ -71,7 +69,10 @@ export const createInjectedProcess = (
       | "throws"
       | "throws-opaque"
       | "write-error";
-    readonly onWrite?: (text: string, control: InjectedProcessControl) => void;
+    readonly onWrite?: (
+      text: string,
+      control: InjectedProcessControl,
+    ) => void;
     readonly startup?: (control: InjectedProcessControl) => void;
     readonly beforeSpawnReturns?: () => void;
     readonly spawnError?: unknown;
@@ -193,9 +194,7 @@ export const createRizinCoverageHarness = () => {
   };
   const cleanup = async (): Promise<void> => {
     await Promise.all(
-      managers
-        .splice(0)
-        .map((manager) => manager.closeAll().catch(() => undefined)),
+      managers.splice(0).map((manager) => manager.closeAll().catch(() => undefined)),
     );
     if (directory !== undefined)
       await rm(directory, { recursive: true, force: true });

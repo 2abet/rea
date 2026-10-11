@@ -45,3 +45,95 @@ it("retains uncertain command completion as Evidence without encouraging a retry
   );
   expect(result.value.provider.version).toBe("Cutter fixture version");
 });
+
+const cutterInput = {
+  session_id: "27d3e3f1-f1e5-49ae-91ec-95af1f343a5a",
+  expected_generation: 7,
+  command: "pd 4",
+};
+
+it("rejects malformed Cutter commands and pre-aborted calls", async () => {
+  const service = new CutterBridgeService({
+    listSessions: async () => ({
+      sessions: [],
+      bridge_directory: "/private/bridge",
+      discovery_status: "no_live_bridge_found",
+      bridge_directory_security: "private_verified",
+    }),
+    execute: async () => {
+      throw new Error("must not dispatch");
+    },
+  });
+
+  const malformed = await service.execute({ ...cutterInput, command: "" });
+  expect(malformed).toMatchObject({
+    ok: false,
+    error: { _tag: "AnalysisInputError" },
+  });
+  const controller = new AbortController();
+  controller.abort();
+  const cancelled = await service.execute(cutterInput, {
+    signal: controller.signal,
+  });
+  expect(cancelled).toMatchObject({
+    ok: false,
+    error: { _tag: "AnalysisCancelledError" },
+  });
+});
+
+it.each([
+  [new Error("session generation changed"), "AnalysisInputError"],
+  [new Error("bridge disconnected"), "AnalysisCapabilityUnavailableError"],
+  ["plain failure", "AnalysisCapabilityUnavailableError"],
+])("maps a Cutter bridge failure to %s", async (failure, tag) => {
+  const service = new CutterBridgeService({
+    listSessions: async () => ({
+      sessions: [],
+      bridge_directory: "/private/bridge",
+      discovery_status: "no_live_bridge_found",
+      bridge_directory_security: "private_verified",
+    }),
+    execute: async () => {
+      throw failure;
+    },
+  });
+
+  const result = await service.execute(cutterInput);
+  expect(result).toMatchObject({ ok: false, error: { _tag: tag } });
+});
+
+it("preserves cancellation unless the bridge reports an ambiguous completion", async () => {
+  const createService = (message: string, controller: AbortController) =>
+    new CutterBridgeService({
+      listSessions: async () => ({
+        sessions: [],
+        bridge_directory: "/private/bridge",
+        discovery_status: "no_live_bridge_found",
+        bridge_directory_security: "private_verified",
+      }),
+      execute: async () => {
+        controller.abort();
+        throw new Error(message);
+      },
+    });
+  const cancelledController = new AbortController();
+
+  const cancelled = await createService(
+    "transport cancelled",
+    cancelledController,
+  ).execute(cutterInput, { signal: cancelledController.signal });
+  expect(cancelled).toMatchObject({
+    ok: false,
+    error: { _tag: "AnalysisCancelledError" },
+  });
+
+  const uncertainController = new AbortController();
+  const uncertain = await createService(
+    "command may have completed",
+    uncertainController,
+  ).execute(cutterInput, { signal: uncertainController.signal });
+  expect(uncertain).toMatchObject({
+    ok: false,
+    error: { _tag: "AnalysisCapabilityUnavailableError" },
+  });
+});

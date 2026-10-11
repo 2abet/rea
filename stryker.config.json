@@ -1,0 +1,39 @@
+{
+  "$schema": "./node_modules/@stryker-mutator/core/schema/stryker-schema.json",
+  "testRunner": "vitest",
+  "plugins": [
+    "@stryker-mutator/typescript-checker",
+    "@stryker-mutator/vitest-runner"
+  ],
+  "vitest": {
+    "configFile": "vitest.reverse-tools.config.ts",
+    "related": true
+  },
+  "checkers": ["typescript"],
+  "tsconfigFile": "tsconfig.reverse-tools-mutation.json",
+  "typescriptChecker": {
+    "prioritizePerformanceOverAccuracy": true
+  },
+  "coverageAnalysis": "perTest",
+  "mutate": [
+    "src/application/reverse/ReverseEngineeringService.ts:179-179",
+    "src/application/reverse/ReverseEngineeringService.ts:207-211",
+    "src/gdb/GdbSessionManager.ts:68-69",
+    "src/gdb/GdbSessionManager.ts:71-73",
+    "src/gdb/GdbSessionManager.ts:216-230",
+    "src/gdb/GdbSessionManager.ts:390-390",
+    "src/gdb/GdbSessionManager.ts:392-392",
+    "src/gdb/GdbSessionManager.ts:418-435",
+    "src/process/ownedDebuggerSession.ts:31-38",
+    "src/rizin/RizinDebugSessionManager.ts:461-485",
+    "src/rizin/RizinDebugSessionManager.ts:731-732"
+  ],
+  "thresholds": {
+    "high": 100,
+    "low": 100,
+    "break": 100
+  },
+  "concurrency": 2,
+  "timeoutMS": 30000,
+  "reporters": ["clear-text", "progress", "html", "json"]
+}

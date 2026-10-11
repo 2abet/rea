@@ -38,15 +38,18 @@ const MAX_OUTPUT_BYTES_PER_STREAM = 16 * 1024 * 1024;
 export class ReverseEngineeringService {
   readonly #environment: Readonly<NodeJS.ProcessEnv>;
   readonly #run: typeof execFileOutput;
+  readonly #digest: typeof digestFile;
 
   constructor(
     options: {
       readonly environment?: Readonly<NodeJS.ProcessEnv>;
       readonly run?: typeof execFileOutput;
+      readonly digest?: typeof digestFile;
     } = {},
   ) {
     this.#environment = options.environment ?? process.env;
     this.#run = options.run ?? execFileOutput;
+    this.#digest = options.digest ?? digestFile;
   }
 
   inspectWithObjdump(
@@ -103,7 +106,7 @@ export class ReverseEngineeringService {
     const absolutePath = resolve(path);
     let digest: string;
     try {
-      digest = await digestFile(absolutePath, signal);
+      digest = await this.#digest(absolutePath, signal);
     } catch (cause) {
       const code = (cause as NodeJS.ErrnoException).code;
       if (signal?.aborted)
@@ -173,10 +176,11 @@ export class ReverseEngineeringService {
         exitCode = null;
         completionStatus = "unknown";
       }
+      if (capture.signal !== null) completionStatus = "unknown";
     }
     let digestAfter: string | null = null;
     try {
-      digestAfter = await digestFile(absolutePath);
+      digestAfter = await this.#digest(absolutePath);
     } catch {
       // Preserve the provider's collected observations if the artifact vanished or became unreadable.
     }
@@ -195,11 +199,16 @@ export class ReverseEngineeringService {
     const limitations = [
       "The executable version and supported formats are reported as unknown because no reliable version probe was performed.",
       "A non-zero process exit is preserved as an observed command result.",
-      ...(completionStatus === "unknown"
+      ...(outputTruncated
         ? [
             "The output buffer limit terminated the child process; captured output is partial and command completion is unknown.",
           ]
         : []),
+      ...(signalName === null
+        ? []
+        : [
+            `The provider process terminated by signal ${signalName}; captured output may be partial and command completion is unknown.`,
+          ]),
       "Pre-run and post-run digests detect artifact changes across the provider call but cannot prove the exact bytes consumed during the call.",
       ...(artifactChanged === true
         ? [

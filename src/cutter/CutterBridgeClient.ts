@@ -334,10 +334,11 @@ export class CutterBridgeClient {
       | "unverified_platform_acl" = posix
       ? "private_verified"
       : "unverified_platform_acl";
+    const windowsPrivateReader = this.#windowsPrivateReader;
     if (!posix) {
       if (
         this.#platform !== "win32" ||
-        this.#windowsPrivateReader === undefined
+        windowsPrivateReader === undefined
       )
         return {
           descriptors: [],
@@ -345,7 +346,7 @@ export class CutterBridgeClient {
           error: "bridge_directory_insecure",
         };
       try {
-        if (!this.#windowsPrivateReader.verifyDirectory(this.#directory))
+        if (!windowsPrivateReader.verifyDirectory(this.#directory))
           return {
             descriptors: [],
             security: "not_private",
@@ -378,8 +379,7 @@ export class CutterBridgeClient {
           try {
             let bytes: Buffer;
             if (this.#platform === "win32") {
-              if (this.#windowsPrivateReader === undefined) return undefined;
-              bytes = this.#windowsPrivateReader.readDescriptor(
+              bytes = windowsPrivateReader!.readDescriptor(
                 this.#directory,
                 entry,
                 MAX_DESCRIPTOR_BYTES,
