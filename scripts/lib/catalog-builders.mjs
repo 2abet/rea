@@ -19,6 +19,7 @@ export const toolFamilyCatalog = (sources) => {
       contracts: [
         ...sources.nativeContracts.NATIVE_TOOL_CONTRACTS,
         ...sources.binaryDiagnosticsContracts.BINARY_DIAGNOSTICS_TOOL_CONTRACTS,
+        ...sources.cutterContracts.CUTTER_TOOL_CONTRACTS,
         ...sources.reverseEngineeringContracts
           .REVERSE_ENGINEERING_TOOL_CONTRACTS,
       ],
@@ -146,6 +147,10 @@ export const providerCatalog = (sources) => {
     activeContracts,
   } = electronContractSlices(sources);
   return [
+    {
+      identity: sources.cutterProvider.CUTTER_PROVIDER_IDENTITY,
+      contracts: sources.cutterContracts.CUTTER_TOOL_CONTRACTS,
+    },
     {
       identity: sources.objdumpProvider.OBJDUMP_PROVIDER_IDENTITY,
       contracts:

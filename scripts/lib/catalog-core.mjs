@@ -43,6 +43,8 @@ const SOURCE_PATHS = {
   sessionContracts: "dist/contracts/sessionToolContracts.js",
   binaryDiagnosticsContracts:
     "dist/contracts/native/binaryDiagnosticsToolContracts.js",
+  cutterContracts: "dist/contracts/cutterToolContracts.js",
+  cutterProvider: "dist/cutter/CutterBridgeClient.js",
   reverseEngineeringContracts:
     "dist/contracts/reverseEngineeringToolContracts.js",
   objdumpProvider: "dist/objdump/ObjdumpCommand.js",

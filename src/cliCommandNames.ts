@@ -42,6 +42,8 @@ export const CLI_COMMANDS = Object.freeze({
   inspectManagedArtifact: "inspect-managed-artifact",
   inspectRecordedCrash: "inspect-recorded-crash",
   inspectBinaryLayout: "inspect-binary-layout",
+  listCutterSessions: "list-cutter-sessions",
+  cutterCommand: "cutter-command",
   inspectWithObjdump: "inspect-with-objdump",
   executeRizinCommand: "execute-rizin-command",
   inspectPeResources: "inspect-pe-resources",
@@ -150,6 +152,8 @@ export const CLI_COMMAND_TOOL_ALIASES = Object.freeze({
   search: ["search_strings", "search_procedures"],
   "capture-process": ["capture_process_scenario"],
   "compare-bundles": ["compare_bundles"],
+  "list-cutter-sessions": ["list_cutter_sessions"],
+  "cutter-command": ["cutter_command"],
   "inspect-with-objdump": ["inspect_with_objdump"],
   "execute-rizin-command": ["execute_rizin_command"],
 });

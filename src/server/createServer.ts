@@ -98,6 +98,9 @@ import {
 import type { WithAdmittedAnalysis } from "./analysisAdmission.js";
 import { createReverseEngineeringService } from "../composition/reverseEngineering.js";
 import { registerReverseEngineeringTools } from "./registerReverseEngineeringTools.js";
+import { CutterBridgeClient } from "../cutter/CutterBridgeClient.js";
+import { CutterBridgeService } from "../cutter/CutterBridgeService.js";
+import { registerCutterTools } from "./registerCutterTools.js";
 
 const TARGET_FREE_INSTRUCTIONS =
   "REA provides reverse-engineering tools for local artifacts, native binaries, managed code, browser pages, and runtimes. Use the tool that directly answers the question; discover targets or inspect inventory only when needed. Tool results include inline Evidence and report their coverage and limitations.";
@@ -312,6 +315,17 @@ export const createServer = (
   registerReverseEngineeringTools(
     server,
     createReverseEngineeringService(options.providerEnvironment),
+    toolLogger,
+    delivery,
+    session === undefined
+      ? undefined
+      : (evidence) => session.recordEvidence(evidence),
+  );
+  registerCutterTools(
+    server,
+    new CutterBridgeService(
+      new CutterBridgeClient(options.providerEnvironment),
+    ),
     toolLogger,
     delivery,
     session === undefined
