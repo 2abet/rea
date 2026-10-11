@@ -45,6 +45,31 @@ it("retains process supervision after an incomplete stop and disposes after a re
   expect(waits).toBe(3);
 });
 
+it("refuses Windows job-backed debugger termination before signaling", async () => {
+  const signals: NodeJS.Signals[] = [];
+  const session = {
+    id: "windows-debugger",
+    exited: false,
+    launched: {
+      process: {
+        kill: (signal: NodeJS.Signals): boolean => {
+          signals.push(signal);
+          return true;
+        },
+      },
+    },
+    supervisor: {
+      waitForExit: async (): Promise<boolean> => false,
+      dispose: (): void => {},
+    },
+  };
+
+  await expect(
+    stopOwnedDebuggerProcess(session, "GDB", { platform: "win32" }),
+  ).resolves.toMatchObject({ status: "incomplete" });
+  expect(signals).toEqual([]);
+});
+
 it("disposes supervision when a process had already exited", async () => {
   let disposals = 0;
   const result = await stopOwnedDebuggerProcess(
@@ -160,4 +185,35 @@ it("closes an empty owned-session collection", async () => {
       "GDB",
     ),
   ).resolves.toBeUndefined();
+});
+
+it("settles every stop and retains rejected sessions while removing successful ones", async () => {
+  const sessions = new Map([
+    ["stopped", { id: "stopped" }],
+    ["rejected", { id: "rejected" }],
+    ["incomplete", { id: "incomplete" }],
+  ]);
+  const calls: string[] = [];
+
+  await expect(
+    closeOwnedDebuggerSessions(
+      sessions,
+      async (session) => {
+        calls.push(session.id);
+        if (session.id === "rejected") throw new Error("signal failed");
+        if (session.id === "incomplete")
+          return { status: "incomplete", reason: "still alive" };
+        return { status: "stopped" };
+      },
+      "GDB",
+    ),
+  ).rejects.toMatchObject({
+    errors: [
+      expect.objectContaining({ message: "signal failed" }),
+      expect.objectContaining({ message: "still alive" }),
+    ],
+  });
+
+  expect(calls).toHaveLength(3);
+  expect([...sessions.keys()]).toEqual(["rejected", "incomplete"]);
 });
