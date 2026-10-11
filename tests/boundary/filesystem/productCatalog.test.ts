@@ -20,6 +20,7 @@ import {
 } from "../../../src/ghidra/GhidraProviderCapabilities.js";
 import { OBJDUMP_PROVIDER_IDENTITY } from "../../../src/objdump/ObjdumpCommand.js";
 import { RIZIN_PROVIDER_IDENTITY } from "../../../src/rizin/RizinCommand.js";
+import { GDB_PROVIDER_IDENTITY } from "../../../src/gdb/GdbSessionManager.js";
 import {
   documentationFactIssues,
   skillReferenceIssues,
@@ -75,9 +76,11 @@ describe("canonical product catalog", () => {
     expect(catalog.cli.commands).toHaveLength(CLI_COMMAND_NAMES.length);
     expect(catalog.providers.map(({ id }) => id)).toEqual(
       expect.arrayContaining(
-        [OBJDUMP_PROVIDER_IDENTITY, RIZIN_PROVIDER_IDENTITY].map(
-          ({ id }) => id,
-        ),
+        [
+          OBJDUMP_PROVIDER_IDENTITY,
+          RIZIN_PROVIDER_IDENTITY,
+          GDB_PROVIDER_IDENTITY,
+        ].map(({ id }) => id),
       ),
     );
     expect(

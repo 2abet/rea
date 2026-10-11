@@ -44,6 +44,7 @@ export const CLI_COMMANDS = Object.freeze({
   inspectBinaryLayout: "inspect-binary-layout",
   inspectWithObjdump: "inspect-with-objdump",
   executeRizinCommand: "execute-rizin-command",
+  debugWithGdb: "debug-with-gdb",
   inspectPeResources: "inspect-pe-resources",
   inspectAnalysisView: "inspect-analysis-view",
   inspectEvidenceBundle: "inspect-evidence-bundle",
@@ -152,6 +153,7 @@ export const CLI_COMMAND_TOOL_ALIASES = Object.freeze({
   "compare-bundles": ["compare_bundles"],
   "inspect-with-objdump": ["inspect_with_objdump"],
   "execute-rizin-command": ["execute_rizin_command"],
+  "debug-with-gdb": ["gdb_console"],
 });
 
 /** MCP operations without a dedicated CLI command or direct command alias. */
@@ -209,4 +211,7 @@ export const MCP_TOOLS_WITHOUT_DEDICATED_CLI = Object.freeze([
   "get_evidence_bundle",
   "get_navigation_context",
   "inspect_address_context",
+  "start_gdb_session",
+  "gdb_session_status",
+  "close_gdb_session",
 ]);

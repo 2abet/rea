@@ -45,6 +45,8 @@ const SOURCE_PATHS = {
     "dist/contracts/native/binaryDiagnosticsToolContracts.js",
   reverseEngineeringContracts:
     "dist/contracts/reverseEngineeringToolContracts.js",
+  gdbContracts: "dist/contracts/gdbToolContracts.js",
+  gdbProvider: "dist/gdb/GdbSessionManager.js",
   objdumpProvider: "dist/objdump/ObjdumpCommand.js",
   rizinProvider: "dist/rizin/RizinCommand.js",
   pwntoolsProvider: "dist/native/pwntools/PwntoolsRelease.js",
