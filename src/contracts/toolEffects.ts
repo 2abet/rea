@@ -53,6 +53,26 @@ const sessionEvidence = effects({ mutatesSession: true });
 
 /** Explicit effect audit for every public tool. */
 export const TOOL_EFFECTS: Readonly<Record<string, ToolEffects>> = {
+  start_rizin_debug_session: effects({
+    mutatesSession: true,
+    launchesProcess: true,
+  }),
+  rizin_debug_command: effects({
+    mutatesTarget: true,
+    mutatesSession: true,
+    writesFilesystem: true,
+    launchesProcess: true,
+    accessesNetwork: true,
+    changesUiState: true,
+    mayDiscardData: true,
+    idempotent: false,
+  }),
+  rizin_debug_session_status: effects({ mutatesSession: true }),
+  close_rizin_debug_session: effects({
+    mutatesSession: true,
+    launchesProcess: true,
+    idempotent: false,
+  }),
   inspect_with_objdump: effects({
     mutatesSession: true,
     launchesProcess: true,

@@ -98,6 +98,8 @@ import {
 import type { WithAdmittedAnalysis } from "./analysisAdmission.js";
 import { createReverseEngineeringService } from "../composition/reverseEngineering.js";
 import { registerReverseEngineeringTools } from "./registerReverseEngineeringTools.js";
+import { RizinDebugSessionManager } from "../rizin/RizinDebugSessionManager.js";
+import { registerRizinDebugTools } from "./registerRizinDebugTools.js";
 
 const TARGET_FREE_INSTRUCTIONS =
   "REA provides reverse-engineering tools for local artifacts, native binaries, managed code, browser pages, and runtimes. Use the tool that directly answers the question; discover targets or inspect inventory only when needed. Tool results include inline Evidence and report their coverage and limitations.";
@@ -253,6 +255,9 @@ export const createServer = (
   const jeb = options.jebAnalysis ?? createJebAnalysisProvider(environment);
   const adbDevice =
     options.adbDeviceAnalysis ?? createAdbDeviceAnalysisProvider(environment);
+  const rizinDebugSessions = new RizinDebugSessionManager(
+    options.providerEnvironment,
+  );
   let providerClose: Promise<void> | undefined;
   const closeProviders = (): Promise<void> => {
     providerClose ??= Promise.allSettled([
@@ -268,6 +273,7 @@ export const createServer = (
       artifactResources.close(),
       firmwareAnalysis.close(),
       options.browserScenarioCapture?.close?.() ?? Promise.resolve(),
+      rizinDebugSessions.closeAll(),
     ])
       .then((results) => {
         const failures = results.flatMap((result) =>
@@ -312,6 +318,15 @@ export const createServer = (
   registerReverseEngineeringTools(
     server,
     createReverseEngineeringService(options.providerEnvironment),
+    toolLogger,
+    delivery,
+    session === undefined
+      ? undefined
+      : (evidence) => session.recordEvidence(evidence),
+  );
+  registerRizinDebugTools(
+    server,
+    rizinDebugSessions,
     toolLogger,
     delivery,
     session === undefined

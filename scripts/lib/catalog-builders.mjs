@@ -21,6 +21,7 @@ export const toolFamilyCatalog = (sources) => {
         ...sources.binaryDiagnosticsContracts.BINARY_DIAGNOSTICS_TOOL_CONTRACTS,
         ...sources.reverseEngineeringContracts
           .REVERSE_ENGINEERING_TOOL_CONTRACTS,
+        ...sources.rizinDebugContracts.RIZIN_DEBUG_TOOL_CONTRACTS,
       ],
     },
     {
@@ -159,6 +160,10 @@ export const providerCatalog = (sources) => {
         sources.reverseEngineeringContracts.REVERSE_ENGINEERING_TOOL_CONTRACTS.filter(
           ({ name }) => name === "execute_rizin_command",
         ),
+    },
+    {
+      identity: sources.rizinDebugProvider.RIZIN_DEBUGGER_PROVIDER_IDENTITY,
+      contracts: sources.rizinDebugContracts.RIZIN_DEBUG_TOOL_CONTRACTS,
     },
     {
       identity: sources.hopperProvider.HOPPER_PROVIDER_IDENTITY,
