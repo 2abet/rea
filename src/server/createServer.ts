@@ -216,6 +216,7 @@ export const createServer = (
   const session = source.kind === "session" ? source.session : undefined;
   const analysis = source.kind === "session" ? source.session : source.analysis;
   const environment = snapshotEnvironment(options.environment ?? process.env);
+  const providerEnvironment = options.providerEnvironment ?? environment;
   const delivery = selectToolResultDelivery(environment, options.delivery);
   const evmInterface =
     options.evmInterface ?? createEvmInterfaceService(environment);
@@ -246,9 +247,7 @@ export const createServer = (
     selectCompactInputSchemaPresentation(environment),
   );
   const gdbSessions = new GdbSessionManager(
-    options.providerEnvironment === undefined
-      ? {}
-      : { environment: options.providerEnvironment },
+    { environment: providerEnvironment },
   );
   const android =
     options.androidAnalysis ?? createAndroidAnalysisProvider(environment);
@@ -319,7 +318,7 @@ export const createServer = (
   registerBinaryAnalysisTools(toolContext);
   registerReverseEngineeringTools(
     server,
-    createReverseEngineeringService(options.providerEnvironment),
+    createReverseEngineeringService(providerEnvironment),
     toolLogger,
     delivery,
     session === undefined
