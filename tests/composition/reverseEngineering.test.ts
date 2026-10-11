@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { ReverseEngineeringService } from "../../src/application/reverse/ReverseEngineeringService.js";
+import { projectAnalysisError } from "../../src/domain/analysisErrorProjection.js";
 
 describe("reverse engineering command services", () => {
   it("uses compatible local DWARF link flags and disables debuginfod through the environment", async () => {
@@ -193,6 +194,10 @@ describe("Rizin command service", () => {
         stderr: "command error",
         exit_code: 2,
       });
+      expect(result.value.parameters).toMatchObject({
+        command: "iI",
+        provider_executable: "/tools/rizin",
+      });
       expect(result.value.provider.id).toBe("rizin");
     } finally {
       await rm(directory, { recursive: true, force: true });
@@ -257,4 +262,112 @@ describe("Rizin command service", () => {
       await rm(directory, { recursive: true, force: true });
     }
   });
+});
+
+it("retains partial Evidence when a provider command times out", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "rea-rizin-timeout-partial-"));
+  const path = join(directory, "fixture.bin");
+  await writeFile(path, "before");
+  const service = new ReverseEngineeringService({
+    run: async () => {
+      const failure = Object.assign(new Error("timeout"), {
+        stdout: "captured before timeout",
+        stderr: "still running",
+        code: "ETIMEDOUT",
+        signal: "SIGTERM",
+        killed: true,
+      });
+      throw failure;
+    },
+  });
+
+  try {
+    const result = await service.executeRizinCommand({ path, command: "wx 00 @ 0" });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error._tag).toBe("AnalysisTimeoutError");
+      expect(result.error.partialObservation).toMatchObject({
+        operation: "execute_rizin_command",
+        raw_result: {
+          stdout: "captured before timeout",
+          stderr: "still running",
+          completion_status: "unknown",
+          signal: "SIGTERM",
+          artifact_sha256_after: expect.any(String),
+        },
+      });
+      expect(JSON.stringify(projectAnalysisError(result.error))).toContain(
+        "captured before timeout",
+      );
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+it("preserves provider facts when cancellation interrupts the post-run digest", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "rea-rizin-digest-cancel-"));
+  const path = join(directory, "fixture.bin");
+  await writeFile(path, "fixture");
+  const controller = new AbortController();
+  const service = new ReverseEngineeringService({
+    run: async () => {
+      controller.abort();
+      return { stdout: "provider completed", stderr: "" };
+    },
+  });
+
+  try {
+    const result = await service.executeRizinCommand(
+      { path, command: "iI" },
+      { signal: controller.signal },
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error._tag).toBe("AnalysisCancelledError");
+      expect(result.error.partialObservation).toMatchObject({
+        raw_result: {
+          stdout: "provider completed",
+          exit_code: null,
+          completion_status: "unknown",
+          artifact_sha256_after: null,
+        },
+        limitations: expect.arrayContaining([
+          expect.stringContaining("cancellation interrupted the digest"),
+        ]),
+      });
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+it("marks signal-terminated provider output incomplete", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "rea-rizin-signal-"));
+  const path = join(directory, "fixture.bin");
+  await writeFile(path, "fixture");
+  const service = new ReverseEngineeringService({
+    run: async () => {
+      throw Object.assign(new Error("terminated"), {
+        stdout: "partial",
+        stderr: "",
+        code: null,
+        signal: "SIGSEGV",
+        killed: false,
+      });
+    },
+  });
+
+  try {
+    const result = await service.executeRizinCommand({ path, command: "iI" });
+    expect(result.ok).toBe(true);
+    if (result.ok)
+      expect(result.value.raw_result).toMatchObject({
+        signal: "SIGSEGV",
+        exit_code: null,
+        completion_status: "unknown",
+      });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
