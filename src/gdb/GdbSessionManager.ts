@@ -1615,13 +1615,21 @@ const commandMayChangeInferiorOutput = (command: string): boolean => {
   const setting = /^\s*(?:set|with)\s+(\S+)/iu.exec(command)?.[1];
   const maySetInferiorTty =
     setting !== undefined && "inferior-tty".startsWith(setting.toLowerCase());
+  const firstToken = /^\s*([^\s;]+)/u.exec(command)?.[1]?.toLowerCase();
+  const mayBeTtyCommand =
+    firstToken !== undefined && "tty".startsWith(firstToken);
+  const mayRunWithOutputRedirection =
+    firstToken !== undefined &&
+    ["run", "start", "starti"].some((name) => name.startsWith(firstToken)) &&
+    /[<>]{1,2}|&>/u.test(command.slice(firstToken.length));
   return (
     maySetInferiorTty ||
+    mayBeTtyCommand ||
     /\binferior-tty\b/iu.test(command) ||
     /^\s*(?:wit(?:h)?(?:\s|$)|tty(?:\s|$)|source\b|py\w*|define\b)/iu.test(
       command,
     ) ||
-    /^\s*(?:run|r|start|starti)\b[^\n;]*(?:\d?>|>>|<|&>)/iu.test(command)
+    mayRunWithOutputRedirection
   );
 };
 
