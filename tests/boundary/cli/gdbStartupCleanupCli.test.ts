@@ -29,6 +29,7 @@ const registerGdbCommand = (
 it.each([
   "source /tmp/gdbinit",
   "python print('x')",
+  "def custom-command",
   "run > /tmp/out",
   "set inferior-t /dev/null",
   "with inferior-t /dev/null -- run",

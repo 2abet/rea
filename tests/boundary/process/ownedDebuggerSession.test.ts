@@ -214,6 +214,7 @@ it.each([
       supervisor: {
         waitForExit: async () => true,
         waitForOutputClose: async () => Promise.reject(cause),
+        limitAdditionalOutputBytes: () => {},
         disposeAfterOutputClose: () => {},
         dispose: () => {
           disposals += 1;
@@ -239,6 +240,7 @@ it("does not signal an active debugger when its provider cannot detach the infer
       supervisor: {
         waitForExit: async () => false,
         waitForOutputClose: async () => false,
+        limitAdditionalOutputBytes: () => {},
         disposeAfterOutputClose: () => {},
         dispose: () => {},
         unrefOutputStreams: () => {},
@@ -267,6 +269,7 @@ it("preserves a non-Error provider detach rejection and does not signal the debu
       supervisor: {
         waitForExit: async () => false,
         waitForOutputClose: async () => false,
+        limitAdditionalOutputBytes: () => {},
         disposeAfterOutputClose: () => {},
         dispose: () => {},
         unrefOutputStreams: () => {},
@@ -634,6 +637,7 @@ it("uses the host platform when an exited debugger is stopped without options", 
           outputCloseWaits += 1;
           return true;
         },
+        limitAdditionalOutputBytes: () => {},
         disposeAfterOutputClose: () => {},
         dispose: () => {},
         unrefOutputStreams: () => {
@@ -648,6 +652,39 @@ it("uses the host platform when an exited debugger is stopped without options", 
   expect(outputCloseWaits).toBe(1);
   expect(outputUnrefs).toBe(process.platform === "win32" ? 0 : 1);
 });
+
+it.each([
+  ["linux", "inherited output stream"],
+  ["win32", "Windows Job Object"],
+] as const)(
+  "retains a non-Error output-settlement failure on %s",
+  async (platform, resource) => {
+    const result = await stopOwnedDebuggerProcess(
+      {
+        id: `output-settlement-${platform}`,
+        exited: true,
+        launched: { process: { kill: () => true } },
+        supervisor: {
+          waitForExit: async () => true,
+          waitForOutputClose: async () => {
+            throw "output status unavailable";
+          },
+          limitAdditionalOutputBytes: () => {},
+          disposeAfterOutputClose: () => {},
+          dispose: () => {},
+          unrefOutputStreams: () => {},
+        },
+      },
+      "GDB",
+      { platform },
+    );
+
+    expect(result).toEqual({
+      status: "incomplete",
+      reason: `Owned GDB ${resource} settlement could not be verified: output status unavailable`,
+    });
+  },
+);
 
 it.skipIf(process.platform === "win32")(
   "keeps supervision until a late-writing descendant closes inherited output after leader exit",

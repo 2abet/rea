@@ -121,6 +121,179 @@ it("admits Rizin mutation and rebinds after dispatch while invalidating first", 
   expect(events).toEqual(["admit", "invalidate", "dispatch", "rebind"]);
 });
 
+it("invalidates the snapshot in the legacy Rizin admission path", async () => {
+  const registrations = new Map<
+    string,
+    (input: unknown, context: unknown) => Promise<unknown>
+  >();
+  const server = {
+    registerTool: (
+      name: string,
+      _options: unknown,
+      handler: (input: unknown, context: unknown) => Promise<unknown>,
+    ) => registrations.set(name, handler),
+  } as unknown as McpServer;
+  const invalidateSnapshot = vi.fn();
+  const service = new ReverseEngineeringService({
+    run: async () => ({ stdout: "rizin output", stderr: "" }),
+  });
+  registerReverseEngineeringTools(
+    server,
+    service,
+    pino({ enabled: false }),
+    createToolResultDelivery(2 * 1024 * 1024),
+    undefined,
+    undefined,
+    invalidateSnapshot,
+  );
+  const invoke = registrations.get("execute_rizin_command");
+  if (invoke === undefined) throw new Error("Rizin MCP handler was not registered");
+
+  const response = (await invoke(
+    { path: "package.json", command: "iI" },
+    { mcpReq: { signal: new AbortController().signal } },
+  )) as { readonly isError?: boolean };
+
+  expect(response.isError).not.toBe(true);
+  expect(invalidateSnapshot).toHaveBeenCalledOnce();
+});
+
+it("skips snapshot invalidation for malformed Rizin input", async () => {
+  const registrations = new Map<
+    string,
+    (input: unknown, context: unknown) => Promise<unknown>
+  >();
+  const server = {
+    registerTool: (
+      name: string,
+      _options: unknown,
+      handler: (input: unknown, context: unknown) => Promise<unknown>,
+    ) => registrations.set(name, handler),
+  } as unknown as McpServer;
+  const invalidateSnapshot = vi.fn();
+  const executeRizinCommand = vi.fn(async () =>
+    err(new AnalysisInputError("execute_rizin_command")),
+  );
+  const service = { executeRizinCommand } as unknown as ReverseEngineeringService;
+  registerReverseEngineeringTools(
+    server,
+    service,
+    pino({ enabled: false }),
+    createToolResultDelivery(2 * 1024 * 1024),
+    undefined,
+    undefined,
+    invalidateSnapshot,
+  );
+  const invoke = registrations.get("execute_rizin_command");
+  if (invoke === undefined) throw new Error("Rizin MCP handler was not registered");
+
+  const response = (await invoke(
+    { path: "package.json" },
+    { mcpReq: { signal: new AbortController().signal } },
+  )) as { readonly isError?: boolean };
+
+  expect(response.isError).toBe(true);
+  expect(executeRizinCommand).toHaveBeenCalledOnce();
+  expect(invalidateSnapshot).not.toHaveBeenCalled();
+});
+
+it("delivers failed Rizin execution after external admission", async () => {
+  const registrations = new Map<
+    string,
+    (input: unknown, context: unknown) => Promise<unknown>
+  >();
+  const server = {
+    registerTool: (
+      name: string,
+      _options: unknown,
+      handler: (input: unknown, context: unknown) => Promise<unknown>,
+    ) => registrations.set(name, handler),
+  } as unknown as McpServer;
+  const service = new ReverseEngineeringService({
+    run: async () => {
+      throw new Error("Rizin command failed");
+    },
+  });
+  registerReverseEngineeringTools(
+    server,
+    service,
+    pino({ enabled: false }),
+    createToolResultDelivery(2 * 1024 * 1024),
+    undefined,
+    undefined,
+    undefined,
+    async (_path, _signal, operation) => ok(await operation()),
+  );
+  const invoke = registrations.get("execute_rizin_command");
+  if (invoke === undefined) throw new Error("Rizin MCP handler was not registered");
+
+  const response = (await invoke(
+    { path: "package.json", command: "iI" },
+    { mcpReq: { signal: new AbortController().signal } },
+  )) as { readonly isError?: boolean };
+
+  expect(response.isError).toBe(true);
+});
+
+it("reports rebind failure when admitted Rizin execution has no partial observation", async () => {
+  const registrations = new Map<
+    string,
+    (input: unknown, context: unknown) => Promise<unknown>
+  >();
+  const server = {
+    registerTool: (
+      name: string,
+      _options: unknown,
+      handler: (input: unknown, context: unknown) => Promise<unknown>,
+    ) => registrations.set(name, handler),
+  } as unknown as McpServer;
+  const service = {
+    executeRizinCommand: async () =>
+      err(new AnalysisInputError("execute_rizin_command")),
+  } as unknown as ReverseEngineeringService;
+  const observedOperationResult = vi.fn();
+  registerReverseEngineeringTools(
+    server,
+    service,
+    pino({ enabled: false }),
+    createToolResultDelivery(2 * 1024 * 1024),
+    undefined,
+    undefined,
+    undefined,
+    async (_path, _signal, operation, rebindFailure) => {
+      const result = await operation();
+      observedOperationResult(result);
+      return err(rebindFailure(result, new AnalysisInputError("rebind")));
+    },
+  );
+  const invoke = registrations.get("execute_rizin_command");
+  if (invoke === undefined) throw new Error("Rizin MCP handler was not registered");
+
+  const response = (await invoke(
+    { path: "package.json", command: "iI" },
+    { mcpReq: { signal: new AbortController().signal } },
+  )) as {
+    readonly isError?: boolean;
+    readonly structuredContent?: {
+      readonly error?: {
+        readonly code?: string;
+        readonly details?: { readonly reason?: string };
+      };
+    };
+  };
+
+  expect(response.isError).toBe(true);
+  expect(observedOperationResult).toHaveBeenCalledWith(
+    expect.objectContaining({ ok: false }),
+  );
+  expect(response.structuredContent?.error).toMatchObject({
+    code: "unreadable_output",
+    details: {
+      reason: expect.stringContaining("could not be rebound"),
+    },
+  });
+});
+
 it("retains partial Evidence and leaves the session unbound when a symlink rebind fails", async () => {
   const [target] = await createBinarySessionTargets();
   const alias = join(dirname(target), "active-target-alias.hop");
