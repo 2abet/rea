@@ -63,6 +63,7 @@ export const TOOL_EFFECTS: Readonly<Record<string, ToolEffects>> = {
     writesFilesystem: true,
     launchesProcess: true,
     accessesNetwork: true,
+    mayDiscardData: true,
     idempotent: false,
   }),
   inspect_wasm_artifact: effects({

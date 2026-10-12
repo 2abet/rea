@@ -94,6 +94,31 @@ it("rejects malformed objdump requests before touching the provider", async () =
   expect(invoked).toBe(false);
 });
 
+it("rejects NUL in a Rizin command before touching the provider", async () => {
+  const { directory, path } = await createArtifact();
+  let invoked = false;
+  const service = new ReverseEngineeringService({
+    run: async () => {
+      invoked = true;
+      return { stdout: "", stderr: "" };
+    },
+  });
+
+  try {
+    const result = await service.executeRizinCommand({
+      path,
+      command: "wx\u0000 00",
+    });
+    expect(result).toMatchObject({
+      ok: false,
+      error: { _tag: "AnalysisInputError", operation: "execute_rizin_command" },
+    });
+    expect(invoked).toBe(false);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 it("returns cancellation that arrived before the artifact digest starts", async () => {
   const controller = new AbortController();
   controller.abort();
@@ -683,6 +708,7 @@ it.each([
           expectedCommand: null,
           env: expect.objectContaining({ REA_RIZIN_COMMAND: "rizin-test" }),
           hostEnvironment: {},
+          sweepTokenOwnedProcesses: true,
         }),
         {
           timeoutMs: 120_000,
@@ -955,6 +981,47 @@ it("retains an owned process failure snapshot with an unknown exit code", async 
           completion_status: "unknown",
         },
       },
+    });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+it("fails with partial unknown Evidence when owned output collection fails after exit 0", async () => {
+  const { directory, path } = await createArtifact();
+  const service = new ReverseEngineeringService({
+    runOwned: async () => {
+      throw Object.assign(
+        new OwnedCommandFailure(
+          "process",
+          "stdout stream failed: fixture read failure",
+          providerSnapshot({ exitCode: 0 }),
+        ),
+        { collectionFailure: true },
+      );
+    },
+  });
+
+  try {
+    const result = await service.executeRizinCommand({ path, command: "iI" });
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        _tag: "AnalysisOutputError",
+        partialObservation: {
+          raw_result: {
+            stdout: "captured owned output",
+            stderr: "diagnostic",
+            exit_code: null,
+            completion_status: "unknown",
+          },
+        },
+      },
+    });
+    if (result.ok) throw new Error("Expected collection failure");
+    expect(result.error.cause).toMatchObject({
+      collectionFailure: true,
+      cause: { reason: "process" },
     });
   } finally {
     await rm(directory, { recursive: true, force: true });

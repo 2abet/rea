@@ -313,13 +313,20 @@ export class ReverseEngineeringService {
       exitCode = capture.code;
       signalName = capture.signal;
       outputTruncated = capture.outputTruncated;
+      if (capture.collectionFailure) {
+        exitCode = null;
+        completionStatus = "unknown";
+      }
       const capturedOutput = {
         stdout,
         stderr,
         truncated: outputTruncated,
         stdout_bytes: Buffer.byteLength(stdout),
         stderr_bytes: Buffer.byteLength(stderr),
-        exit_code: typeof capture.code === "number" ? capture.code : null,
+        exit_code:
+          !capture.collectionFailure && typeof capture.code === "number"
+            ? capture.code
+            : null,
         signal: capture.signal,
       };
       if (signal?.aborted || code === "ABORT_ERR")
@@ -348,6 +355,16 @@ export class ReverseEngineeringService {
           operation,
           "Provider process cleanup remains incomplete.",
           { cause, capturedOutput, cleanup: cause.cleanup },
+        );
+      if (
+        failure === undefined &&
+        cause instanceof OwnedOutputFailure &&
+        cause.collectionFailure
+      )
+        failure = new AnalysisOutputError(
+          operation,
+          "Provider output collection failed.",
+          { cause, capturedOutput },
         );
       if (capture.signal !== null || typeof capture.code !== "number") {
         exitCode = null;
@@ -449,6 +466,7 @@ interface OwnedOutputFailureOptions {
   readonly code: number | string | null;
   readonly signal: string | null;
   readonly outputTruncated: boolean;
+  readonly collectionFailure?: boolean;
   readonly cleanup?: AnalysisCleanupObservation;
   readonly cause?: unknown;
 }
@@ -459,6 +477,7 @@ class OwnedOutputFailure extends Error {
   readonly code: number | string | null;
   readonly signal: string | null;
   readonly outputTruncated: boolean;
+  readonly collectionFailure: boolean;
   readonly cleanup: AnalysisCleanupObservation | undefined;
 
   constructor(options: OwnedOutputFailureOptions) {
@@ -470,6 +489,7 @@ class OwnedOutputFailure extends Error {
     this.code = options.code;
     this.signal = options.signal;
     this.outputTruncated = options.outputTruncated;
+    this.collectionFailure = options.collectionFailure ?? false;
     this.cleanup = options.cleanup;
   }
 }
@@ -495,6 +515,7 @@ const runOwnedCommandOutput = (
         expectedCommand: null,
         env: spawnEnv,
         hostEnvironment: {},
+        sweepTokenOwnedProcesses: true,
       },
       {
         timeoutMs: DEFAULT_TIMEOUT_MS,
@@ -547,6 +568,7 @@ const runOwnedCommandOutput = (
       code,
       signal: snapshot?.signal ?? null,
       outputTruncated: snapshot?.diagnosticTruncated === true,
+      ...(cause.collectionFailure ? { collectionFailure: true } : {}),
       ...(cause.cleanupFailure === null
         ? {}
         : {
