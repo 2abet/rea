@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { once } from "node:events";
+import { connect } from "node:net";
 
 import { expect, it, vi } from "vitest";
 
@@ -8,6 +9,12 @@ import {
   stopOwnedDebuggerProcess,
 } from "../../../src/process/ownedDebuggerSession.js";
 import { ProviderProcessSupervisor } from "../../../src/process/ProviderProcess.js";
+
+const triggerDescendantOutput = (port: number): void => {
+  const socket = connect(port, "127.0.0.1");
+  socket.on("error", () => {});
+  socket.on("connect", () => socket.end());
+};
 
 it("preserves the session receiver when invoking the provider detach callback", async () => {
   const session = {
@@ -690,8 +697,14 @@ it.skipIf(process.platform === "win32")(
   "keeps supervision until a late-writing descendant closes inherited output after leader exit",
   async () => {
     const inferiorSource = [
-      'setTimeout(() => { process.stdout.write("late-stdout-sentinel\\n"); process.stderr.write("late-stderr-sentinel\\n"); }, 250);',
-      "setTimeout(() => process.exit(0), 400);",
+      'const { createServer } = require("node:net");',
+      "const server = createServer((socket) => {",
+      '  process.stdout.write("late-stdout-sentinel\\n");',
+      '  process.stderr.write("late-stderr-sentinel\\n");',
+      "  socket.end();",
+      "  setImmediate(() => process.exit(0));",
+      "});",
+      'server.listen(0, "127.0.0.1", () => process.stdout.write(`ready:${server.address().port}\\n`));',
     ].join("\n");
     const debuggerSource = [
       'const { spawn } = require("node:child_process");',
@@ -705,9 +718,28 @@ it.skipIf(process.platform === "win32")(
       process: child,
       ownsProcessLifetime: true,
     });
+    let port: number | undefined;
+    let readyOutput = "";
+    const inferiorPort = new Promise<number>((resolvePort) => {
+      child.stdout?.on("data", (chunk: Buffer | string) => {
+        readyOutput += chunk.toString();
+        const match = /^ready:(\d+)$/mu.exec(readyOutput);
+        if (match !== null) resolvePort(Number(match[1]));
+      });
+    });
 
     try {
       await once(child, "exit");
+      const readyPort = await inferiorPort;
+      port = readyPort;
+      const limitAdditionalOutputBytes =
+        supervisor.limitAdditionalOutputBytes.bind(supervisor);
+      vi.spyOn(supervisor, "limitAdditionalOutputBytes").mockImplementation(
+        (maxBytes) => {
+          limitAdditionalOutputBytes(maxBytes);
+          triggerDescendantOutput(readyPort);
+        },
+      );
       const result = await stopOwnedDebuggerProcess(
         {
           id: "leader-exited-with-inferior",
@@ -727,6 +759,7 @@ it.skipIf(process.platform === "win32")(
         "late-stderr-sentinel",
       );
     } finally {
+      if (port !== undefined) triggerDescendantOutput(port);
       supervisor.dispose();
     }
   },
@@ -736,9 +769,19 @@ it.skipIf(process.platform === "win32")(
   "keeps late debugger output bounded and drained across cleanup retries",
   async () => {
     const inferiorSource = [
-      'setTimeout(() => { process.stdout.write("a".repeat(40 * 1024)); process.stderr.write("b".repeat(40 * 1024)); }, 250);',
-      'setTimeout(() => { process.stdout.write("c".repeat(40 * 1024)); process.stderr.write("d".repeat(40 * 1024)); }, 1250);',
-      "setTimeout(() => process.exit(0), 1400);",
+      'const { createServer } = require("node:net");',
+      "const writePair = (stdout, stderr) => Promise.all([",
+      "  new Promise((resolve) => process.stdout.write(stdout, resolve)),",
+      "  new Promise((resolve) => process.stderr.write(stderr, resolve)),",
+      "]);",
+      "let outputCount = 0;",
+      "const server = createServer((socket) => {",
+      "  outputCount += 1;",
+      '  const output = outputCount === 1 ? writePair("a".repeat(40 * 1024), "b".repeat(40 * 1024)) : writePair("c".repeat(40 * 1024), "d".repeat(40 * 1024));',
+      "  socket.end();",
+      "  if (outputCount === 2) void output.then(() => process.exit(0));",
+      "});",
+      'server.listen(0, "127.0.0.1", () => process.stdout.write(`ready:${server.address().port}\\n`));',
     ].join("\n");
     const debuggerSource = [
       'const { spawn } = require("node:child_process");',
@@ -752,6 +795,15 @@ it.skipIf(process.platform === "win32")(
       process: child,
       ownsProcessLifetime: true,
     });
+    let port: number | undefined;
+    let readyOutput = "";
+    const inferiorPort = new Promise<number>((resolvePort) => {
+      child.stdout?.on("data", (chunk: Buffer | string) => {
+        readyOutput += chunk.toString();
+        const match = /^ready:(\d+)$/mu.exec(readyOutput);
+        if (match !== null) resolvePort(Number(match[1]));
+      });
+    });
     const session = {
       id: "leader-exited-retrying-inferior",
       exited: true,
@@ -761,11 +813,24 @@ it.skipIf(process.platform === "win32")(
 
     try {
       await once(child, "exit");
+      const readyPort = await inferiorPort;
+      port = readyPort;
+      const initialStdoutBytes = supervisor.snapshot().stdout.observedBytes;
+      const limitAdditionalOutputBytes =
+        supervisor.limitAdditionalOutputBytes.bind(supervisor);
+      vi.spyOn(supervisor, "limitAdditionalOutputBytes").mockImplementation(
+        (maxBytes) => {
+          limitAdditionalOutputBytes(maxBytes);
+          triggerDescendantOutput(readyPort);
+        },
+      );
       const first = await stopOwnedDebuggerProcess(session, "GDB", {
         platform: "linux",
       });
       expect(first.status).toBe("incomplete");
-      expect(supervisor.snapshot().stdout.observedBytes).toBe(40 * 1024);
+      expect(supervisor.snapshot().stdout.observedBytes).toBe(
+        initialStdoutBytes + 40 * 1024,
+      );
       expect(supervisor.snapshot().stderr.observedBytes).toBe(40 * 1024);
 
       const second = await stopOwnedDebuggerProcess(session, "GDB", {
@@ -773,11 +838,19 @@ it.skipIf(process.platform === "win32")(
       });
       expect(second).toEqual({ status: "already_exited" });
       const snapshot = supervisor.snapshot();
-      expect(snapshot.stdout.observedBytes).toBe(80 * 1024);
+      expect(snapshot.stdout.observedBytes).toBe(
+        initialStdoutBytes + 80 * 1024,
+      );
       expect(snapshot.stderr.observedBytes).toBe(80 * 1024);
-      expect(snapshot.stdout.bytes + snapshot.stderr.bytes).toBe(64 * 1024);
+      expect(snapshot.stdout.bytes + snapshot.stderr.bytes).toBe(
+        initialStdoutBytes + 64 * 1024,
+      );
       expect(snapshot.diagnosticTruncated).toBe(true);
     } finally {
+      if (port !== undefined) {
+        triggerDescendantOutput(port);
+        triggerDescendantOutput(port);
+      }
       if (child.exitCode === null && child.signalCode === null)
         child.kill("SIGKILL");
       supervisor.dispose();
