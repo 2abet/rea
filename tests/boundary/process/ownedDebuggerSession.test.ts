@@ -66,7 +66,11 @@ it("refuses Windows job-backed debugger termination before signaling", async () 
 
   await expect(
     stopOwnedDebuggerProcess(session, "GDB", { platform: "win32" }),
-  ).resolves.toMatchObject({ status: "incomplete" });
+  ).resolves.toEqual({
+    status: "incomplete",
+    reason:
+      "Owned GDB process cannot be stopped safely on Windows because job termination can also terminate its inferior processes.",
+  });
   expect(signals).toEqual([]);
 });
 
@@ -191,6 +195,7 @@ it("settles every stop and retains rejected sessions while removing successful o
   const sessions = new Map([
     ["stopped", { id: "stopped" }],
     ["rejected", { id: "rejected" }],
+    ["string-rejected", { id: "string-rejected" }],
     ["incomplete", { id: "incomplete" }],
   ]);
   const calls: string[] = [];
@@ -201,6 +206,7 @@ it("settles every stop and retains rejected sessions while removing successful o
       async (session) => {
         calls.push(session.id);
         if (session.id === "rejected") throw new Error("signal failed");
+        if (session.id === "string-rejected") throw "string rejection";
         if (session.id === "incomplete")
           return { status: "incomplete", reason: "still alive" };
         return { status: "stopped" };
@@ -208,12 +214,18 @@ it("settles every stop and retains rejected sessions while removing successful o
       "GDB",
     ),
   ).rejects.toMatchObject({
+    message: "One or more owned GDB processes did not stop cleanly",
     errors: [
       expect.objectContaining({ message: "signal failed" }),
+      expect.objectContaining({ message: "string rejection" }),
       expect.objectContaining({ message: "still alive" }),
     ],
   });
 
-  expect(calls).toHaveLength(3);
-  expect([...sessions.keys()]).toEqual(["rejected", "incomplete"]);
+  expect(calls).toHaveLength(4);
+  expect([...sessions.keys()]).toEqual([
+    "rejected",
+    "string-rejected",
+    "incomplete",
+  ]);
 });
