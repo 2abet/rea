@@ -37,7 +37,9 @@ describe("function comparison reconstruction MCP integration", () => {
                 result: left.normalized_result,
                 confidence: left.confidence,
                 authority: left.authority,
-                relationshipCoverage: { status: "complete" },
+                ...(left.relationship_coverage === null
+                  ? {}
+                  : { relationshipCoverage: left.relationship_coverage }),
               },
             );
       const server = createServer({ kind: "session", session });
