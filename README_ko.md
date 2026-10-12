@@ -144,6 +144,7 @@ REA에는 Node.js 22.x(>=22.19), 24.x(>=24.11) 또는 26+와 npm이 필요합니
 | Android 기기          | 기기, 패키지, 프로세스, 로그, 덤프, 화면 캡처, APK/파일 전송                  | 호출자 제공 adb(에뮬레이터 또는 실제 기기); [ADB 가이드](docs/adb-device-analysis.md)                                                 |
 | JEB 프로젝트          | 엔진 기반 프로젝트 유닛, 아티팩트 해시, 타입/메서드 의사코드                  | 호출자가 시작하고 MCP를 제공하는 JEB 클라이언트(REA_JEB_MCP_URL로 선택); [JEB 가이드](docs/jeb-analysis.md)                           |
 | Android 리소스        | 디코딩된 매니페스트, 문자열 테이블, 로캘, 버전 정보                           | 호출자 제공 Apktool 런처; [리소스 가이드](docs/apktool-resource-analysis.md)                                                          |
+| Flutter 앱            | Dart 스냅샷 해시, ABI별 라이브러리 해시, 엔진 빌드 출처                       | 없음 (정적 APK 파싱); [Flutter 가이드](docs/flutter-analysis.md)                                                                      |
 | 펌웨어                | 영역, 추출 결과, 네이티브 분석으로 전달할 정보                                | Linux의 Binwalk / Unblob; [펌웨어 가이드](docs/firmware-analysis.md)                                                                  |
 | 패키지 및 리소스      | 파일 목록, 다이제스트, plist, Apple 번들 구조, 추출한 리소스                  | [아티팩트 및 JavaScript 가이드](docs/javascript-artifact-reconstruction.md), [Apple 애플리케이션](docs/apple-application-analysis.md) |
 | 프로세스 동작         | 터미널 출력, 상호작용, 종료 및 파일 시스템 관찰 결과, 실행 비교               | 네이티브 PTY를 지원하는 Linux/macOS; [프로세스 캡처](docs/process-capture.md)                                                         |
@@ -278,6 +279,10 @@ REA를 사용하고, 버그를 보고하고, 기능을 요청하고, 빌드를 �
 
 REA는 법을 준수하는 연구, 교육, 상호운용성 확보, 소프트웨어 보존, 그리고 본인이 소유하거나 조사 권한을 가진 소프트웨어의 분석을 위한 도구입니다.
 
+The project's position on illegal or unauthorized use covers all REA
+versions, distribution channels, and platforms; each copy retains its
+applicable licenses.
+
 ## 기여
 
 REA에 도움을 보태 주세요! [issue를 등록](https://github.com/morluto/rea/issues)해 버그나 기능을 제안하거나, [pull request를 보내](https://github.com/morluto/rea/pulls) 코드와 문서를 개선할 수 있습니다.
@@ -287,3 +292,15 @@ REA에 도움을 보태 주세요! [issue를 등록](https://github.com/morluto/
 ## 라이선스
 
 [MIT](LICENSE)
+
+REA-authored code is licensed under MIT. Third-party material retains its own
+licenses and copyright notices; see [Third-party notices](THIRD_PARTY_NOTICES.md)
+for the dependency inventory, preserved license texts, and external-tool terms.
+
+**You must legally obtain and be authorized to use commercial tools**, including
+IDA Pro / Hex-Rays decompilers, Hopper, and JEB, under their applicable licenses.
+REA grants no tool license, key, or activation entitlement. Trials and demos
+remain subject to vendor terms, including user, feature, automation, and output
+sharing restrictions. Cracked copies, stolen keys, unauthorized key sharing,
+and bypassing license restrictions are not authorized. This guidance does not
+amend MIT or third-party licenses.

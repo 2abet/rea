@@ -144,6 +144,7 @@ REA 需要 Node.js 22.x（>=22.19）、24.x（>=24.11）或 26+，以及 npm。�
 | Android 裝置          | 裝置、套件、程序、日誌、傾印、螢幕擷取以及 APK/檔案傳輸         | 呼叫端提供的 adb（模擬器或實體裝置）；[ADB 指南](docs/adb-device-analysis.md)                                          |
 | JEB 專案              | 引擎支援的專案單元、成品摘要和型別/方法的虛擬碼                 | 由呼叫端啟動、提供 MCP 的 JEB 用戶端，透過 REA_JEB_MCP_URL 選擇；[JEB 指南](docs/jeb-analysis.md)                      |
 | Android 資源          | 解碼後的清單、字串表、語系和版本資訊                            | 呼叫端提供的 Apktool 啟動器；[資源指南](docs/apktool-resource-analysis.md)                                             |
+| Flutter 應用          | Dart 快照雜湊、依 ABI 的程式庫雜湊及引擎建置來源                | 無（靜態 APK 解析）；[Flutter 指南](docs/flutter-analysis.md)                                                          |
 | 韌體                  | 區域、提取結果和轉交原生分析的內容                              | Linux 上的 Binwalk / Unblob；[韌體指南](docs/firmware-analysis.md)                                                     |
 | 軟體包與資源          | 檔案清單、摘要、plist、Apple bundle 結構和提取的資源            | [製品與 JavaScript 指南](docs/javascript-artifact-reconstruction.md)、[Apple 應用](docs/apple-application-analysis.md) |
 | 處理程序行為          | 終端輸出、互動、退出和檔案系統觀察結果，以及執行對比            | 支援原生 PTY 的 Linux/macOS；[處理程序擷取](docs/process-capture.md)                                                   |
@@ -278,6 +279,9 @@ npx rea-agents@latest setup
 
 REA 用於合法的研究、教育、互通性、軟體保存，以及分析你擁有或獲准檢查的軟體。
 
+本專案對非法或未經授權使用的立場涵蓋所有 REA 版本、分發管道和執行平台；
+每份副本仍適用其隨附的授權。
+
 ## 參與貢獻
 
 歡迎幫助改進 REA！你可以[提交 issue](https://github.com/morluto/rea/issues) 報告錯誤或建議功能，也可以[提交 pull request](https://github.com/morluto/rea/pulls) 改進程式碼或文件。
@@ -287,3 +291,11 @@ REA 用於合法的研究、教育、互通性、軟體保存，以及分析你�
 ## 授權條款
 
 [MIT](LICENSE)
+
+REA 自行編寫的程式碼採用 MIT 授權；第三方內容保留各自的授權和著作權聲明。
+依賴清單、授權原文及外部工具條款見[第三方聲明](THIRD_PARTY_NOTICES.md)。
+
+**使用者須自行合法取得商用工具及所需使用權**，包括 IDA Pro / Hex-Rays 反編譯器、
+Hopper 和 JEB，並遵守各自授權。REA 不提供工具授權、金鑰或啟用權利；試用版和
+展示版也須遵守廠商對使用者、功能、自動化及輸出分享的限制。不得使用破解副本、
+竊取或違規共用金鑰，也不得繞過授權限制。本指引不變更 MIT 或第三方授權。
