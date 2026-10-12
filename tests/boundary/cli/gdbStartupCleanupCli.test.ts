@@ -8,6 +8,57 @@ import { CLI_COMMANDS } from "../../../src/cliCommandNames.js";
 import type { CliInstance } from "../../../src/cli/types.js";
 import type { GdbSessionManager } from "../../../src/gdb/GdbSessionManager.js";
 
+const registerGdbCommand = (
+  createManager: () => GdbSessionManager,
+): {
+  run(input: { args: { command: string }; options: { inferiorTty: string } }): Promise<unknown>;
+} => {
+  const commands = new Map<string, { run(input: { args: { command: string }; options: { inferiorTty: string } }): Promise<unknown> }>();
+  const cli = {
+    command: (name: string, definition: { run(input: { args: { command: string }; options: { inferiorTty: string } }): Promise<unknown> }) => {
+      commands.set(name, definition);
+      return cli;
+    },
+  } as unknown as CliInstance;
+  registerReverseEngineeringCommands(cli, pino({ enabled: false }), {}, () => createManager());
+  const command = commands.get(CLI_COMMANDS.debugWithGdb);
+  if (command === undefined) throw new Error("GDB CLI command was not registered");
+  return command;
+};
+
+it.each([
+  "source /tmp/gdbinit",
+  "python print('x')",
+  "run > /tmp/out",
+  "set inferior-t /dev/null",
+  "with inferior-t /dev/null -- run",
+]) (
+  "rejects one-shot command %s before starting GDB",
+  async (inputCommand) => {
+    const manager = {
+      start: vi.fn(),
+      closeAll: vi.fn(),
+    } as unknown as GdbSessionManager;
+    const command = registerGdbCommand(() => manager);
+    const result = await command.run({
+      args: { command: inputCommand },
+      options: { inferiorTty: "/dev/pts/42" },
+    });
+    expect(result).toMatchObject({
+      code: "invalid_request",
+      details: {
+        issues: [
+          expect.objectContaining({
+            message: expect.stringContaining("persistent GDB session workflow"),
+          }),
+        ],
+      },
+    });
+    expect(manager.start).not.toHaveBeenCalled();
+    expect(manager.closeAll).not.toHaveBeenCalled();
+  },
+);
+
 it("retries retained GDB cleanup when CLI session startup fails", async () => {
   const commands = new Map<string, { run(input: { args: { command: string }; options: { inferiorTty: string } }): Promise<unknown> }>();
   const cli = {

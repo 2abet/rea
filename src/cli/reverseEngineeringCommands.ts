@@ -3,7 +3,7 @@ import type { Logger } from "pino";
 
 import { createReverseEngineeringService } from "../composition/reverseEngineering.js";
 import { AnalysisError } from "../domain/analysisErrorBase.js";
-import { AnalysisOutputError } from "../domain/analysisErrorCore.js";
+import { AnalysisInputError, AnalysisOutputError } from "../domain/analysisErrorCore.js";
 import { evidenceSchema, type Evidence } from "../domain/evidence.js";
 import type { Result } from "../domain/result.js";
 import { err } from "../domain/result.js";
@@ -13,7 +13,10 @@ import type { CliInstance } from "./types.js";
 import { withCommandCancellation } from "./commandCancellation.js";
 import { CLI_COMMANDS } from "../cliCommandNames.js";
 import type { ReverseEngineeringService } from "../application/reverse/ReverseEngineeringService.js";
-import { GdbSessionManager } from "../gdb/GdbSessionManager.js";
+import {
+  GdbSessionManager,
+  gdbOneShotCommandMayInvalidateDetachProof,
+} from "../gdb/GdbSessionManager.js";
 
 const executeWithCleanup = async (
   service: ReverseEngineeringService,
@@ -175,6 +178,17 @@ export const registerReverseEngineeringCommands = (
     run: ({ args, options }) =>
       withCommandCancellation((signal) =>
         logCliCommand(logger, CLI_COMMANDS.debugWithGdb, async () => {
+          if (gdbOneShotCommandMayInvalidateDetachProof(args.command))
+            return projectAnalysisError(
+              new AnalysisInputError("gdb_console", undefined, [
+                {
+                  path: ["command"],
+                  reason: "invalid_value",
+                  message:
+                    "This command can invalidate the verified inferior output route; use the persistent GDB session workflow.",
+                },
+              ]),
+            );
           const manager = createGdbManager(environment);
           let sessionId: string | undefined;
           try {
