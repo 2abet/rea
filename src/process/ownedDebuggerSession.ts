@@ -3,14 +3,36 @@ export type OwnedDebuggerStopResult =
   | { readonly status: "stopped" | "already_exited" }
   | { readonly status: "incomplete"; readonly reason: string };
 
+const DETACH_TIMEOUT_MS = 1_000;
+
+const waitForInferiorDetach = async (
+  detach: () => Promise<"detached" | "no-inferior">,
+): Promise<"detached" | "no-inferior" | undefined> => {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      detach(),
+      new Promise<undefined>((resolve) => {
+        timer = setTimeout(() => resolve(undefined), DETACH_TIMEOUT_MS);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+};
+
 interface OwnedDebuggerProcess {
   readonly id: string;
   readonly exited: boolean;
   readonly launched: {
     readonly process: { kill(signal: NodeJS.Signals): boolean };
   };
+  /** Must return only after the provider verifies detachment or no inferior. */
+  readonly detachInferior?: () => Promise<"detached" | "no-inferior">;
   readonly supervisor: {
     waitForExit(timeoutMs: number): Promise<boolean>;
+    /** WindowsOwnedProcess closes output only after the whole Job Object settles. */
+    waitForOutputClose(timeoutMs: number): Promise<boolean>;
     unrefOutputStreams(): void;
     dispose(): void;
   };
@@ -24,6 +46,20 @@ export const stopOwnedDebuggerProcess = async (
 ): Promise<OwnedDebuggerStopResult> => {
   const platform = options.platform ?? process.platform;
   if (session.exited) {
+    if (platform === "win32") {
+      try {
+        if (!(await session.supervisor.waitForOutputClose(1_000)))
+          return {
+            status: "incomplete",
+            reason: `Owned ${debuggerName} process leader exited, but its Windows Job Object still has active descendants or has not reported settlement.`,
+          };
+      } catch (cause: unknown) {
+        return {
+          status: "incomplete",
+          reason: `Owned ${debuggerName} Windows Job Object settlement could not be verified: ${cause instanceof Error ? cause.message : String(cause)}`,
+        };
+      }
+    }
     if (platform !== "win32") session.supervisor.unrefOutputStreams();
     session.supervisor.dispose();
     return { status: "already_exited" };
@@ -33,6 +69,29 @@ export const stopOwnedDebuggerProcess = async (
       status: "incomplete",
       reason: `Owned ${debuggerName} process cannot be stopped safely on Windows because job termination can also terminate its inferior processes.`,
     };
+  try {
+    if (session.detachInferior === undefined)
+      return {
+        status: "incomplete",
+        reason: `Owned ${debuggerName} inferior detach cannot be verified because the provider has no detach capability.`,
+      };
+    const detached = await waitForInferiorDetach(session.detachInferior);
+    if (detached === undefined)
+      return {
+        status: "incomplete",
+        reason: `Owned ${debuggerName} inferior detach was not verified within ${DETACH_TIMEOUT_MS} ms.`,
+      };
+    if (detached !== "detached" && detached !== "no-inferior")
+      return {
+        status: "incomplete",
+        reason: `Owned ${debuggerName} provider did not confirm inferior detachment or absence.`,
+      };
+  } catch (cause: unknown) {
+    return {
+      status: "incomplete",
+      reason: `Owned ${debuggerName} inferior detach could not be verified: ${cause instanceof Error ? cause.message : String(cause)}`,
+    };
+  }
   session.launched.process.kill("SIGTERM");
   if (!(await session.supervisor.waitForExit(300))) {
     session.launched.process.kill("SIGKILL");

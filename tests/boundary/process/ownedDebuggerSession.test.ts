@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 
 import {
   closeOwnedDebuggerSessions,
@@ -25,11 +25,13 @@ it("retains process supervision after an incomplete stop and disposes after a re
         },
       },
     },
+    detachInferior: async () => "detached" as const,
     supervisor: {
       waitForExit: async (): Promise<boolean> => {
         waits += 1;
         return waits === 3;
       },
+      waitForOutputClose: async (): Promise<boolean> => true,
       dispose: (): void => {
         disposals += 1;
       },
@@ -74,6 +76,7 @@ it("refuses Windows job-backed debugger termination before signaling", async () 
     },
     supervisor: {
       waitForExit: async (): Promise<boolean> => false,
+      waitForOutputClose: async (): Promise<boolean> => false,
       dispose: (): void => {},
       unrefOutputStreams: (): void => {
         outputUnrefs += 1;
@@ -92,7 +95,7 @@ it("refuses Windows job-backed debugger termination before signaling", async () 
   expect(outputUnrefs).toBe(0);
 });
 
-it("disposes an already-exited Windows session without unreferencing its streams", async () => {
+it("retains an already-exited Windows session while its job has descendants", async () => {
   let outputUnrefs = 0;
   let disposals = 0;
   const result = await stopOwnedDebuggerProcess(
@@ -102,6 +105,7 @@ it("disposes an already-exited Windows session without unreferencing its streams
       launched: { process: { kill: () => true } },
       supervisor: {
         waitForExit: async () => false,
+        waitForOutputClose: async () => false,
         dispose: () => {
           disposals += 1;
         },
@@ -114,9 +118,107 @@ it("disposes an already-exited Windows session without unreferencing its streams
     { platform: "win32" },
   );
 
-  expect(result).toEqual({ status: "already_exited" });
-  expect(disposals).toBe(1);
+  expect(result).toEqual({
+    status: "incomplete",
+    reason:
+      "Owned GDB process leader exited, but its Windows Job Object still has active descendants or has not reported settlement.",
+  });
+  expect(disposals).toBe(0);
   expect(outputUnrefs).toBe(0);
+});
+
+it("does not signal a POSIX debugger when provider detach cannot be verified", async () => {
+  const signals: NodeJS.Signals[] = [];
+  const result = await stopOwnedDebuggerProcess(
+    {
+      id: "unverified-detach",
+      exited: false,
+      launched: { process: { kill: (signal) => (signals.push(signal), true) } },
+      detachInferior: async () => {
+        throw new Error("MI detach failed");
+      },
+      supervisor: {
+        waitForExit: async () => false,
+        waitForOutputClose: async () => false,
+        dispose: () => {},
+        unrefOutputStreams: () => {},
+      },
+    },
+    "GDB",
+    { platform: "linux" },
+  );
+
+  expect(result).toEqual({
+    status: "incomplete",
+    reason: "Owned GDB inferior detach could not be verified: MI detach failed",
+  });
+  expect(signals).toEqual([]);
+});
+
+it("retains an owned debugger when inferior detach does not settle", async () => {
+  vi.useFakeTimers();
+  const signals: NodeJS.Signals[] = [];
+  let disposals = 0;
+  try {
+    const attempt = stopOwnedDebuggerProcess(
+      {
+        id: "detach-timeout",
+        exited: false,
+        launched: {
+          process: { kill: (signal) => (signals.push(signal), true) },
+        },
+        detachInferior: () => new Promise(() => {}),
+        supervisor: {
+          waitForExit: async () => false,
+          waitForOutputClose: async () => false,
+          dispose: () => {
+            disposals += 1;
+          },
+          unrefOutputStreams: () => {},
+        },
+      },
+      "GDB",
+      { platform: "linux" },
+    );
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(await attempt).toEqual({
+      status: "incomplete",
+      reason: "Owned GDB inferior detach was not verified within 1000 ms.",
+    });
+    expect(signals).toEqual([]);
+    expect(disposals).toBe(0);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("requires the Windows Job Object to close before releasing an exited session", async () => {
+  let closeWaits = 0;
+  let disposals = 0;
+  const session = {
+    id: "windows-job-settlement",
+    exited: true,
+    launched: { process: { kill: () => true } },
+    supervisor: {
+      waitForExit: async () => true,
+      waitForOutputClose: async () => ++closeWaits > 1,
+      dispose: () => {
+        disposals += 1;
+      },
+      unrefOutputStreams: () => {},
+    },
+  };
+
+  expect(
+    await stopOwnedDebuggerProcess(session, "GDB", { platform: "win32" }),
+  ).toMatchObject({ status: "incomplete" });
+  expect(disposals).toBe(0);
+  expect(
+    await stopOwnedDebuggerProcess(session, "GDB", { platform: "win32" }),
+  ).toEqual({ status: "already_exited" });
+  expect(closeWaits).toBe(2);
+  expect(disposals).toBe(1);
 });
 
 it("disposes supervision when a process had already exited", async () => {
@@ -130,6 +232,7 @@ it("disposes supervision when a process had already exited", async () => {
       launched: { process: { kill: () => true } },
       supervisor: {
         waitForExit: async () => false,
+        waitForOutputClose: async () => true,
         dispose: () => {
           lifecycle.push("dispose");
           disposals += 1;
@@ -166,8 +269,10 @@ it("does not escalate when the debugger exits after SIGTERM", async () => {
           },
         },
       },
+      detachInferior: async () => "detached" as const,
       supervisor: {
         waitForExit: async () => true,
+        waitForOutputClose: async () => true,
         dispose: () => {
           lifecycle.push("dispose");
           disposals += 1;
@@ -202,11 +307,13 @@ it("disposes supervision when the debugger exits after SIGKILL", async () => {
           },
         },
       },
+      detachInferior: async () => "detached" as const,
       supervisor: {
         waitForExit: async () => {
           waits += 1;
           return waits === 2;
         },
+        waitForOutputClose: async () => true,
         dispose: () => {
           lifecycle.push("dispose");
           disposals += 1;
@@ -261,6 +368,7 @@ it.skipIf(process.platform === "win32")(
       "  child.once('error', reject);",
       "});",
       "const session = { id: 'debugger', get exited() { return child.exitCode !== null || child.signalCode !== null; }, launched: { process: child }, supervisor };",
+      "session.detachInferior = async () => 'detached';",
       "const result = await stopOwnedDebuggerProcess(session, 'GDB', { platform: 'linux' });",
       "process.stdout.write(JSON.stringify({ pid, result }));",
     ].join("\n");
@@ -411,6 +519,7 @@ it.skipIf(process.platform === "win32")(
             return child.exitCode !== null || child.signalCode !== null;
           },
           launched: { process: child },
+          detachInferior: async () => "detached" as const,
           supervisor,
         },
         "GDB",

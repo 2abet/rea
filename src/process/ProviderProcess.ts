@@ -324,7 +324,7 @@ export class ProviderProcessSupervisor {
     );
   }
 
-  /** Wait until the producer has closed its output streams; exit alone does not prove complete output. */
+  /** Wait until output streams close; WindowsOwnedProcess closes only after its whole Job Object settles. */
   async waitForOutputClose(timeoutMs: number): Promise<boolean> {
     return waitForProcessEvent(
       this.#outputClosed,
