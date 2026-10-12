@@ -46,7 +46,10 @@ it("does not follow DWARF debug links by default", async () => {
   });
 
   try {
-    const result = await service.inspectWithObjdump({ path, operation: "dwarf" });
+    const result = await service.inspectWithObjdump({
+      path,
+      operation: "dwarf",
+    });
     expect(result.ok).toBe(true);
     expect(calls[0]).toEqual(["-W", "-WN", path]);
     if (result.ok)
@@ -237,7 +240,10 @@ it("retains and retries an owned cleanup after an output-limit failure", async (
   });
 
   try {
-    const result = await service.executeRizinCommand({ path, command: "wx 00" });
+    const result = await service.executeRizinCommand({
+      path,
+      command: "wx 00",
+    });
     expect(result).toMatchObject({
       ok: false,
       error: {
@@ -490,40 +496,40 @@ it("records a changed artifact and unknown post-run digest separately", async ()
 it.each(["EACCES", "EPERM"] as const)(
   "retains captured output on a permission-denied provider result (%s)",
   async (code) => {
-  const { directory, path } = await createArtifact();
-  const service = new ReverseEngineeringService({
-    run: async () => {
-      throw Object.assign(new Error("provider permission denied"), {
-        stdout: "partial provider output",
-        stderr: "permission diagnostic",
-        code,
-        signal: null,
-        killed: false,
-      });
-    },
-  });
-
-  try {
-    const result = await service.inspectWithObjdump({
-      path,
-      operation: "file_headers",
-    });
-    expect(result).toMatchObject({
-      ok: false,
-      error: {
-        _tag: "AnalysisAccessDeniedError",
-        capturedOutput: {
+    const { directory, path } = await createArtifact();
+    const service = new ReverseEngineeringService({
+      run: async () => {
+        throw Object.assign(new Error("provider permission denied"), {
           stdout: "partial provider output",
           stderr: "permission diagnostic",
-        },
-        partialObservation: {
-          raw_result: { stdout: "partial provider output" },
-        },
+          code,
+          signal: null,
+          killed: false,
+        });
       },
     });
-  } finally {
-    await rm(directory, { recursive: true, force: true });
-  }
+
+    try {
+      const result = await service.inspectWithObjdump({
+        path,
+        operation: "file_headers",
+      });
+      expect(result).toMatchObject({
+        ok: false,
+        error: {
+          _tag: "AnalysisAccessDeniedError",
+          capturedOutput: {
+            stdout: "partial provider output",
+            stderr: "permission diagnostic",
+          },
+          partialObservation: {
+            raw_result: { stdout: "partial provider output" },
+          },
+        },
+      });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   },
 );
 
@@ -601,10 +607,17 @@ it("classifies a captured ENOENT as provider unavailability", async () => {
     signal: null,
     killed: false,
   });
-  const service = new ReverseEngineeringService({ run: async () => { throw cause; } });
+  const service = new ReverseEngineeringService({
+    run: async () => {
+      throw cause;
+    },
+  });
 
   try {
-    const result = await service.inspectWithObjdump({ path, operation: "file_headers" });
+    const result = await service.inspectWithObjdump({
+      path,
+      operation: "file_headers",
+    });
     expect(result).toMatchObject({
       ok: false,
       error: {
@@ -721,20 +734,22 @@ it("waits for active provider cleanup during shutdown and rejects new work", asy
     .mockResolvedValueOnce({ status: "incomplete", reason: "still running" })
     .mockResolvedValueOnce({ status: "verified-cleanup" });
   const cleanupOwner = { stop } as unknown as ProviderProcessSupervisor;
-  const runOwned = vi.fn<typeof runOwnedCommand>(async (_spawn, _limits, options) => {
-    signal = options?.signal;
-    announceStarted?.();
-    await providerGate;
-    throw new OwnedCommandFailure(
-      "cancelled",
-      "Command cancelled during shutdown.",
-      providerSnapshot({ exitCode: null }),
-      "still running",
-      undefined,
-      ["run-id", "pid:42"],
-      cleanupOwner,
-    );
-  });
+  const runOwned = vi.fn<typeof runOwnedCommand>(
+    async (_spawn, _limits, options) => {
+      signal = options?.signal;
+      announceStarted?.();
+      await providerGate;
+      throw new OwnedCommandFailure(
+        "cancelled",
+        "Command cancelled during shutdown.",
+        providerSnapshot({ exitCode: null }),
+        "still running",
+        undefined,
+        ["run-id", "pid:42"],
+        cleanupOwner,
+      );
+    },
+  );
   const service = new ReverseEngineeringService({ runOwned });
 
   try {
@@ -808,7 +823,13 @@ it.each([
     null,
     false,
   ],
-  ["unknown exit status", providerSnapshot({ exitCode: null }), "unknown", null, false],
+  [
+    "unknown exit status",
+    providerSnapshot({ exitCode: null }),
+    "unknown",
+    null,
+    false,
+  ],
 ] as const)(
   "maps an owned command %s into provider Evidence",
   async (_name, snapshot, completion, exitCode, outputTruncated) => {
@@ -953,7 +974,10 @@ it("maps an uncaptured owned launcher error to provider unavailability", async (
     const result = await service.executeRizinCommand({ path, command: "iI" });
     expect(result).toMatchObject({
       ok: false,
-      error: { _tag: "AnalysisCapabilityUnavailableError", providerId: "rizin" },
+      error: {
+        _tag: "AnalysisCapabilityUnavailableError",
+        providerId: "rizin",
+      },
     });
   } finally {
     await rm(directory, { recursive: true, force: true });
@@ -963,7 +987,9 @@ it("maps an uncaptured owned launcher error to provider unavailability", async (
 it("forwards a caller abort signal to the owned command supervisor", async () => {
   const { directory, path } = await createArtifact();
   const controller = new AbortController();
-  const runOwned = vi.fn<typeof runOwnedCommand>(async () => providerSnapshot());
+  const runOwned = vi.fn<typeof runOwnedCommand>(async () =>
+    providerSnapshot(),
+  );
   const service = new ReverseEngineeringService({ runOwned });
 
   try {
@@ -994,7 +1020,12 @@ it("does not classify a completed provider call as cancelled for a live signal",
     );
     expect(result).toMatchObject({
       ok: true,
-      value: { raw_result: { stdout: "completed output", completion_status: "complete" } },
+      value: {
+        raw_result: {
+          stdout: "completed output",
+          completion_status: "complete",
+        },
+      },
     });
   } finally {
     await rm(directory, { recursive: true, force: true });
@@ -1060,7 +1091,11 @@ it("classifies E2BIG as a provider command resource constraint", async () => {
         "Command launch failed.",
         null,
         null,
-        { cause: Object.assign(new Error("argument list too long"), { code: "E2BIG" }) },
+        {
+          cause: Object.assign(new Error("argument list too long"), {
+            code: "E2BIG",
+          }),
+        },
       );
     },
   });
