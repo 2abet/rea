@@ -31,18 +31,23 @@ it.skipIf(process.platform === "win32")(
   async () => {
     const directory = await mkdtemp(join(tmpdir(), "rea-rizin-cancel-settle-"));
     const path = join(directory, "fixture.bin");
-    const marker = join(directory, "started");
+    const descendantStartedMarker = join(directory, "descendant-started");
     const descendantMarker = join(directory, "descendant-finished");
     const provider = join(directory, "slow-rizin.mjs");
+    const descendantScript = [
+      "const fs = require('node:fs');",
+      "process.on('SIGTERM', () => {});",
+      "fs.writeFileSync(process.env.REA_TEST_DESCENDANT_STARTED, 'started');",
+      "setTimeout(() => fs.writeFileSync(process.env.REA_TEST_DESCENDANT, 'finished'), 500);",
+      "setInterval(() => {}, 1000);",
+    ].join("\n");
     await writeFile(path, "before");
     await writeFile(
       provider,
       `#!${process.execPath}
-import { writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
-writeFileSync(process.env.REA_TEST_STARTED, "started");
 process.stdout.write("provider output before cancellation");
-const child = spawn(process.execPath, ["-e", "process.on('SIGTERM', () => {}); setTimeout(() => require('node:fs').writeFileSync(process.env.REA_TEST_DESCENDANT, 'finished'), 500)"], { env: process.env, stdio: "ignore" });
+const child = spawn(process.execPath, ["-e", ${JSON.stringify(descendantScript)}], { env: process.env, stdio: "ignore" });
 setInterval(() => {}, 1000);
 `,
     );
@@ -52,27 +57,28 @@ setInterval(() => {}, 1000);
       environment: {
         REA_RIZIN_COMMAND: provider,
         REA_TEST_ARTIFACT: path,
-        REA_TEST_STARTED: marker,
+        REA_TEST_DESCENDANT_STARTED: descendantStartedMarker,
         REA_TEST_DESCENDANT: descendantMarker,
       },
     });
 
+    let pending: ReturnType<typeof service.executeRizinCommand> | undefined;
     try {
-      const pending = service.executeRizinCommand(
+      pending = service.executeRizinCommand(
         { path, command: "sleep" },
         { signal: controller.signal },
       );
-      let processStarted = false;
+      let descendantStarted = false;
       for (let attempt = 0; attempt < 500; attempt += 1) {
         try {
-          await readFile(marker);
-          processStarted = true;
+          await readFile(descendantStartedMarker);
+          descendantStarted = true;
           break;
         } catch {
           await new Promise((resolveDelay) => setTimeout(resolveDelay, 10));
         }
       }
-      expect(processStarted).toBe(true);
+      expect(descendantStarted).toBe(true);
       controller.abort();
 
       const result = await pending;
@@ -101,6 +107,9 @@ setInterval(() => {}, 1000);
         code: "ENOENT",
       });
     } finally {
+      controller.abort();
+      await pending?.catch(() => undefined);
+      await service.close().catch(() => undefined);
       await rm(directory, { recursive: true, force: true });
     }
   },
