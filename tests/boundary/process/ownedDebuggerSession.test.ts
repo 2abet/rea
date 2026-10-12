@@ -25,7 +25,11 @@ it("retains process supervision after an incomplete stop and disposes after a re
         },
       },
     },
-    detachInferior: async () => "detached" as const,
+    detachInferior: async () =>
+      ({
+        status: "detached",
+        outputSink: "durable",
+      }) as const,
     supervisor: {
       waitForExit: async (): Promise<boolean> => {
         waits += 1;
@@ -127,6 +131,38 @@ it("retains an already-exited Windows session while its job has descendants", as
   expect(outputUnrefs).toBe(0);
 });
 
+it("retains an exited POSIX session while descendants still hold its output streams", async () => {
+  let outputUnrefs = 0;
+  let disposals = 0;
+  const result = await stopOwnedDebuggerProcess(
+    {
+      id: "posix-already-exited-with-descendant",
+      exited: true,
+      launched: { process: { kill: () => true } },
+      supervisor: {
+        waitForExit: async () => true,
+        waitForOutputClose: async () => false,
+        dispose: () => {
+          disposals += 1;
+        },
+        unrefOutputStreams: () => {
+          outputUnrefs += 1;
+        },
+      },
+    },
+    "GDB",
+    { platform: "linux" },
+  );
+
+  expect(result).toEqual({
+    status: "incomplete",
+    reason:
+      "Owned GDB process leader exited, but inherited output streams are still open or have not reported settlement.",
+  });
+  expect(disposals).toBe(0);
+  expect(outputUnrefs).toBe(0);
+});
+
 it("does not signal a POSIX debugger when provider detach cannot be verified", async () => {
   const signals: NodeJS.Signals[] = [];
   const result = await stopOwnedDebuggerProcess(
@@ -155,39 +191,126 @@ it("does not signal a POSIX debugger when provider detach cannot be verified", a
   expect(signals).toEqual([]);
 });
 
+it("allows closing when the provider confirms no inferior is attached", async () => {
+  const signals: NodeJS.Signals[] = [];
+  const result = await stopOwnedDebuggerProcess(
+    {
+      id: "no-inferior",
+      exited: false,
+      launched: { process: { kill: (signal) => (signals.push(signal), true) } },
+      detachInferior: async () => ({ status: "no-inferior" }),
+      supervisor: {
+        waitForExit: async () => true,
+        waitForOutputClose: async () => false,
+        dispose: () => {},
+        unrefOutputStreams: () => {},
+      },
+    },
+    "GDB",
+    { platform: "linux" },
+  );
+
+  expect(result).toEqual({ status: "stopped" });
+  expect(signals).toEqual(["SIGTERM"]);
+});
+
+it("fails closed when detach lacks durable output sink confirmation", async () => {
+  const signals: NodeJS.Signals[] = [];
+  const result = await stopOwnedDebuggerProcess(
+    {
+      id: "non-durable-sink",
+      exited: false,
+      launched: { process: { kill: (signal) => (signals.push(signal), true) } },
+      detachInferior: async () => ({ status: "detached" }) as never,
+      supervisor: {
+        waitForExit: async () => true,
+        waitForOutputClose: async () => false,
+        dispose: () => {},
+        unrefOutputStreams: () => {},
+      },
+    },
+    "GDB",
+    { platform: "linux" },
+  );
+
+  expect(result).toEqual({
+    status: "incomplete",
+    reason:
+      "Owned GDB provider did not confirm no inferior or detachment with a durable output sink.",
+  });
+  expect(signals).toEqual([]);
+});
+
 it("retains an owned debugger when inferior detach does not settle", async () => {
   vi.useFakeTimers();
   const signals: NodeJS.Signals[] = [];
+  let detachCalls = 0;
+  let resolveDetach!: (value: {
+    readonly status: "detached";
+    readonly outputSink: "durable";
+  }) => void;
   let disposals = 0;
   try {
-    const attempt = stopOwnedDebuggerProcess(
-      {
-        id: "detach-timeout",
-        exited: false,
-        launched: {
-          process: { kill: (signal) => (signals.push(signal), true) },
-        },
-        detachInferior: () => new Promise(() => {}),
-        supervisor: {
-          waitForExit: async () => false,
-          waitForOutputClose: async () => false,
-          dispose: () => {
-            disposals += 1;
-          },
-          unrefOutputStreams: () => {},
+    const session = {
+      id: "detach-timeout",
+      exited: false,
+      launched: {
+        process: {
+          kill: (signal: NodeJS.Signals) => (signals.push(signal), true),
         },
       },
-      "GDB",
-      { platform: "linux" },
-    );
+      detachInferior: () => {
+        detachCalls += 1;
+        if (detachCalls > 1)
+          return Promise.resolve({
+            status: "detached",
+            outputSink: "durable",
+          } as const);
+        return new Promise<{
+          readonly status: "detached";
+          readonly outputSink: "durable";
+        }>((resolve) => {
+          resolveDetach = resolve;
+        });
+      },
+      supervisor: {
+        waitForExit: async () => true,
+        waitForOutputClose: async () => false,
+        dispose: () => {
+          disposals += 1;
+        },
+        unrefOutputStreams: () => {},
+      },
+    };
 
+    const attempt = stopOwnedDebuggerProcess(session, "GDB", {
+      platform: "linux",
+    });
     await vi.advanceTimersByTimeAsync(1_000);
     expect(await attempt).toEqual({
       status: "incomplete",
       reason: "Owned GDB inferior detach was not verified within 1000 ms.",
     });
+    const retry = stopOwnedDebuggerProcess(session, "GDB", {
+      platform: "linux",
+    });
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(await retry).toEqual({
+      status: "incomplete",
+      reason: "Owned GDB inferior detach was not verified within 1000 ms.",
+    });
+    expect(detachCalls).toBe(1);
     expect(signals).toEqual([]);
     expect(disposals).toBe(0);
+
+    resolveDetach({ status: "detached", outputSink: "durable" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(
+      await stopOwnedDebuggerProcess(session, "GDB", { platform: "linux" }),
+    ).toEqual({ status: "stopped" });
+    expect(detachCalls).toBe(2);
+    expect(signals).toEqual(["SIGTERM"]);
+    expect(disposals).toBe(1);
   } finally {
     vi.useRealTimers();
   }
@@ -253,6 +376,52 @@ it("disposes supervision when a process had already exited", async () => {
   expect(lifecycle).toEqual(["unref", "dispose"]);
 });
 
+it.skipIf(process.platform === "win32")(
+  "keeps supervision until a late-writing descendant closes inherited output after leader exit",
+  async () => {
+    const inferiorSource = [
+      'setTimeout(() => { process.stdout.write("late-stdout-sentinel\\n"); process.stderr.write("late-stderr-sentinel\\n"); }, 250);',
+      "setTimeout(() => process.exit(0), 400);",
+    ].join("\n");
+    const debuggerSource = [
+      'const { spawn } = require("node:child_process");',
+      `spawn(process.execPath, ["-e", ${JSON.stringify(inferiorSource)}], { stdio: "inherit" });`,
+      "process.exit(0);",
+    ].join("\n");
+    const child = spawn(process.execPath, ["-e", debuggerSource], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const supervisor = new ProviderProcessSupervisor({
+      process: child,
+      ownsProcessLifetime: true,
+    });
+
+    try {
+      await once(child, "exit");
+      const result = await stopOwnedDebuggerProcess(
+        {
+          id: "leader-exited-with-inferior",
+          exited: true,
+          launched: { process: child },
+          supervisor,
+        },
+        "GDB",
+        { platform: "linux" },
+      );
+
+      expect(result).toEqual({ status: "already_exited" });
+      expect(supervisor.snapshot().stdout.text).toContain(
+        "late-stdout-sentinel",
+      );
+      expect(supervisor.snapshot().stderr.text).toContain(
+        "late-stderr-sentinel",
+      );
+    } finally {
+      supervisor.dispose();
+    }
+  },
+);
+
 it("does not escalate when the debugger exits after SIGTERM", async () => {
   const signals: NodeJS.Signals[] = [];
   const lifecycle: string[] = [];
@@ -269,7 +438,11 @@ it("does not escalate when the debugger exits after SIGTERM", async () => {
           },
         },
       },
-      detachInferior: async () => "detached" as const,
+      detachInferior: async () =>
+        ({
+          status: "detached",
+          outputSink: "durable",
+        }) as const,
       supervisor: {
         waitForExit: async () => true,
         waitForOutputClose: async () => true,
@@ -307,7 +480,11 @@ it("disposes supervision when the debugger exits after SIGKILL", async () => {
           },
         },
       },
-      detachInferior: async () => "detached" as const,
+      detachInferior: async () =>
+        ({
+          status: "detached",
+          outputSink: "durable",
+        }) as const,
       supervisor: {
         waitForExit: async () => {
           waits += 1;
@@ -368,7 +545,7 @@ it.skipIf(process.platform === "win32")(
       "  child.once('error', reject);",
       "});",
       "const session = { id: 'debugger', get exited() { return child.exitCode !== null || child.signalCode !== null; }, launched: { process: child }, supervisor };",
-      "session.detachInferior = async () => 'detached';",
+      "session.detachInferior = async () => ({ status: 'detached', outputSink: 'durable' });",
       "const result = await stopOwnedDebuggerProcess(session, 'GDB', { platform: 'linux' });",
       "process.stdout.write(JSON.stringify({ pid, result }));",
     ].join("\n");
@@ -519,7 +696,11 @@ it.skipIf(process.platform === "win32")(
             return child.exitCode !== null || child.signalCode !== null;
           },
           launched: { process: child },
-          detachInferior: async () => "detached" as const,
+          detachInferior: async () =>
+            ({
+              status: "detached",
+              outputSink: "durable",
+            }) as const,
           supervisor,
         },
         "GDB",
