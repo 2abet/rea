@@ -9,6 +9,34 @@ import {
 } from "../../../src/process/ownedDebuggerSession.js";
 import { ProviderProcessSupervisor } from "../../../src/process/ProviderProcess.js";
 
+it("preserves the session receiver when invoking the provider detach callback", async () => {
+  const session = {
+    id: "receiver-bound-detach",
+    exited: false,
+    transport: { verified: true },
+    launched: { process: { kill: vi.fn(() => true) } },
+    async detachInferior(this: { transport: { verified: boolean } }) {
+      expect(this.transport.verified).toBe(true);
+      return { status: "no-inferior" } as const;
+    },
+    supervisor: {
+      waitForExit: async () => true,
+      waitForOutputClose: async () => true,
+      limitAdditionalOutputBytes: vi.fn(),
+      dispose: vi.fn(),
+      unrefOutputStreams: vi.fn(),
+      disposeAfterOutputClose: vi.fn(),
+    },
+  };
+
+  await expect(
+    stopOwnedDebuggerProcess(session, "GDB", { platform: "linux" }),
+  ).resolves.toEqual({ status: "stopped" });
+  expect(session.supervisor.limitAdditionalOutputBytes).toHaveBeenCalledWith(
+    64 * 1024,
+  );
+});
+
 it("retains process supervision after an incomplete stop and disposes after a retry observes exit", async () => {
   let waits = 0;
   let disposals = 0;
@@ -35,6 +63,7 @@ it("retains process supervision after an incomplete stop and disposes after a re
         waits += 1;
         return waits === 3;
       },
+      limitAdditionalOutputBytes: vi.fn(),
       waitForOutputClose: async (): Promise<boolean> => true,
       dispose: (): void => {
         disposals += 1;
@@ -81,6 +110,7 @@ it("refuses Windows job-backed debugger termination before signaling", async () 
     },
     supervisor: {
       waitForExit: async (): Promise<boolean> => false,
+      limitAdditionalOutputBytes: vi.fn(),
       waitForOutputClose: async (): Promise<boolean> => false,
       dispose: (): void => {},
       unrefOutputStreams: (): void => {
@@ -111,6 +141,7 @@ it("retains an already-exited Windows session while its job has descendants", as
       launched: { process: { kill: () => true } },
       supervisor: {
         waitForExit: async () => false,
+        limitAdditionalOutputBytes: vi.fn(),
         waitForOutputClose: async () => false,
         dispose: () => {
           disposals += 1;
@@ -144,6 +175,7 @@ it("retains an exited POSIX session while descendants still hold its output stre
       launched: { process: { kill: () => true } },
       supervisor: {
         waitForExit: async () => true,
+        limitAdditionalOutputBytes: vi.fn(),
         waitForOutputClose: async () => false,
         dispose: () => {
           disposals += 1;
@@ -179,6 +211,7 @@ it("does not signal a POSIX debugger when provider detach cannot be verified", a
       },
       supervisor: {
         waitForExit: async () => false,
+        limitAdditionalOutputBytes: vi.fn(),
         waitForOutputClose: async () => false,
         dispose: () => {},
         unrefOutputStreams: () => {},
@@ -210,6 +243,7 @@ it("retains an exited debugger after provider detach failed", async () => {
     },
     supervisor: {
       waitForExit: async () => true,
+      limitAdditionalOutputBytes: vi.fn(),
       waitForOutputClose: async () => true,
       dispose: () => {
         disposals += 1;
@@ -249,6 +283,7 @@ it("allows closing when the provider confirms no inferior is attached", async ()
       detachInferior: async () => ({ status: "no-inferior" }),
       supervisor: {
         waitForExit: async () => true,
+        limitAdditionalOutputBytes: vi.fn(),
         waitForOutputClose: async () => true,
         dispose: () => {},
         unrefOutputStreams: () => {},
@@ -273,6 +308,7 @@ it("fails closed when detach lacks durable output sink confirmation", async () =
       detachInferior: async () => ({ status: "detached" }) as never,
       supervisor: {
         waitForExit: async () => true,
+        limitAdditionalOutputBytes: vi.fn(),
         waitForOutputClose: async () => false,
         dispose: () => {},
         unrefOutputStreams: () => {},
@@ -325,6 +361,7 @@ it("retains an owned debugger when inferior detach does not settle", async () =>
       },
       supervisor: {
         waitForExit: async () => true,
+        limitAdditionalOutputBytes: vi.fn(),
         waitForOutputClose: async () => true,
         dispose: () => {
           disposals += 1;
@@ -386,6 +423,7 @@ it("retains an exited session while a timed-out detach attempt is still pending"
     },
     supervisor: {
       waitForExit: async () => true,
+      limitAdditionalOutputBytes: vi.fn(),
       waitForOutputClose: async () => true,
       dispose: vi.fn(),
       unrefOutputStreams: vi.fn(),
@@ -442,6 +480,7 @@ it("requires the Windows Job Object to close before releasing an exited session"
     launched: { process: { kill: () => true } },
     supervisor: {
       waitForExit: async () => true,
+      limitAdditionalOutputBytes: vi.fn(),
       waitForOutputClose: async () => ++closeWaits > 1,
       dispose: () => {
         disposals += 1;
@@ -473,6 +512,7 @@ it("disposes supervision when a process had already exited", async () => {
       launched: { process: { kill: () => true } },
       supervisor: {
         waitForExit: async () => false,
+        limitAdditionalOutputBytes: vi.fn(),
         waitForOutputClose: async () => true,
         dispose: () => {
           lifecycle.push("dispose");
@@ -541,6 +581,59 @@ it.skipIf(process.platform === "win32")(
   },
 );
 
+it.skipIf(process.platform === "win32")(
+  "keeps late debugger output bounded and drained across cleanup retries",
+  async () => {
+    const inferiorSource = [
+      'setTimeout(() => { process.stdout.write("a".repeat(40 * 1024)); process.stderr.write("b".repeat(40 * 1024)); }, 250);',
+      'setTimeout(() => { process.stdout.write("c".repeat(40 * 1024)); process.stderr.write("d".repeat(40 * 1024)); }, 1250);',
+      "setTimeout(() => process.exit(0), 1400);",
+    ].join("\n");
+    const debuggerSource = [
+      'const { spawn } = require("node:child_process");',
+      `spawn(process.execPath, ["-e", ${JSON.stringify(inferiorSource)}], { stdio: "inherit" });`,
+      "process.exit(0);",
+    ].join("\n");
+    const child = spawn(process.execPath, ["-e", debuggerSource], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const supervisor = new ProviderProcessSupervisor({
+      process: child,
+      ownsProcessLifetime: true,
+    });
+    const session = {
+      id: "leader-exited-retrying-inferior",
+      exited: true,
+      launched: { process: child },
+      supervisor,
+    };
+
+    try {
+      await once(child, "exit");
+      const first = await stopOwnedDebuggerProcess(session, "GDB", {
+        platform: "linux",
+      });
+      expect(first.status).toBe("incomplete");
+      expect(supervisor.snapshot().stdout.observedBytes).toBe(40 * 1024);
+      expect(supervisor.snapshot().stderr.observedBytes).toBe(40 * 1024);
+
+      const second = await stopOwnedDebuggerProcess(session, "GDB", {
+        platform: "linux",
+      });
+      expect(second).toEqual({ status: "already_exited" });
+      const snapshot = supervisor.snapshot();
+      expect(snapshot.stdout.observedBytes).toBe(80 * 1024);
+      expect(snapshot.stderr.observedBytes).toBe(80 * 1024);
+      expect(snapshot.stdout.bytes + snapshot.stderr.bytes).toBe(64 * 1024);
+      expect(snapshot.diagnosticTruncated).toBe(true);
+    } finally {
+      if (child.exitCode === null && child.signalCode === null)
+        child.kill("SIGKILL");
+      supervisor.dispose();
+    }
+  },
+);
+
 it("does not escalate when the debugger exits after SIGTERM", async () => {
   const signals: NodeJS.Signals[] = [];
   const lifecycle: string[] = [];
@@ -564,6 +657,7 @@ it("does not escalate when the debugger exits after SIGTERM", async () => {
         }) as const,
       supervisor: {
         waitForExit: async () => true,
+        limitAdditionalOutputBytes: vi.fn(),
         waitForOutputClose: async () => true,
         dispose: () => {
           lifecycle.push("dispose");
@@ -610,6 +704,7 @@ it("disposes supervision when the debugger exits after SIGKILL", async () => {
           waits += 1;
           return waits === 2;
         },
+        limitAdditionalOutputBytes: vi.fn(),
         waitForOutputClose: async () => true,
         dispose: () => {
           lifecycle.push("dispose");

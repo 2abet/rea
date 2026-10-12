@@ -4,6 +4,7 @@ export type OwnedDebuggerStopResult =
   | { readonly status: "incomplete"; readonly reason: string };
 
 const DETACH_TIMEOUT_MS = 1_000;
+const MAX_LATE_DEBUGGER_OUTPUT_BYTES = 64 * 1024;
 export type OwnedDebuggerDetachResult =
   | { readonly status: "no-inferior" }
   | { readonly status: "detached"; readonly outputSink: "durable" };
@@ -30,7 +31,8 @@ const waitForInferiorDetach = async (
 ): Promise<OwnedDebuggerDetachResult | undefined> => {
   let attempt = detachAttempts.get(session);
   if (attempt === undefined) {
-    const pending = Promise.resolve().then(detach);
+    // Providers may use `this` to access their command transport.
+    const pending = Promise.resolve().then(() => detach.call(session));
     let tracked!: Promise<OwnedDebuggerDetachResult>;
     tracked = pending.then(
       (result) => {
@@ -79,6 +81,8 @@ interface OwnedDebuggerProcess {
     /** WindowsOwnedProcess closes output only after the whole Job Object settles. */
     waitForOutputClose(timeoutMs: number): Promise<boolean>;
     unrefOutputStreams(): void;
+    /** Cap bytes retained after debugger shutdown while continuing to drain. */
+    limitAdditionalOutputBytes(maxBytes: number): void;
     disposeAfterOutputClose(): void;
     dispose(): void;
   };
@@ -91,6 +95,9 @@ const finishExitedDebuggerSession = async (
   status: "stopped" | "already_exited",
 ): Promise<OwnedDebuggerStopResult> => {
   try {
+    session.supervisor.limitAdditionalOutputBytes(
+      MAX_LATE_DEBUGGER_OUTPUT_BYTES,
+    );
     if (!(await session.supervisor.waitForOutputClose(1_000))) {
       if (status === "stopped") {
         session.supervisor.unrefOutputStreams();

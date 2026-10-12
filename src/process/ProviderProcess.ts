@@ -278,12 +278,14 @@ export class ProviderProcessSupervisor {
   #stopPromise: Promise<ProviderProcessStopResult> | undefined;
   #disposed = false;
   #disposeAfterOutputClose = false;
+  #maxDiagnosticBytes: number | undefined;
 
   constructor(
     readonly launch: ProviderProcessLaunch,
     options: ProviderProcessSupervisorOptions = {},
   ) {
     this.#options = options;
+    this.#maxDiagnosticBytes = options.maxDiagnosticBytes;
     if (options.captureStdout !== false)
       this.#attach(launch.process.stdout, "stdout");
     this.#attach(launch.process.stderr, "stderr");
@@ -333,6 +335,23 @@ export class ProviderProcessSupervisor {
       this.#outputClose.promise,
       timeoutMs,
     );
+  }
+
+  /** Bound additional retained bytes while still draining all later output. */
+  limitAdditionalOutputBytes(maxBytes: number): void {
+    if (!Number.isSafeInteger(maxBytes) || maxBytes < 0)
+      throw new RangeError(
+        "Additional output limit must be a non-negative safe integer.",
+      );
+    const retained = this.#stdout.bytes + this.#stderr.bytes;
+    const requestedLimit = Math.min(
+      Number.MAX_SAFE_INTEGER,
+      retained + maxBytes,
+    );
+    this.#maxDiagnosticBytes =
+      this.#maxDiagnosticBytes === undefined
+        ? requestedLimit
+        : Math.min(this.#maxDiagnosticBytes, requestedLimit);
   }
 
   /** Unreference inherited output pipes without closing streams shared with descendants. */
@@ -494,13 +513,11 @@ export class ProviderProcessSupervisor {
     if (stream === "stdout") this.#stdoutObservedBytes += bytes.byteLength;
     else this.#stderrObservedBytes += bytes.byteLength;
     const remaining =
-      this.#options.maxDiagnosticBytes === undefined
+      this.#maxDiagnosticBytes === undefined
         ? bytes.byteLength
         : Math.max(
             0,
-            this.#options.maxDiagnosticBytes -
-              this.#stdout.bytes -
-              this.#stderr.bytes,
+            this.#maxDiagnosticBytes - this.#stdout.bytes - this.#stderr.bytes,
           );
     const retained = Math.min(bytes.byteLength, remaining);
     if (retained < bytes.byteLength) this.#diagnosticTruncated = true;
