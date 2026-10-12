@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { stat as statPath } from "node:fs/promises";
+import type { Stats } from "node:fs";
 import { resolve } from "node:path";
 
 import {
@@ -47,6 +48,7 @@ export interface ReverseEngineeringServiceOptions {
   readonly run?: ReverseEngineeringCommandRunner;
   readonly runOwned?: typeof runOwnedCommand;
   readonly digest?: typeof digestFile;
+  readonly stat?: (path: string) => Promise<Stats>;
 }
 
 interface ReverseEngineeringCommandRunner {
@@ -73,6 +75,7 @@ export class ReverseEngineeringService {
   readonly #commands: ReverseEngineeringCommandPort;
   readonly #run: ReverseEngineeringCommandRunner;
   readonly #digest: typeof digestFile;
+  readonly #stat: (path: string) => Promise<Stats>;
   readonly #pendingCleanup = new Map<
     ProviderProcessSupervisor,
     AnalysisCleanupObservation
@@ -96,6 +99,7 @@ export class ReverseEngineeringService {
         (owner, cleanup) => this.#pendingCleanup.set(owner, cleanup),
       );
     this.#digest = options.digest ?? digestFile;
+    this.#stat = options.stat ?? statPath;
   }
 
   /** Retry cleanup for provider process groups retained after an incomplete stop. */
@@ -256,7 +260,7 @@ export class ReverseEngineeringService {
     const absolutePath = resolve(path);
     let digest: string;
     try {
-      digest = await this.#digest(absolutePath, signal);
+      digest = await this.#digest(absolutePath, signal, this.#stat);
     } catch (cause) {
       const code = (cause as NodeJS.ErrnoException).code;
       if (signal?.aborted)
@@ -300,6 +304,11 @@ export class ReverseEngineeringService {
       stdoutInvalidUtf8 = output.stdoutInvalidUtf8 === true;
       stderrInvalidUtf8 = output.stderrInvalidUtf8 === true;
     } catch (cause) {
+      if (
+        cause instanceof OwnedOutputFailure &&
+        cause.capabilityError !== undefined
+      )
+        return err(cause.capabilityError);
       const capture = execFileOutputFailure(cause);
       const code =
         capture?.code ?? (cause as NodeJS.ErrnoException).code ?? undefined;
@@ -350,8 +359,14 @@ export class ReverseEngineeringService {
         stdout,
         stderr,
         truncated: outputTruncated,
-        stdout_bytes: Buffer.byteLength(stdout),
-        stderr_bytes: Buffer.byteLength(stderr),
+        stdout_bytes:
+          cause instanceof OwnedOutputFailure
+            ? cause.stdoutBytes
+            : Buffer.byteLength(stdout),
+        stderr_bytes:
+          cause instanceof OwnedOutputFailure
+            ? cause.stderrBytes
+            : Buffer.byteLength(stderr),
         exit_code:
           !capture.collectionFailure && typeof capture.code === "number"
             ? capture.code
@@ -408,7 +423,7 @@ export class ReverseEngineeringService {
       completionStatus = "unknown";
     } else {
       try {
-        digestAfter = await this.#digest(absolutePath, signal);
+        digestAfter = await this.#digest(absolutePath, signal, this.#stat);
       } catch {
         // Preserve the provider's collected observations if the artifact vanished or became unreadable.
       }
@@ -524,6 +539,9 @@ interface OwnedOutputFailureOptions {
   readonly outputTruncated: boolean;
   readonly stdoutInvalidUtf8?: boolean;
   readonly stderrInvalidUtf8?: boolean;
+  readonly stdoutBytes?: number;
+  readonly stderrBytes?: number;
+  readonly capabilityError?: AnalysisCapabilityUnavailableError;
   readonly collectionFailure?: boolean;
   readonly cleanup?: AnalysisCleanupObservation;
   readonly cause?: unknown;
@@ -537,6 +555,9 @@ class OwnedOutputFailure extends Error {
   readonly outputTruncated: boolean;
   readonly stdoutInvalidUtf8: boolean;
   readonly stderrInvalidUtf8: boolean;
+  readonly stdoutBytes: number;
+  readonly stderrBytes: number;
+  readonly capabilityError: AnalysisCapabilityUnavailableError | undefined;
   readonly collectionFailure: boolean;
   readonly cleanup: AnalysisCleanupObservation | undefined;
 
@@ -551,6 +572,9 @@ class OwnedOutputFailure extends Error {
     this.outputTruncated = options.outputTruncated;
     this.stdoutInvalidUtf8 = options.stdoutInvalidUtf8 ?? false;
     this.stderrInvalidUtf8 = options.stderrInvalidUtf8 ?? false;
+    this.stdoutBytes = options.stdoutBytes ?? Buffer.byteLength(options.stdout);
+    this.stderrBytes = options.stderrBytes ?? Buffer.byteLength(options.stderr);
+    this.capabilityError = options.capabilityError;
     this.collectionFailure = options.collectionFailure ?? false;
     this.cleanup = options.cleanup;
   }
@@ -598,6 +622,8 @@ const runOwnedCommandOutput = (
         outputTruncated: snapshot.diagnosticTruncated === true,
         stdoutInvalidUtf8: snapshot.stdout.invalidUtf8 === true,
         stderrInvalidUtf8: snapshot.stderr.invalidUtf8 === true,
+        stdoutBytes: snapshot.stdout.bytes,
+        stderrBytes: snapshot.stderr.bytes,
       });
     if (snapshot.exitCode !== 0)
       throw new OwnedOutputFailure({
@@ -608,6 +634,8 @@ const runOwnedCommandOutput = (
         outputTruncated: snapshot.diagnosticTruncated === true,
         stdoutInvalidUtf8: snapshot.stdout.invalidUtf8 === true,
         stderrInvalidUtf8: snapshot.stderr.invalidUtf8 === true,
+        stdoutBytes: snapshot.stdout.bytes,
+        stderrBytes: snapshot.stderr.bytes,
       });
     return {
       stdout: snapshot.stdout.text,
@@ -647,6 +675,11 @@ const runOwnedCommandOutput = (
       outputTruncated: snapshot?.diagnosticTruncated === true,
       stdoutInvalidUtf8: snapshot?.stdout.invalidUtf8 === true,
       stderrInvalidUtf8: snapshot?.stderr.invalidUtf8 === true,
+      stdoutBytes: snapshot?.stdout.bytes ?? 0,
+      stderrBytes: snapshot?.stderr.bytes ?? 0,
+      ...(cause.cause instanceof AnalysisCapabilityUnavailableError
+        ? { capabilityError: cause.cause }
+        : {}),
       ...(cause.collectionFailure ? { collectionFailure: true } : {}),
       ...(cause.cleanupFailure === null
         ? {}
@@ -671,8 +704,9 @@ const ownedCleanupOptions = (
 const digestFile = async (
   path: string,
   signal?: AbortSignal,
+  stat: (path: string) => Promise<Stats> = statPath,
 ): Promise<string> => {
-  const info = await statPath(path);
+  const info = await statWithDeadline(path, signal, stat);
   if (!info.isFile())
     throw Object.assign(new Error("Artifact digest requires a regular file"), {
       code: "EINVAL",
@@ -712,5 +746,51 @@ const digestFile = async (
       cleanup();
       resolveDigest(hash.digest("hex"));
     });
+  });
+};
+
+const statWithDeadline = (
+  path: string,
+  signal: AbortSignal | undefined,
+  stat: (path: string) => Promise<Stats>,
+): Promise<Stats> => {
+  if (signal?.aborted)
+    return Promise.reject(new AnalysisCancelledError("artifact_digest"));
+  return new Promise<Stats>((resolveStat, rejectStat) => {
+    let settled = false;
+    const finish = (cause?: unknown, value?: Stats): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", abort);
+      if (cause !== undefined) rejectStat(cause);
+      else resolveStat(value!);
+    };
+    const abort = (): void =>
+      finish(new AnalysisCancelledError("artifact_digest"));
+    const timer = setTimeout(
+      () =>
+        finish(
+          Object.assign(new Error("Artifact stat timed out"), {
+            code: "ETIMEDOUT",
+          }),
+        ),
+      DEFAULT_TIMEOUT_MS,
+    );
+    signal?.addEventListener("abort", abort, { once: true });
+    if (signal?.aborted) {
+      abort();
+      return;
+    }
+    // Promise handlers stay attached after timeout/cancellation so a delayed
+    // stat rejection is observed and cannot become an unhandled rejection.
+    try {
+      void stat(path).then(
+        (info) => finish(undefined, info),
+        (cause: unknown) => finish(cause),
+      );
+    } catch (cause) {
+      finish(cause);
+    }
   });
 };

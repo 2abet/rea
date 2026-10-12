@@ -326,6 +326,9 @@ export const createServer = (
       ? undefined
       : (evidence) => session.recordEvidence(evidence),
     analysisAdmission,
+    session === undefined
+      ? undefined
+      : () => session.invalidateSnapshotForExternalMutation(),
   );
   const previousOnclose = server.server.onclose;
   server.server.onclose = () => {

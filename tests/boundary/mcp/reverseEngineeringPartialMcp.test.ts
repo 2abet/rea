@@ -67,6 +67,45 @@ it("records partial Evidence and references it in the original MCP error", async
   });
 });
 
+it("invalidates session snapshots before dispatching a valid Rizin command", async () => {
+  const registrations = new Map<
+    string,
+    (input: unknown, context: unknown) => Promise<unknown>
+  >();
+  const server = {
+    registerTool: (
+      name: string,
+      _options: unknown,
+      handler: (input: unknown, context: unknown) => Promise<unknown>,
+    ) => registrations.set(name, handler),
+  } as unknown as McpServer;
+  const events: string[] = [];
+  const service = new ReverseEngineeringService({
+    run: async () => {
+      events.push("dispatch");
+      return { stdout: "rizin output", stderr: "" };
+    },
+  });
+  registerReverseEngineeringTools(
+    server,
+    service,
+    pino({ enabled: false }),
+    createToolResultDelivery(2 * 1024 * 1024),
+    undefined,
+    undefined,
+    () => events.push("invalidate"),
+  );
+  const invoke = registrations.get("execute_rizin_command");
+  if (invoke === undefined) throw new Error("Rizin MCP handler was not registered");
+
+  await invoke(
+    { path: "package.json", command: "iI" },
+    { mcpReq: { signal: new AbortController().signal } },
+  );
+
+  expect(events).toEqual(["invalidate", "dispatch"]);
+});
+
 it("preserves a partial MCP error without claiming failed Evidence retention", async () => {
   const registrations = new Map<
     string,

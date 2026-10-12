@@ -14,6 +14,7 @@ import { logToolExecution } from "./toolLogging.js";
 import { toolRegistrationOptions } from "./toolRegistrationOptions.js";
 import type { ToolResultDelivery } from "./toolResult.js";
 import type { WithAdmittedAnalysis } from "./analysisAdmission.js";
+import { rizinInputSchema } from "../domain/reverseEngineering.js";
 
 /** Register objdump and Rizin operations against their exact named contracts. */
 export const registerReverseEngineeringTools = (
@@ -23,6 +24,7 @@ export const registerReverseEngineeringTools = (
   delivery: ToolResultDelivery,
   recordEvidence?: EvidenceWriter["recordEvidence"],
   withAdmittedAnalysis?: WithAdmittedAnalysis,
+  invalidateSnapshotForExternalMutation?: () => void,
 ): void => {
   const objdump = toolContract("inspect_with_objdump");
   const rizin = toolContract("execute_rizin_command");
@@ -66,6 +68,11 @@ export const registerReverseEngineeringTools = (
         withAdmittedAnalysis,
         delivery,
         async () => {
+          if (
+            invalidateSnapshotForExternalMutation !== undefined &&
+            rizinInputSchema.safeParse(input).success
+          )
+            invalidateSnapshotForExternalMutation();
           const result = await logToolExecution(logger, rizin.name, () =>
             service.executeRizinCommand(input, {
               signal: context.mcpReq.signal,
