@@ -313,13 +313,20 @@ export class ReverseEngineeringService {
       exitCode = capture.code;
       signalName = capture.signal;
       outputTruncated = capture.outputTruncated;
+      if (capture.collectionFailure) {
+        exitCode = null;
+        completionStatus = "unknown";
+      }
       const capturedOutput = {
         stdout,
         stderr,
         truncated: outputTruncated,
         stdout_bytes: Buffer.byteLength(stdout),
         stderr_bytes: Buffer.byteLength(stderr),
-        exit_code: typeof capture.code === "number" ? capture.code : null,
+        exit_code:
+          !capture.collectionFailure && typeof capture.code === "number"
+            ? capture.code
+            : null,
         signal: capture.signal,
       };
       if (signal?.aborted || code === "ABORT_ERR")
@@ -353,6 +360,18 @@ export class ReverseEngineeringService {
             cleanup: cause.cleanup,
             cleanupOnly: true,
           },
+
+          { cause, capturedOutput, cleanup: cause.cleanup },
+        );
+      if (
+        failure === undefined &&
+        cause instanceof OwnedOutputFailure &&
+        cause.collectionFailure
+      )
+        failure = new AnalysisOutputError(
+          operation,
+          "Provider output collection failed.",
+          { cause, capturedOutput },
         );
       if (capture.signal !== null || typeof capture.code !== "number") {
         exitCode = null;
@@ -395,6 +414,17 @@ export class ReverseEngineeringService {
     const limitations = [
       "The executable version and supported formats are reported as unknown because no reliable version probe was performed.",
       "A non-zero process exit is preserved as an observed command result.",
+      ...(operation === "inspect_with_objdump" &&
+      parameters.follow_debug_links === true
+        ? [
+            "DWARF output may include local debug-link files whose identities are not bound to Evidence.",
+          ]
+        : []),
+      ...(operation === "execute_rizin_command"
+        ? [
+            "Rizin commands and retained plugins may read files or access network resources outside the selected artifact; those external inputs are not bound to Evidence.",
+          ]
+        : []),
       ...(outputTruncated
         ? [
             "The provider command ended before completion could be confirmed; captured output is partial.",
@@ -448,6 +478,7 @@ interface OwnedOutputFailureOptions {
   readonly code: number | string | null;
   readonly signal: string | null;
   readonly outputTruncated: boolean;
+  readonly collectionFailure?: boolean;
   readonly cleanup?: AnalysisCleanupObservation;
   readonly cause?: unknown;
 }
@@ -458,6 +489,7 @@ class OwnedOutputFailure extends Error {
   readonly code: number | string | null;
   readonly signal: string | null;
   readonly outputTruncated: boolean;
+  readonly collectionFailure: boolean;
   readonly cleanup: AnalysisCleanupObservation | undefined;
 
   constructor(options: OwnedOutputFailureOptions) {
@@ -469,6 +501,7 @@ class OwnedOutputFailure extends Error {
     this.code = options.code;
     this.signal = options.signal;
     this.outputTruncated = options.outputTruncated;
+    this.collectionFailure = options.collectionFailure ?? false;
     this.cleanup = options.cleanup;
   }
 }
@@ -494,6 +527,7 @@ const runOwnedCommandOutput = (
         expectedCommand: null,
         env: spawnEnv,
         hostEnvironment: {},
+        sweepTokenOwnedProcesses: true,
       },
       {
         timeoutMs: DEFAULT_TIMEOUT_MS,
@@ -546,6 +580,7 @@ const runOwnedCommandOutput = (
       code,
       signal: snapshot?.signal ?? null,
       outputTruncated: snapshot?.diagnosticTruncated === true,
+      ...(cause.collectionFailure ? { collectionFailure: true } : {}),
       ...(cause.cleanupFailure === null
         ? {}
         : {

@@ -45,6 +45,8 @@ export const CLI_COMMANDS = Object.freeze({
   inspectWithObjdump: "inspect-with-objdump",
   executeRizinCommand: "execute-rizin-command",
   debugWithGdb: "debug-with-gdb",
+
+  inspectGoBinary: "inspect-go-binary",
   inspectPeResources: "inspect-pe-resources",
   inspectAnalysisView: "inspect-analysis-view",
   inspectEvidenceBundle: "inspect-evidence-bundle",

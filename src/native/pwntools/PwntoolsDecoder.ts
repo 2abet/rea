@@ -27,7 +27,6 @@ import { ProviderAdapterError } from "../../domain/providerAdapterError.js";
 import { ProviderCleanupError } from "../../domain/providerCleanupError.js";
 import { err, ok, type Result } from "../../domain/result.js";
 import { runOwnedCommand } from "../../process/OwnedCommand.js";
-import { OwnedCommandFailure } from "../../process/OwnedCommand.js";
 import {
   pwntoolsResourceLimitsSchema,
   readPwntoolsFailureEvidence,
@@ -178,6 +177,9 @@ export class PwntoolsDecoder<
             requestPath,
           ],
           cwd: root.path,
+          // Caller-selected Python launchers can exec through prlimit or a
+          // shell wrapper. Keep parent/group/run-token ownership across exec.
+          expectedCommand: null,
           runId: `rea-artifact-decoder-${randomUUID()}`,
           hostEnvironment: {
             ...this.environment,

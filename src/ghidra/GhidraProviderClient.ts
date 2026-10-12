@@ -59,6 +59,9 @@ import { ghidraPspExtensionSchema } from "./GhidraPspExtension.js";
 import {
   GHIDRA_MIPS_SOFT_FLOAT_STORAGE,
   ghidraMipsSoftFloatFailure,
+  ghidraMipsRelocatableLimitations,
+  ghidraMipsSharedLimitations,
+  ghidraMipsSharedLanguageOverride,
   ghidraMipsSoftFloatLimitations,
   isGhidraMipsSoftFloatTarget,
 } from "./GhidraMipsProfile.js";
@@ -82,6 +85,7 @@ import {
   healthLimitations,
   windowsP0Limitations,
   limitationsFor,
+  relationshipCoverageFor,
 } from "./GhidraProviderCapabilities.js";
 import type { GhidraSessionError } from "./GhidraSessionError.js";
 import type { GhidraSessionInfo } from "./GhidraSessionValues.js";
@@ -443,7 +447,10 @@ export const createGhidraProviderClient = (input: {
     committedProfile.parameters,
   );
   if (
-    !sameGhidraLanguageOverride(languageOverride, config.ghidraLanguageOverride)
+    !sameGhidraLanguageOverride(
+      languageOverride,
+      config.ghidraLanguageOverride ?? ghidraMipsSharedLanguageOverride(target),
+    )
   )
     return unavailableClient(
       new ProviderAdapterError("ghidra", "open_binary", {
@@ -510,6 +517,8 @@ export const createGhidraProviderClient = (input: {
     ...(target.kind === "executable" && target.architecture === "mips"
       ? (target.mips.limitations ?? [])
       : []),
+    ...ghidraMipsRelocatableLimitations(target),
+    ...ghidraMipsSharedLimitations(target),
   ];
   const providerLimitations =
     installation.platform === "win32"
@@ -815,10 +824,14 @@ export const createGhidraProviderClient = (input: {
         if (!attested.ok) return attested;
         normalized = attested.value;
       }
+      const relationshipCoverage = relationshipCoverageFor(operation);
       return ok(
         createAnalysisExecution(normalized, committedProfile.provider, {
           rawResult: called.value,
           analysisProfile: committedProfile,
+          ...(relationshipCoverage === undefined
+            ? {}
+            : { relationshipCoverage }),
           limitations: [
             ...limitationsFor(operation),
             ...observationLimitations,

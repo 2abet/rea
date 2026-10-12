@@ -31,6 +31,16 @@ const executeWithCleanup = async (
         "Reverse-engineering operation and cleanup both failed.",
       );
     }
+
+const executeWithCleanup = async <Value>(
+  service: ReverseEngineeringService,
+  execute: () => Promise<Result<Value, AnalysisError>>,
+): Promise<Result<Value, AnalysisError>> => {
+  let result: Result<Value, AnalysisError>;
+  try {
+    result = await execute();
+  } catch (cause) {
+    await service.close().catch(() => undefined);
     throw cause;
   }
   try {
@@ -94,6 +104,20 @@ const asCleanupError = (cause: unknown): AnalysisError =>
         { cause },
       );
 
+    if (result.ok)
+      return err(
+        cause instanceof AnalysisError
+          ? cause
+          : new AnalysisOutputError(
+              "reverse_engineering_cleanup",
+              "Provider process cleanup failed.",
+              { cause },
+            ),
+      );
+  }
+  return result;
+};
+
 /** Add one-shot reverse-engineering commands using the shared service layer. */
 export const registerReverseEngineeringCommands = (
   cli: CliInstance,
@@ -127,7 +151,7 @@ export const registerReverseEngineeringCommands = (
     options: z.object({
       followDebugLinks: z
         .boolean()
-        .default(true)
+        .default(false)
         .describe(
           "Follow local DWARF debug links. External debug-file identity is not bound to Evidence.",
         ),

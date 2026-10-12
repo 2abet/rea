@@ -14,7 +14,7 @@ export const objdumpInputSchema = z
       "disassemble_all",
       "architectures",
     ]),
-    follow_debug_links: z.boolean().default(true),
+    follow_debug_links: z.boolean().default(false),
   })
   .strict();
 
@@ -26,7 +26,7 @@ export const rizinInputSchema = z
       .string()
       .min(1)
       .refine(
-        (value) => !/[\r\n]/u.test(value),
+        (value) => !/[\r\n\u0000]/u.test(value),
         "A single command line is required",
       ),
   })
