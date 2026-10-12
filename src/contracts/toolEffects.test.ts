@@ -15,6 +15,8 @@ const EXECUTION_WORDING =
 const EXECUTION_WORDING_EXCEPTIONS: Readonly<Record<string, string>> = {
   inspect_with_objdump: "runs a caller-selected inspection tool, not target code",
   start_gdb_session: "starts a debugger session; execution is attributed to gdb_console",
+  start_frida_session:
+    "spawned targets remain suspended until resume_frida_session",
   inspect_native_load_image: "states that it does not execute the target",
   resolve_native_call_targets: "states that it does not execute code",
   inspect_pe_resources: "states that it does not execute the image",
@@ -27,6 +29,11 @@ const EXECUTION_WORDING_EXCEPTIONS: Readonly<Record<string, string>> = {
     "decodes bytecode in REA's bundled worker without executing it",
   inspect_wasm_artifact:
     "WABT validates and decompiles the module without executing it",
+  identify_flutter_build:
+    "identifies the build through execution-free APK parsing",
+  inspect_dart_aot: "inspects snapshot bytes without executing them",
+  inspect_analysis_view:
+    "reports retained WASM execution/network states without performing execution",
   inspect_managed_artifact: "reads metadata without executing target code",
   inspect_managed_members: "reads metadata without executing target code",
   inspect_managed_native_boundaries:
@@ -120,8 +127,11 @@ describe("tool effects", () => {
       "execute_rizin_command",
       "gdb_console",
       "install_adb_package",
+      "instrument_with_frida",
+      "load_frida_script",
       "observe_native_calls",
       "push_adb_file",
+      "resume_frida_session",
       "start_adb_activity",
       "start_adb_app",
       "stop_adb_app",

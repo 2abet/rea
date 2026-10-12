@@ -49,10 +49,15 @@ export const CLI_COMMANDS = Object.freeze({
   inspectGoBinary: "inspect-go-binary",
   inspectPeResources: "inspect-pe-resources",
   inspectAnalysisView: "inspect-analysis-view",
+  listFridaDevices: "list-frida-devices",
+  listFridaProcesses: "list-frida-processes",
+  instrumentWithFrida: "instrument-with-frida",
   inspectEvidenceBundle: "inspect-evidence-bundle",
   inspectFirmwareRegions: "inspect-firmware-regions",
   extractFirmware: "extract-firmware",
   inspectAndroidPackage: "inspect-android-package",
+  identifyFlutterBuild: "identify-flutter-build",
+  inspectDartAot: "inspect-dart-aot",
   inspectApktoolClient: "inspect-apktool-client",
   decodeAndroidResources: "decode-android-resources",
   inspectAdbClient: "inspect-adb-client",
@@ -156,6 +161,9 @@ export const CLI_COMMAND_TOOL_ALIASES = Object.freeze({
   "inspect-with-objdump": ["inspect_with_objdump"],
   "execute-rizin-command": ["execute_rizin_command"],
   "debug-with-gdb": ["gdb_console"],
+  "list-frida-devices": ["list_frida_devices"],
+  "list-frida-processes": ["list_frida_processes"],
+  "instrument-with-frida": ["instrument_with_frida"],
 });
 
 /** MCP operations without a dedicated CLI command or direct command alias. */
@@ -216,4 +224,10 @@ export const MCP_TOOLS_WITHOUT_DEDICATED_CLI = Object.freeze([
   "start_gdb_session",
   "gdb_session_status",
   "close_gdb_session",
+  "start_frida_session",
+  "load_frida_script",
+  "resume_frida_session",
+  "unload_frida_script",
+  "frida_session_status",
+  "close_frida_session",
 ]);

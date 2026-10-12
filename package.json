@@ -69,6 +69,8 @@
     "scripts/prepare.mjs",
     "skills",
     "README.md",
+    "DISCLAIMER.md",
+    "THIRD_PARTY_NOTICES.md",
     "LICENSE",
     "native/windows/build/manifest.json",
     "native/windows/build/rea-windows-x64.node",
@@ -87,7 +89,7 @@
     "bridge/pwndbg/core_context.py",
     "third_party/pwndbg/README.md",
     "third_party/pwndbg/LICENSE.md",
-    "licenses/nativeaot-parser-MIT.txt"
+    "licenses"
   ],
   "scripts": {
     "release:notes": "node scripts/release-notes.mjs",
@@ -100,23 +102,24 @@
     "prebuild": "npm run deps:check",
     "build": "node scripts/run-exclusive.mjs artifacts turbo run artifacts:skills --force",
     "precheck": "npm run deps:check",
-    "check": "node scripts/run-exclusive.mjs artifacts turbo run typecheck lint format:check knip metadata:check && npm run verify:architecture-guards",
+    "check": "node scripts/run-exclusive.mjs artifacts turbo run typecheck lint:built format:check knip metadata:check && npm run verify:architecture-guards",
     "precheck:fast": "npm run deps:check",
     "check:fast": "turbo run typecheck lint --output-logs=errors-only",
     "precheck:changed": "npm run deps:check",
     "check:changed": "npm run check:fast && npm run test:changed",
     "precheck:test": "npm run deps:check",
-    "check:test": "node scripts/run-exclusive.mjs artifacts turbo run typecheck lint format:check knip metadata:check test:run",
+    "check:test": "node scripts/run-exclusive.mjs artifacts turbo run typecheck lint:built format:check knip metadata:check test:run",
     "precheck:pr": "npm run deps:check",
-    "check:pr": "node scripts/run-exclusive.mjs artifacts turbo run typecheck lint format:check knip metadata:check test:run && npm run docs:check && npm run jscpd && npm run scan:todos",
+    "check:pr": "node scripts/run-exclusive.mjs artifacts turbo run typecheck lint:built format:check knip metadata:check test:run && npm run docs:check && npm run jscpd && npm run scan:todos",
     "precheck:ci": "npm run deps:check",
-    "check:ci": "node scripts/run-exclusive.mjs artifacts turbo run typecheck lint format:check knip metadata:check jscpd scan:todos && npm run verify:architecture-guards",
+    "check:ci": "node scripts/run-exclusive.mjs artifacts turbo run typecheck lint:built format:check knip metadata:check jscpd scan:todos && npm run verify:architecture-guards",
     "build:cached": "node scripts/check-dependency-install.mjs && node scripts/run-exclusive.mjs artifacts turbo run artifacts:skills",
     "build:termux": "node scripts/run-exclusive.mjs artifacts npm run build:termux:run",
     "build:termux:run": "npm run compile:termux && npm run artifacts:skills",
     "format": "oxfmt .",
     "format:check": "oxfmt --check .",
     "lint": "oxlint && npm run verify:module-boundaries",
+    "lint:built": "npm run lint",
     "lint:fix": "oxlint --fix && npm run verify:module-boundaries",
     "knip": "knip",
     "jscpd": "jscpd src/ tests/",
@@ -161,6 +164,7 @@
     "verify:legacy-simulator": "npm run build:cached && node scripts/verify/apple/legacy-simulator.mjs",
     "verify:architecture-guards": "node scripts/verify/architecture-guards.mjs",
     "verify:apktool": "npm run build:cached && node scripts/verify-apktool.mjs",
+    "verify:flutter": "npm run build:cached && node scripts/verify-flutter.mjs",
     "verify:adb": "npm run build:cached && node scripts/verify-adb.mjs",
     "verify:ghidra": "npm run build:cached && node scripts/verify-real-ghidra.mjs",
     "verify:ghidra:seeds": "npm run build:cached && node scripts/verify/ghidra/seeds.mjs",
@@ -178,6 +182,8 @@
     "verify:ghidra:cross-format": "npm run build:cached && node scripts/verify-real-ghidra.mjs --cross-format",
     "verify:ghidra:windows": "npm run build:cached && npm run build:ghidra-windows-fixture && node scripts/verify-real-ghidra-windows.mjs",
     "verify:browser": "npm run build:cached && node scripts/verify-real-browser.mjs",
+    "verify:frida": "npm run build:cached && node scripts/verify-frida.mjs",
+    "verify:frida:bindings": "tsc --noEmit -p tsconfig.frida-verification.json",
     "verify:browser:dom": "node scripts/verify-browser-dom-destinations.mjs",
     "verify:browser:network": "npm run build:cached && node scripts/verify-browser-network.mjs",
     "verify:electron": "npm run build:cached && node scripts/verify-real-electron.mjs",
@@ -338,5 +344,11 @@
     "typescript-termux": "npm:typescript@5.9.3",
     "vitepress": "1.6.4",
     "vitest": "5.0.3"
+  },
+  "optionalDependencies": {
+    "frida": "17.23.2"
+  },
+  "allowScripts": {
+    "frida@17.23.2": true
   }
 }

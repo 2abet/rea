@@ -86,6 +86,7 @@ export const clientConfigurationServersKey = (
     case "hermes":
       return "mcp_servers";
     case "opencode":
+    case "zcode":
       return "mcp";
     case "vscode":
       return "servers";
@@ -116,6 +117,8 @@ const parseDocument = (
   if (isEmptyClientConfigurationText(text)) return {};
   // Hermes stores MCP servers in `mcp_servers` inside a YAML document.
   if (format === "hermes") return objectSchema.parse(parseYaml(text));
+  // ZCode loads nonempty native files with strict JSON.parse.
+  if (format === "zcode") return objectSchema.parse(JSON.parse(text));
   const errors: ParseError[] = [];
   // Accept a UTF-8 BOM without shifting diagnostics or editing the original text.
   const jsonText = text.startsWith("\uFEFF") ? ` ${text.slice(1)}` : text;
@@ -126,6 +129,37 @@ const parseDocument = (
       `Invalid JSON/JSONC at offset ${firstError.offset}: ${printParseErrorCode(firstError.error)}`,
     );
   return objectSchema.parse(document);
+};
+
+/** A parsed configuration whose structure, not its syntax, cannot hold MCP servers. */
+export class ClientConfigurationShapeError extends TypeError {}
+
+const requireObject = (
+  value: unknown,
+  description: string,
+): Record<string, unknown> => {
+  const parsed = objectSchema.safeParse(value);
+  if (parsed.success) return parsed.data;
+  throw new ClientConfigurationShapeError(`${description} must be an object`, {
+    cause: parsed.error,
+  });
+};
+
+/** ZCode reads the same-scope fallback as strict JSON with a mcpServers table. */
+export const parseZcodeFallbackConfiguration = (
+  text: string,
+): ClientConfigurationDocument => {
+  const document = requireObject(JSON.parse(text), "ZCode fallback root");
+  return {
+    document,
+    servers:
+      document.mcpServers === undefined
+        ? {}
+        : requireObject(document.mcpServers, "ZCode fallback mcpServers"),
+    serversPath: ["mcpServers"],
+    dialect: "json",
+    legacyServers: {},
+  };
 };
 
 /** Members of OpenCode V2's `mcp` object that are not server names. */
@@ -140,10 +174,36 @@ export const parseClientConfiguration = (
     throw new TypeError("client does not have a supported MCP config format");
   // DeepSeek Harness stores a Cordis patch list, not a server table.
   if (format === "dsh") return parseDshCordisDocument(text);
-  const document = parseDocument(text, format);
+  let document: Record<string, unknown>;
+  try {
+    document = parseDocument(text, format);
+  } catch (cause: unknown) {
+    if (cause instanceof z.ZodError)
+      throw new ClientConfigurationShapeError(
+        "The configuration root must be an object",
+        { cause },
+      );
+    throw cause;
+  }
   const serversKey = clientConfigurationServersKey(format);
   const value = document[serversKey];
-  const servers = value === undefined ? {} : objectSchema.parse(value);
+  const servers =
+    value === undefined ? {} : requireObject(value, `"${serversKey}"`);
+  // ZCode reads stdio servers from the nested `mcp.servers` table of
+  // `~/.zcode/cli/config.json`; entries carry `command`, `args`, and `env`.
+  if (format === "zcode") {
+    const nested = servers.servers;
+    return {
+      document,
+      servers:
+        nested === undefined
+          ? {}
+          : requireObject(nested, `"${serversKey}.servers"`),
+      serversPath: [serversKey, "servers"],
+      dialect: format,
+      legacyServers: {},
+    };
+  }
   const native = servers.servers;
   // A V1 server named `servers` has a string `type` discriminator; the V2
   // table may instead hold a server object named `type`.
@@ -164,7 +224,7 @@ export const parseClientConfiguration = (
     };
   return {
     document,
-    servers: objectSchema.parse(native),
+    servers: requireObject(native, `"${serversKey}.servers"`),
     serversPath: [serversKey, "servers"],
     dialect: "opencode_v2",
     legacyServers: Object.fromEntries(
@@ -203,8 +263,16 @@ export const withClientServers = (
       : editDshDocument(parsed);
   const [key = "", nested] = parsed.serversPath;
   if (nested === undefined) return { ...parsed.document, [key]: servers };
-  const outer = { ...objectSchema.parse(parsed.document[key]) };
-  if (removeLegacy !== undefined && !OPENCODE_V2_MCP_SETTINGS.has(removeLegacy))
+  // A fresh document may not hold the outer table yet (for example a new
+  // ZCode `config.json` without an `mcp` object), so treat absence as empty.
+  const outerValue = parsed.document[key];
+  const outer =
+    outerValue === undefined ? {} : { ...objectSchema.parse(outerValue) };
+  if (
+    parsed.dialect === "opencode_v2" &&
+    removeLegacy !== undefined &&
+    !OPENCODE_V2_MCP_SETTINGS.has(removeLegacy)
+  )
     delete outer[removeLegacy];
   return { ...parsed.document, [key]: { ...outer, [nested]: servers } };
 };
