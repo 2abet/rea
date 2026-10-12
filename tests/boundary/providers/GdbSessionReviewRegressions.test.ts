@@ -6,6 +6,7 @@ import { afterEach, expect, it } from "vitest";
 
 import { GdbSessionManager } from "../../../src/gdb/GdbSessionManager.js";
 import { spawnOwnedProviderProcess } from "../../../src/process/ProviderProcess.js";
+import { expectGdbSessionStarted } from "./gdbTestHelpers.js";
 
 let directory: string | undefined;
 const managers: Array<{ closeAll(): Promise<void> }> = [];
@@ -405,9 +406,7 @@ process.stdin.on("data", (chunk) => {
       environment: { REA_GDB_COMMAND: provider },
     });
     managers.push(manager);
-    const started = await manager.start();
-    expect(started.ok).toBe(true);
-    if (!started.ok) return;
+    const started = await expectGdbSessionStarted(manager);
 
     expect(
       manager.status(started.value.session_id)?.recent_mi_records_truncated,
@@ -447,9 +446,7 @@ setTimeout(() => process.exit(0), 250).unref();
       commandTimeoutMs: 40,
     });
     managers.push(manager);
-    const started = await manager.start();
-    expect(started.ok).toBe(true);
-    if (!started.ok) return;
+    const started = await expectGdbSessionStarted(manager);
 
     const result = await manager.execute(
       started.value.session_id,
@@ -508,9 +505,7 @@ setTimeout(() => process.exit(0), 250);
       }),
     });
     managers.push(manager);
-    const started = await manager.start();
-    expect(started.ok).toBe(true);
-    if (!started.ok) return;
+    const started = await expectGdbSessionStarted(manager);
 
     const result = await manager.execute(
       started.value.session_id,
@@ -577,9 +572,7 @@ process.stdin.on("data", (chunk) => {
       environment: { REA_GDB_COMMAND: provider },
     });
     managers.push(manager);
-    const started = await manager.start();
-    expect(started.ok).toBe(true);
-    if (!started.ok) return;
+    const started = await expectGdbSessionStarted(manager);
     const first = manager.execute(started.value.session_id, "first");
     const controller = new AbortController();
     const second = manager.execute(
@@ -628,9 +621,7 @@ process.stdin.on("data", (chunk) => {
       environment: { REA_GDB_COMMAND: provider },
     });
     managers.push(manager);
-    const started = await manager.start();
-    expect(started.ok).toBe(true);
-    if (!started.ok) return;
+    const started = await expectGdbSessionStarted(manager);
 
     const result = await manager.execute(
       started.value.session_id,
@@ -677,9 +668,7 @@ process.stdin.on("data", (chunk) => {
       environment: { REA_GDB_COMMAND: provider },
     });
     managers.push(manager);
-    const started = await manager.start();
-    expect(started.ok).toBe(true);
-    if (!started.ok) return;
+    const started = await expectGdbSessionStarted(manager);
     const controller = new AbortController();
     setTimeout(() => controller.abort(), 50);
 
@@ -792,9 +781,7 @@ process.stdin.on("data", (chunk) => {
       environment: { REA_GDB_COMMAND: provider },
     });
     managers.push(manager);
-    const started = await manager.start();
-    expect(started.ok).toBe(true);
-    if (!started.ok) return;
+    const started = await expectGdbSessionStarted(manager);
 
     expect(
       manager.status(started.value.session_id)?.diagnostics_truncated,
@@ -833,9 +820,7 @@ setInterval(() => {}, 1000);
       environment: { REA_GDB_COMMAND: provider },
     });
     managers.push(manager);
-    const started = await manager.start();
-    expect(started.ok).toBe(true);
-    if (!started.ok) return;
+    const started = await expectGdbSessionStarted(manager);
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 100));
 
     const result = await manager.execute(
@@ -878,9 +863,7 @@ process.stdin.on("data", (chunk) => {
       environment: { REA_GDB_COMMAND: provider },
     });
     managers.push(manager);
-    const started = await manager.start();
-    expect(started.ok).toBe(true);
-    if (!started.ok) return;
+    const started = await expectGdbSessionStarted(manager);
 
     expect(
       (await manager.execute(started.value.session_id, "first command")).ok,
@@ -989,9 +972,7 @@ setTimeout(() => process.exit(0), 250);
       }),
     });
     managers.push(manager);
-    const started = await manager.start();
-    expect(started.ok).toBe(true);
-    if (!started.ok) return;
+    const started = await expectGdbSessionStarted(manager);
     const controller = new AbortController();
     const execution = manager.execute(
       started.value.session_id,
