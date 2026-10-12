@@ -1564,6 +1564,24 @@ export const miStringField = (record: string, field: string): string | undefined
 };
 
 /** @internal Classify commands that can invalidate the configured output sink. */
+export const gdbOneShotCommandMayInvalidateDetachProof = (
+  command: string,
+): boolean => {
+  if (commandMayChangeInferiorOutput(command)) return true;
+  const firstToken = /^\s*([^\s;]+)/u.exec(command)?.[1]?.toLowerCase();
+  if (
+    firstToken !== undefined &&
+    (["source", "define"].some((name) => name.startsWith(firstToken)) ||
+      firstToken === "py" ||
+      "python".startsWith(firstToken))
+  )
+    return true;
+  // One-shot execution cannot establish which shell/GDB context interprets
+  // redirections, nor safely track multiline command definitions.
+  return /[<>]{1,2}|&>|[\r\n;]/u.test(command);
+};
+
+/** @internal Classify commands that can invalidate the configured output sink. */
 export const commandMayChangeInferiorOutput = (command: string): boolean => {
   const setting = /^\s*(?:set|with)\s+(\S+)/iu.exec(command)?.[1];
   const maySetInferiorTty =

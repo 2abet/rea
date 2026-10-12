@@ -17,6 +17,7 @@ import {
 } from "../../src/process/OwnedCommand.js";
 import type { ProviderProcessSnapshot } from "../../src/process/ProviderProcess.js";
 import type { ProviderProcessSupervisor } from "../../src/process/ProviderProcess.js";
+import { REVERSE_ENGINEERING_TOOL_CONTRACTS } from "../../src/contracts/reverseEngineeringToolContracts.js";
 
 const createArtifact = async (): Promise<{
   directory: string;
@@ -67,6 +68,14 @@ it("records objdump architecture support as subjectless provider capability evid
       expect(result.value.subject).toBeNull();
       expect(result.value.parameters).not.toHaveProperty("path");
       expect(result.value.parameters).not.toHaveProperty("artifact_sha256_before");
+      expect(result.value.normalized_result).toMatchObject({
+        artifact_sha256_after: null,
+        artifact_changed: null,
+      });
+      const contract = REVERSE_ENGINEERING_TOOL_CONTRACTS.find(
+        ({ name }) => name === "inspect_with_objdump",
+      );
+      expect(contract?.outputSchema.safeParse(result.value).success).toBe(true);
     }
   } finally {
     await rm(directory, { recursive: true, force: true });

@@ -487,9 +487,8 @@ export class ReverseEngineeringService {
       signal: signalName,
       output_truncated: outputTruncated,
       completion_status: completionStatus,
-      ...(!providerCapability
-        ? { artifact_sha256_after: digestAfter, artifact_changed: artifactChanged }
-        : {}),
+      artifact_sha256_after: providerCapability ? null : digestAfter,
+      artifact_changed: providerCapability ? null : artifactChanged,
     };
     const limitations = [
       ...(providerCapability
