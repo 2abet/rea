@@ -83,8 +83,10 @@ export const TOOL_EFFECTS: Readonly<Record<string, ToolEffects>> = {
   }),
   gdb_session_status: effects(),
   start_rizin_debug_session: effects({
+    mutatesTarget: true,
     mutatesSession: true,
     launchesProcess: true,
+    executesForeignCode: true,
   }),
   rizin_debug_command: effects({
     mutatesTarget: true,
@@ -100,6 +102,8 @@ export const TOOL_EFFECTS: Readonly<Record<string, ToolEffects>> = {
   close_rizin_debug_session: effects({
     mutatesSession: true,
     launchesProcess: true,
+    mutatesTarget: true,
+    executesForeignCode: true,
   }),
   close_gdb_session: effects({
     launchesProcess: true,

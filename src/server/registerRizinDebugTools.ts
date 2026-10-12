@@ -29,6 +29,7 @@ export const registerRizinDebugTools = (
         manager.start(
           {
             path: input.path,
+            inferior_tty: input.inferior_tty,
             ...(input.backend === undefined ? {} : { backend: input.backend }),
           },
           context.mcpReq.signal,

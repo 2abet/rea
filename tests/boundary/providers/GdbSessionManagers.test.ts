@@ -40,7 +40,9 @@ process.stdin.on("data", (chunk) => {
     const line = input.slice(0, boundary);
     input = input.slice(boundary + 1);
     const match = /^(\\d+)/.exec(line);
-    if (match) process.stdout.write(match[1] + "^done\\n");
+    if (match && line.includes("list-thread-groups"))
+      process.stdout.write(match[1] + "^done,groups=[]\\n");
+    else if (match) process.stdout.write(match[1] + "^done\\n");
   }
 });
 `,

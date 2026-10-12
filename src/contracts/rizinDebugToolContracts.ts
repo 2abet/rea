@@ -21,9 +21,10 @@ export const RIZIN_DEBUG_TOOL_CONTRACTS = [
     ...toolContractMetadata("start_rizin_debug_session"),
     kind: "native-provider",
     description:
-      "Start a persistent Rizin debugger session using `-N` to suppress user settings and scripts while retaining plugins, `-0` for NUL framing, and `-d` with an optional caller-selected IO debugger backend. Backend and target capabilities depend on the installed build. The session lives in this REA MCP process. Persistent sessions are unavailable on Windows because the owned Job Object cleanup cannot safely distinguish the debugger from its inferior processes.",
+      "Start a persistent Rizin debugger session using `-N` to suppress user settings and scripts while retaining plugins, `-0` for NUL framing, and `-d` with an optional caller-selected IO debugger backend. Requires a caller-selected Linux TTY for inferior stdout and stderr; the target may write directly to that terminal while running and after detach. REA verifies both destinations and `dbg.exitkills=false` before detaching. Backend and target capabilities depend on the installed build. The session lives in this REA MCP process. Persistent sessions require Linux `/proc` descriptor readback.",
     inputSchema: z.strictObject({
       path: z.string().min(1),
+      inferior_tty: z.string().min(1),
       backend: z.string().min(1).optional(),
     }),
     outputSchema: z.strictObject({
@@ -31,7 +32,7 @@ export const RIZIN_DEBUG_TOOL_CONTRACTS = [
       backend: z.string().nullable(),
     }),
     examples: [
-      { title: "Start Rizin debugger", input: { path: "/tmp/program" } },
+      { title: "Start Rizin debugger", input: { path: "/tmp/program", inferior_tty: "/dev/pts/7" } },
     ],
   },
   {
@@ -71,6 +72,7 @@ export const RIZIN_DEBUG_TOOL_CONTRACTS = [
     outputSchema: z.strictObject({
       session_id: sessionId,
       state: z.enum(["ready", "closed"]),
+      inferior_tty: z.string(),
       recent_output: z.array(z.string()),
       recent_output_truncated: z.boolean(),
       diagnostics_truncated: z.boolean(),
@@ -87,7 +89,7 @@ export const RIZIN_DEBUG_TOOL_CONTRACTS = [
     ...toolContractMetadata("close_rizin_debug_session"),
     kind: "native-provider",
     description:
-      "Stop only the REA-owned Rizin debugger process. The target state is reported as unknown; REA does not infer that the target stopped or kill a process based on its PID or path.",
+      "Close the REA-owned Rizin debugger only after verifying no inferior remains or detaching one with a verified caller-selected TTY output sink. A detached target may continue running and write to that TTY; target state is otherwise reported as unknown. REA never signals an inferior based on PID or path.",
     inputSchema: z.strictObject({ session_id: sessionId }),
     outputSchema: z.strictObject({ target_state: z.literal("unknown") }),
     examples: [

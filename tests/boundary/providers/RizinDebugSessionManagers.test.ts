@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { RizinDebugSessionManager } from "../../../src/rizin/RizinDebugSessionManager.js";
+import { createRizinTestManager, rizinTestInferiorTty } from "./RizinTestInferiorTty.js";
 
 describe.skipIf(process.platform === "win32")(
   "persistent Rizin debugger session manager",
@@ -44,19 +45,21 @@ process.stdin.on("data", (chunk) => {
     const line = input.slice(0, boundary);
     input = input.slice(boundary + 1);
     if (line === "dr") process.stdout.write("backend-event\\0rax=0x1234\\0");
+    else if (line === "olj") process.stdout.write("[]\\0");
     else if (line.startsWith("!echo ")) process.stdout.write(line.slice(6) + "\\n\\0");
   }
 });
 `,
       );
       await chmod(provider, 0o700);
-      const manager = new RizinDebugSessionManager({
+      const manager = createRizinTestManager({
         REA_RIZIN_COMMAND: provider,
       });
       managers.push(manager);
 
       const started = await manager.start({
         path: "-target.bin",
+        inferior_tty: await rizinTestInferiorTty(),
         backend: "test-backend",
       });
       expect(started.ok).toBe(true);
@@ -68,6 +71,12 @@ process.stdin.on("data", (chunk) => {
         "-N",
         "-0",
         "-d",
+        "-R",
+        `stdout=${await rizinTestInferiorTty()}`,
+        "-R",
+        `stderr=${await rizinTestInferiorTty()}`,
+        "-e",
+        "dbg.exitkills=false",
         "-D",
         "test-backend",
         resolve("-target.bin"),
@@ -114,13 +123,13 @@ process.stdin.on("data", (chunk) => {
 `,
       );
       await chmod(provider, 0o700);
-      const manager = new RizinDebugSessionManager(
+      const manager = createRizinTestManager(
         { REA_RIZIN_COMMAND: provider },
         { frameTimeoutMs: 50 },
       );
       managers.push(manager);
 
-      const started = await manager.start({ path: "/tmp/fixture.bin" });
+      const started = await manager.start({ path: "/tmp/fixture.bin", inferior_tty: await rizinTestInferiorTty() });
       expect(started.ok).toBe(true);
       if (!started.ok) return;
       const timedOut = await manager.execute(started.value.session_id, "slow");
@@ -149,7 +158,7 @@ it.skipIf(process.platform === "win32")(
   async () => {
     const directory = await mkdtemp(join(tmpdir(), "rea-rizin-empty-frames-"));
     const provider = join(directory, "fake-rizin-empty.mjs");
-    const manager = new RizinDebugSessionManager({
+    const manager = createRizinTestManager({
       REA_RIZIN_COMMAND: provider,
     });
     try {
@@ -163,7 +172,7 @@ process.stdin.resume();
       );
       await chmod(provider, 0o700);
 
-      const started = await manager.start({ path: "/tmp/fixture.bin" });
+      const started = await manager.start({ path: "/tmp/fixture.bin", inferior_tty: await rizinTestInferiorTty() });
       expect(started.ok).toBe(true);
       if (!started.ok) return;
       await new Promise((resolveDelay) => setTimeout(resolveDelay, 100));

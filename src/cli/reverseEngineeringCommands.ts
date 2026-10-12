@@ -237,6 +237,10 @@ export const registerReverseEngineeringCommands = (
         .refine((value) => !/[\r\n]/u.test(value)),
     }),
     options: z.object({
+      inferiorTty: z
+        .string()
+        .min(1)
+        .describe("Caller-selected Linux TTY for inferior stdout and stderr."),
       backend: z
         .string()
         .min(1)
@@ -250,6 +254,7 @@ export const registerReverseEngineeringCommands = (
           const started = await manager.start(
             {
               ...args,
+              inferior_tty: options.inferiorTty,
               ...(options.backend === undefined
                 ? {}
                 : { backend: options.backend }),

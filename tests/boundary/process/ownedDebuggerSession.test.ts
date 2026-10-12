@@ -167,6 +167,90 @@ it("retains an exited POSIX session while descendants still hold its output stre
   expect(outputUnrefs).toBe(0);
 });
 
+it.each([
+  ["POSIX Error", "linux", new Error("pipe state unknown"), /inherited output stream settlement could not be verified: pipe state unknown/],
+  ["POSIX non-Error", "linux", "pipe state unknown", /inherited output stream settlement could not be verified: pipe state unknown/],
+  ["Windows Error", "win32", new Error("job state unknown"), /Windows Job Object settlement could not be verified: job state unknown/],
+  ["Windows non-Error", "win32", "job state unknown", /Windows Job Object settlement could not be verified: job state unknown/],
+] as const)("retains an exited debugger when output settlement throws (%s)", async (_label, platform, cause, expectedReason) => {
+  let disposals = 0;
+  const result = await stopOwnedDebuggerProcess(
+    {
+      id: "output-settlement-error",
+      exited: true,
+      launched: { process: { kill: () => true } },
+      supervisor: {
+        waitForExit: async () => true,
+        waitForOutputClose: async () => Promise.reject(cause),
+        disposeAfterOutputClose: () => {},
+        dispose: () => {
+          disposals += 1;
+        },
+        unrefOutputStreams: () => {},
+      },
+    },
+    "GDB",
+    { platform },
+  );
+
+  expect(result).toMatchObject({ status: "incomplete", reason: expectedReason });
+  expect(disposals).toBe(0);
+});
+
+it("does not signal an active debugger when its provider cannot detach the inferior", async () => {
+  const signals: NodeJS.Signals[] = [];
+  const result = await stopOwnedDebuggerProcess(
+    {
+      id: "missing-detach-capability",
+      exited: false,
+      launched: { process: { kill: (signal) => (signals.push(signal), true) } },
+      supervisor: {
+        waitForExit: async () => false,
+        waitForOutputClose: async () => false,
+        disposeAfterOutputClose: () => {},
+        dispose: () => {},
+        unrefOutputStreams: () => {},
+      },
+    },
+    "GDB",
+    { platform: "linux" },
+  );
+
+  expect(result).toEqual({
+    status: "incomplete",
+    reason:
+      "Owned GDB inferior detach cannot be verified because the provider has no detach capability.",
+  });
+  expect(signals).toEqual([]);
+});
+
+it("preserves a non-Error provider detach rejection and does not signal the debugger", async () => {
+  const signals: NodeJS.Signals[] = [];
+  const result = await stopOwnedDebuggerProcess(
+    {
+      id: "non-error-detach-failure",
+      exited: false,
+      launched: { process: { kill: (signal) => (signals.push(signal), true) } },
+      detachInferior: async () => Promise.reject("detach state unknown"),
+      supervisor: {
+        waitForExit: async () => false,
+        waitForOutputClose: async () => false,
+        disposeAfterOutputClose: () => {},
+        dispose: () => {},
+        unrefOutputStreams: () => {},
+      },
+    },
+    "GDB",
+    { platform: "linux" },
+  );
+
+  expect(result).toEqual({
+    status: "incomplete",
+    reason: "Owned GDB inferior detach could not be verified: detach state unknown",
+  });
+  expect(signals).toEqual([]);
+});
+
 it("does not signal a POSIX debugger when provider detach cannot be verified", async () => {
   const signals: NodeJS.Signals[] = [];
   const result = await stopOwnedDebuggerProcess(
@@ -493,6 +577,36 @@ it("disposes supervision when a process had already exited", async () => {
   expect(disposals).toBe(1);
   expect(outputUnrefs).toBe(1);
   expect(lifecycle).toEqual(["unref", "dispose"]);
+});
+
+it("uses the host platform when an exited debugger is stopped without options", async () => {
+  let outputCloseWaits = 0;
+  let outputUnrefs = 0;
+  const result = await stopOwnedDebuggerProcess(
+    {
+      id: "already-exited-default-platform",
+      exited: true,
+      launched: { process: { kill: () => true } },
+      supervisor: {
+        waitForExit: async () => true,
+        waitForOutputClose: async (timeoutMs) => {
+          expect(timeoutMs).toBe(1_000);
+          outputCloseWaits += 1;
+          return true;
+        },
+        disposeAfterOutputClose: () => {},
+        dispose: () => {},
+        unrefOutputStreams: () => {
+          outputUnrefs += 1;
+        },
+      },
+    },
+    "GDB",
+  );
+
+  expect(result).toEqual({ status: "already_exited" });
+  expect(outputCloseWaits).toBe(1);
+  expect(outputUnrefs).toBe(process.platform === "win32" ? 0 : 1);
 });
 
 it.skipIf(process.platform === "win32")(

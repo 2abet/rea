@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
 
 import { RizinDebugSessionManager } from "../../../src/rizin/RizinDebugSessionManager.js";
+import { createRizinTestManager, rizinTestInferiorTty } from "./RizinTestInferiorTty.js";
 
 let directory: string | undefined;
 const managers: Array<{ closeAll(): Promise<void> }> = [];
@@ -27,14 +28,14 @@ afterEach(async () => {
 });
 
 it("keeps persistent Rizin sessions unavailable on Windows", async () => {
-  const rizin = await new RizinDebugSessionManager(
+  const rizin = await createRizinTestManager(
     { REA_RIZIN_COMMAND: "/missing/rizin" },
     { platform: "win32" },
-  ).start({ path: "/tmp/fixture.bin" });
+  ).start({ path: "/tmp/fixture.bin", inferior_tty: await rizinTestInferiorTty() });
   expect(rizin.ok).toBe(false);
   if (!rizin.ok) {
     expect(rizin.error._tag).toBe("AnalysisCapabilityUnavailableError");
-    expect(rizin.error.message).toContain("Job Object");
+    expect(rizin.error.message).toContain("Linux /proc descriptor readback");
   }
 });
 
@@ -68,11 +69,11 @@ process.stdin.on("data", (chunk) => {
 `,
     );
     await chmod(provider, 0o700);
-    const manager = new RizinDebugSessionManager({
+    const manager = createRizinTestManager({
       REA_RIZIN_COMMAND: provider,
     });
     managers.push(manager);
-    const started = await manager.start({ path: "/tmp/fixture.bin" });
+    const started = await manager.start({ path: "/tmp/fixture.bin", inferior_tty: await rizinTestInferiorTty() });
     expect(started.ok).toBe(true);
     if (!started.ok) return;
     const first = manager.execute(started.value.session_id, "first");
@@ -118,11 +119,11 @@ process.stdin.on("data", (chunk) => {
 `,
     );
     await chmod(provider, 0o700);
-    const manager = new RizinDebugSessionManager({
+    const manager = createRizinTestManager({
       REA_RIZIN_COMMAND: provider,
     });
     managers.push(manager);
-    const started = await manager.start({ path: "/tmp/fixture.bin" });
+    const started = await manager.start({ path: "/tmp/fixture.bin", inferior_tty: await rizinTestInferiorTty() });
     expect(started.ok).toBe(true);
     if (!started.ok) return;
 
@@ -164,11 +165,11 @@ process.stdin.on("data", (chunk) => {
 `,
     );
     await chmod(provider, 0o700);
-    const manager = new RizinDebugSessionManager({
+    const manager = createRizinTestManager({
       REA_RIZIN_COMMAND: provider,
     });
     managers.push(manager);
-    const started = await manager.start({ path: "/tmp/fixture.bin" });
+    const started = await manager.start({ path: "/tmp/fixture.bin", inferior_tty: await rizinTestInferiorTty() });
     expect(started.ok).toBe(true);
     if (!started.ok) return;
 
@@ -203,12 +204,12 @@ process.stdin.on("data", () => process.stdout.write("retained\\0"));
 `,
     );
     await chmod(provider, 0o700);
-    const manager = new RizinDebugSessionManager(
+    const manager = createRizinTestManager(
       { REA_RIZIN_COMMAND: provider },
       { frameTimeoutMs: 40 },
     );
     managers.push(manager);
-    const started = await manager.start({ path: "/tmp/fixture.bin" });
+    const started = await manager.start({ path: "/tmp/fixture.bin", inferior_tty: await rizinTestInferiorTty() });
     expect(started.ok).toBe(true);
     if (!started.ok) return;
 
@@ -252,12 +253,12 @@ process.stdin.on("data", (chunk) => {
 `,
     );
     await chmod(provider, 0o700);
-    const manager = new RizinDebugSessionManager(
+    const manager = createRizinTestManager(
       { REA_RIZIN_COMMAND: provider },
       { frameTimeoutMs: 5_000 },
     );
     managers.push(manager);
-    const started = await manager.start({ path: "/tmp/fixture.bin" });
+    const started = await manager.start({ path: "/tmp/fixture.bin", inferior_tty: await rizinTestInferiorTty() });
     expect(started.ok).toBe(true);
     if (!started.ok) return;
     const controller = new AbortController();
@@ -289,11 +290,11 @@ process.stdin.resume();
 `,
     );
     await chmod(provider, 0o700);
-    const manager = new RizinDebugSessionManager({
+    const manager = createRizinTestManager({
       REA_RIZIN_COMMAND: provider,
     });
     managers.push(manager);
-    const started = await manager.start({ path: "/tmp/fixture.bin" });
+    const started = await manager.start({ path: "/tmp/fixture.bin", inferior_tty: await rizinTestInferiorTty() });
     expect(started.ok).toBe(true);
     if (!started.ok) return;
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 50));
@@ -314,7 +315,7 @@ it.skipIf(process.platform === "win32")(
       `#!/usr/bin/env node\nprocess.stdin.resume();\nsetInterval(() => {}, 1000);\n`,
     );
     await chmod(provider, 0o700);
-    const manager = new RizinDebugSessionManager({
+    const manager = createRizinTestManager({
       REA_RIZIN_COMMAND: provider,
     });
     managers.push(manager);
@@ -322,7 +323,7 @@ it.skipIf(process.platform === "win32")(
     setTimeout(() => controller.abort(), 50);
 
     const started = await manager.start(
-      { path: "/tmp/fixture.bin" },
+      { path: "/tmp/fixture.bin", inferior_tty: await rizinTestInferiorTty() },
       controller.signal,
     );
 
@@ -345,11 +346,11 @@ setInterval(() => {}, 1000);
 `,
     );
     await chmod(provider, 0o700);
-    const manager = new RizinDebugSessionManager({
+    const manager = createRizinTestManager({
       REA_RIZIN_COMMAND: provider,
     });
     managers.push(manager);
-    const started = await manager.start({ path: "/tmp/fixture.bin" });
+    const started = await manager.start({ path: "/tmp/fixture.bin", inferior_tty: await rizinTestInferiorTty() });
     expect(started.ok).toBe(true);
     if (!started.ok) return;
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 80));
@@ -384,11 +385,11 @@ process.stdin.on("data", (chunk) => {
 `,
     );
     await chmod(provider, 0o700);
-    const manager = new RizinDebugSessionManager({
+    const manager = createRizinTestManager({
       REA_RIZIN_COMMAND: provider,
     });
     managers.push(manager);
-    const started = await manager.start({ path: "/tmp/fixture.bin" });
+    const started = await manager.start({ path: "/tmp/fixture.bin", inferior_tty: await rizinTestInferiorTty() });
     expect(started.ok).toBe(true);
     if (!started.ok) return;
 

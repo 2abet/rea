@@ -2,6 +2,7 @@
   "extends": "./tsconfig.json",
   "include": [
     "src/application/reverse/ReverseEngineeringService.ts",
+    "src/cli/reverseEngineeringCommands.ts",
     "src/cutter/CutterBridgeClient.ts",
     "src/cutter/CutterBridgeService.ts",
     "src/gdb/GdbSessionManager.ts",
@@ -17,6 +18,8 @@
     "tests/boundary/providers/DebuggerSessionReviewRegressions.test.ts",
     "tests/boundary/providers/RizinDebugSessionCoverage.test.ts",
     "tests/boundary/providers/RizinTimeoutEvidence.test.ts",
+    "tests/boundary/providers/RizinInferiorTty.test.ts",
+    "tests/boundary/providers/RizinTestInferiorTty.ts",
     "tests/boundary/providers/RizinCommandTimeout.test.ts",
     "vitest.timeout.config.ts",
     "tests/boundary/providers/CutterBridgeClient.test.ts",
@@ -28,7 +31,9 @@
     "tests/boundary/mcp/cutterCancellationMcp.test.ts",
     "tests/boundary/mcp/reverseEngineeringPartialMcp.test.ts",
     "tests/boundary/mcp/reverseEngineeringEnvironmentMcp.test.ts",
+    "tests/boundary/cli/gdbStartupCleanupCli.test.ts",
     "tests/composition/reverseEngineering.test.ts",
+    "tests/composition/reverseEngineeringAdmission.test.ts",
     "tests/composition/reverseEngineeringEdgeCases.test.ts",
     "tests/composition/reverseEngineeringCancellation.test.ts",
     "src/process/ExecFileOutput.test.ts"

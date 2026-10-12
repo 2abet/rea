@@ -462,6 +462,17 @@ Chrome CI include this verifier. See [module relationships](website-module-trace
 
 ## Real-toolchain verification lanes
 
+Linux Rizin debugger ownership changes require a separate real-provider gate on
+Rizin 0.7.4. Run
+`npm run test:focused -- tests/boundary/providers/RizinInferiorTty.test.ts`.
+This test verifies the caller-selected TTY against the actual inferior's file
+descriptors, confirms `dbg.exitkills=false`, detaches through the `olj`/`o-`
+protocol, and checks that the target survives debugger close and writes to the
+selected TTY. The suite is included in the reverse-tools Vitest and mutation
+typecheck selections; its real-provider assertions skip when Rizin 0.7.4 is
+unavailable. Run the focused command above on a host with that provider for the
+explicit real-provider verification gate.
+
 Each real-toolchain command must require only the host tools needed to prove
 its stated claim. Use a host-native fixture for host/provider acceptance, and
 place optional cross-target formats or platform-specific runners in separate

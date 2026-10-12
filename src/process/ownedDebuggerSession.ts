@@ -31,11 +31,9 @@ const waitForInferiorDetach = async (
   let attempt = detachAttempts.get(session);
   if (attempt === undefined) {
     const pending = Promise.resolve().then(detach);
-    let tracked!: Promise<OwnedDebuggerDetachResult>;
-    tracked = pending.then(
+    const tracked = pending.then(
       (result) => {
-        if (detachAttempts.get(session) === tracked)
-          detachAttempts.delete(session);
+        detachAttempts.delete(session);
         detachOutcomes.set(
           session,
           isVerifiedDetachResult(result) ? "confirmed" : "unconfirmed",
@@ -43,8 +41,7 @@ const waitForInferiorDetach = async (
         return result;
       },
       (cause: unknown) => {
-        if (detachAttempts.get(session) === tracked)
-          detachAttempts.delete(session);
+        detachAttempts.delete(session);
         detachOutcomes.set(session, "unconfirmed");
         throw cause;
       },
@@ -52,7 +49,7 @@ const waitForInferiorDetach = async (
     attempt = tracked;
     detachAttempts.set(session, tracked);
   }
-  let timer: NodeJS.Timeout | undefined;
+  let timer!: NodeJS.Timeout;
   try {
     return await Promise.race([
       attempt,
@@ -61,7 +58,7 @@ const waitForInferiorDetach = async (
       }),
     ]);
   } finally {
-    if (timer !== undefined) clearTimeout(timer);
+    clearTimeout(timer);
   }
 };
 

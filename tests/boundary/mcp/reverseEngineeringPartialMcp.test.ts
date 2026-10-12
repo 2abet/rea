@@ -315,3 +315,42 @@ it("keeps provider execution and Evidence recording inside analysis admission", 
     "admission-end",
   ]);
 });
+
+it("returns admission failures without invoking a reverse-engineering provider", async () => {
+  const registrations = new Map<
+    string,
+    (input: unknown, context: unknown) => Promise<unknown>
+  >();
+  const server = {
+    registerTool: (
+      name: string,
+      _options: unknown,
+      handler: (input: unknown, context: unknown) => Promise<unknown>,
+    ) => registrations.set(name, handler),
+  } as unknown as McpServer;
+  const inspectWithObjdump = vi.fn();
+  const service = {
+    inspectWithObjdump,
+    executeRizinCommand: vi.fn(),
+  } as unknown as ReverseEngineeringService;
+  const admission: WithAdmittedAnalysis = async () =>
+    err(new AnalysisInputError("inspect_with_objdump"));
+  registerReverseEngineeringTools(
+    server,
+    service,
+    pino({ enabled: false }),
+    createToolResultDelivery(2 * 1024 * 1024),
+    undefined,
+    admission,
+  );
+  const invoke = registrations.get("inspect_with_objdump");
+  if (invoke === undefined) throw new Error("objdump MCP handler was not registered");
+
+  const response = (await invoke(
+    { path: "package.json", operation: "file_headers" },
+    { mcpReq: { signal: new AbortController().signal } },
+  )) as { readonly isError?: boolean };
+
+  expect(response.isError).toBe(true);
+  expect(inspectWithObjdump).not.toHaveBeenCalled();
+});

@@ -1,5 +1,6 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { RizinDebugSessionManager } from "../../../src/rizin/RizinDebugSessionManager.js";
+import { createRizinTestManager, rizinTestInferiorTty } from "./RizinTestInferiorTty.js";
 import {
   createRizinCoverageHarness,
   abortOnCheck,
@@ -13,7 +14,7 @@ it.skipIf(process.platform === "win32")(
   "times out when an active command produces no frame",
   async () => {
     const injected = createInjectedProcess();
-    const manager = new RizinDebugSessionManager(
+    const manager = createRizinTestManager(
       { REA_RIZIN_COMMAND: "injected-rizin" },
       {
         spawnProcess: injected.spawnProcess,
@@ -22,7 +23,7 @@ it.skipIf(process.platform === "win32")(
       },
     );
     track(manager);
-    const started = await manager.start({ path: "/tmp/injected" });
+    const started = await manager.start({ path: "/tmp/injected", inferior_tty: await rizinTestInferiorTty() });
     expect(started.ok).toBe(true);
     if (!started.ok) return;
     const result = await manager.execute(started.value.session_id, "wait");
@@ -33,7 +34,7 @@ it.skipIf(process.platform === "win32")(
       expect(result.value.evidence.limitations).toEqual([
         "The current debugger target identity is not established by the Rizin session identifier.",
         "The command timed out before its completion marker; retained output is partial and completion is unknown.",
-        "The owned debugger process was stopped because output correlation could no longer be guaranteed.",
+        "The owned debugger session was stopped because output correlation could no longer be guaranteed.",
         "The command is unrestricted and may access local files, the shell, network, or mutate the target.",
       ]);
     }
@@ -48,7 +49,7 @@ it.skipIf(process.platform === "win32")(
         control.output("first frame\0second frame\0");
       },
     });
-    const manager = new RizinDebugSessionManager(
+    const manager = createRizinTestManager(
       { REA_RIZIN_COMMAND: "injected-rizin" },
       {
         spawnProcess: injected.spawnProcess,
@@ -57,7 +58,7 @@ it.skipIf(process.platform === "win32")(
       },
     );
     track(manager);
-    const started = await manager.start({ path: "/tmp/injected" });
+    const started = await manager.start({ path: "/tmp/injected", inferior_tty: await rizinTestInferiorTty() });
     expect(started.ok).toBe(true);
     if (!started.ok) return;
 
@@ -79,12 +80,12 @@ it.skipIf(process.platform === "win32")(
         control.output("first frame\0second frame\0third frame\0");
       },
     });
-    const manager = new RizinDebugSessionManager(
+    const manager = createRizinTestManager(
       { REA_RIZIN_COMMAND: "injected-rizin" },
       { spawnProcess: injected.spawnProcess, frameTimeoutMs: 1000 },
     );
     track(manager);
-    const started = await manager.start({ path: "/tmp/injected" });
+    const started = await manager.start({ path: "/tmp/injected", inferior_tty: await rizinTestInferiorTty() });
     expect(started.ok).toBe(true);
     if (!started.ok) return;
 
@@ -117,7 +118,7 @@ it.skipIf(process.platform === "win32")(
         setImmediate(() => control.stdinError());
       },
     });
-    const manager = new RizinDebugSessionManager(
+    const manager = createRizinTestManager(
       { REA_RIZIN_COMMAND: "injected-rizin" },
       {
         spawnProcess: injected.spawnProcess,
@@ -126,7 +127,7 @@ it.skipIf(process.platform === "win32")(
       },
     );
     track(manager);
-    const started = await manager.start({ path: "/tmp/injected" });
+    const started = await manager.start({ path: "/tmp/injected", inferior_tty: await rizinTestInferiorTty() });
     expect(started.ok).toBe(true);
     if (!started.ok) return;
 
@@ -148,12 +149,12 @@ it.skipIf(process.platform === "win32")(
         if (marker !== undefined) control.output(Buffer.from(`${marker}\0`));
       },
     });
-    const manager = new RizinDebugSessionManager(
+    const manager = createRizinTestManager(
       { REA_RIZIN_COMMAND: "injected-rizin" },
       { spawnProcess: injected.spawnProcess },
     );
     track(manager);
-    const started = await manager.start({ path: "/tmp/injected" });
+    const started = await manager.start({ path: "/tmp/injected", inferior_tty: await rizinTestInferiorTty() });
     expect(started.ok).toBe(true);
     if (!started.ok) return;
     signal = abortOnCheck(5);
@@ -170,7 +171,7 @@ it.skipIf(process.platform === "win32")(
   "handles cancellation observed immediately after installing the frame waiter",
   async () => {
     const injected = createInjectedProcess();
-    const manager = new RizinDebugSessionManager(
+    const manager = createRizinTestManager(
       { REA_RIZIN_COMMAND: "injected-rizin" },
       {
         spawnProcess: injected.spawnProcess,
@@ -178,7 +179,7 @@ it.skipIf(process.platform === "win32")(
       },
     );
     track(manager);
-    const started = await manager.start({ path: "/tmp/injected" });
+    const started = await manager.start({ path: "/tmp/injected", inferior_tty: await rizinTestInferiorTty() });
     expect(started.ok).toBe(true);
     if (!started.ok) return;
     const result = await manager.execute(
@@ -194,7 +195,7 @@ it.skipIf(process.platform === "win32").each([false, true])(
   "maps a frame-wait listener installation failure without losing cleanup (incomplete=%s)",
   async (incomplete) => {
     const injected = createInjectedProcess();
-    const manager = new RizinDebugSessionManager(
+    const manager = createRizinTestManager(
       { REA_RIZIN_COMMAND: "injected-rizin" },
       {
         spawnProcess: injected.spawnProcess,
@@ -206,7 +207,7 @@ it.skipIf(process.platform === "win32").each([false, true])(
       },
     );
     track(manager);
-    const started = await manager.start({ path: "/tmp/injected" });
+    const started = await manager.start({ path: "/tmp/injected", inferior_tty: await rizinTestInferiorTty() });
     expect(started.ok).toBe(true);
     if (!started.ok) return;
     const controller = new AbortController();
@@ -254,12 +255,12 @@ it.skipIf(process.platform === "win32")(
           setImmediate(() => control.output(Buffer.from(`output${marker}\0`)));
       },
     });
-    const manager = new RizinDebugSessionManager(
+    const manager = createRizinTestManager(
       { REA_RIZIN_COMMAND: "injected-rizin" },
       { spawnProcess: injected.spawnProcess },
     );
     track(manager);
-    const started = await manager.start({ path: "/tmp/injected" });
+    const started = await manager.start({ path: "/tmp/injected", inferior_tty: await rizinTestInferiorTty() });
     expect(started.ok).toBe(true);
     if (!started.ok) return;
     const result = await manager.execute(started.value.session_id, "dr");
@@ -274,12 +275,12 @@ it.skipIf(process.platform === "win32")(
     const injected = createInjectedProcess({
       onWrite: (_text, control) => control.exit(),
     });
-    const manager = new RizinDebugSessionManager(
+    const manager = createRizinTestManager(
       { REA_RIZIN_COMMAND: "injected-rizin" },
       { spawnProcess: injected.spawnProcess },
     );
     track(manager);
-    const started = await manager.start({ path: "/tmp/injected" });
+    const started = await manager.start({ path: "/tmp/injected", inferior_tty: await rizinTestInferiorTty() });
     expect(started.ok).toBe(true);
     if (!started.ok) return;
     const result = await manager.execute(started.value.session_id, "dr");
@@ -312,12 +313,12 @@ it.skipIf(process.platform === "win32")(
         if (marker !== undefined) setImmediate(() => control.exit());
       },
     });
-    const manager = new RizinDebugSessionManager(
+    const manager = createRizinTestManager(
       { REA_RIZIN_COMMAND: "injected-rizin" },
       { spawnProcess: injected.spawnProcess },
     );
     track(manager);
-    const started = await manager.start({ path: "/tmp/injected" });
+    const started = await manager.start({ path: "/tmp/injected", inferior_tty: await rizinTestInferiorTty() });
     expect(started.ok).toBe(true);
     if (!started.ok) return;
     const first = manager.execute(started.value.session_id, "first");

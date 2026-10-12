@@ -19,6 +19,7 @@ export default defineConfig({
     include: [
       "tests/boundary/providers/GdbSessionManagers.test.ts",
       "tests/boundary/providers/RizinDebugSessionManagers.test.ts",
+      "tests/boundary/providers/RizinInferiorTty.test.ts",
       "tests/boundary/providers/GdbSessionManagerCoverage.test.ts",
       "tests/boundary/providers/GdbCommandQueue.test.ts",
       "tests/boundary/providers/GdbSessionReviewRegressions.test.ts",
@@ -40,7 +41,9 @@ export default defineConfig({
       "tests/boundary/mcp/cutterCancellationMcp.test.ts",
       "tests/boundary/mcp/reverseEngineeringEnvironmentMcp.test.ts",
       "tests/boundary/mcp/reverseEngineeringPartialMcp.test.ts",
+      "tests/boundary/cli/gdbStartupCleanupCli.test.ts",
       "tests/composition/reverseEngineering.test.ts",
+      "tests/composition/reverseEngineeringAdmission.test.ts",
       "tests/composition/reverseEngineeringEdgeCases.test.ts",
       "tests/composition/reverseEngineeringCancellation.test.ts",
       "src/process/ExecFileOutput.test.ts",

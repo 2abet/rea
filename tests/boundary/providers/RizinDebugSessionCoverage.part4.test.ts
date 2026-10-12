@@ -1,5 +1,6 @@
 import { afterEach, expect, it } from "vitest";
 import { RizinDebugSessionManager } from "../../../src/rizin/RizinDebugSessionManager.js";
+import { createRizinTestManager, rizinTestInferiorTty } from "./RizinTestInferiorTty.js";
 import {
   createRizinCoverageHarness,
   createInjectedProcess,
@@ -24,7 +25,7 @@ it.skipIf(process.platform === "win32")(
           });
       },
     });
-    const manager = new RizinDebugSessionManager(
+    const manager = createRizinTestManager(
       { REA_RIZIN_COMMAND: "injected-rizin" },
       {
         spawnProcess: injected.spawnProcess,
@@ -33,7 +34,7 @@ it.skipIf(process.platform === "win32")(
       },
     );
     track(manager);
-    const started = await manager.start({ path: "/tmp/injected" });
+    const started = await manager.start({ path: "/tmp/injected", inferior_tty: await rizinTestInferiorTty() });
     expect(started.ok).toBe(true);
     if (!started.ok) return;
     const result = await manager.execute(started.value.session_id, "large");
@@ -46,12 +47,12 @@ it.skipIf(process.platform === "win32")(
   "closes an injected session on an oversized unsolicited frame",
   async () => {
     const injected = createInjectedProcess();
-    const manager = new RizinDebugSessionManager(
+    const manager = createRizinTestManager(
       { REA_RIZIN_COMMAND: "injected-rizin" },
       { spawnProcess: injected.spawnProcess },
     );
     track(manager);
-    const started = await manager.start({ path: "/tmp/injected" });
+    const started = await manager.start({ path: "/tmp/injected", inferior_tty: await rizinTestInferiorTty() });
     expect(started.ok).toBe(true);
     if (!started.ok) return;
     injected.control.output(Buffer.alloc(16 * 1024 * 1024 + 1, 0x61));
@@ -123,7 +124,7 @@ it.skipIf(process.platform === "win32")(
 );
 
 it.skipIf(process.platform === "win32")(
-  "keeps timeout evidence unavailable when cleanup cannot confirm process stop",
+  "preserves partial timeout evidence when cleanup cannot be confirmed",
   async () => {
     const provider = await makeProvider(
       'process.stdout.write("\\0"); process.stdin.setEncoding("utf8"); process.stdin.on("data", (chunk) => { if (chunk.includes("slow")) process.stdout.write("partial\\0"); });',
@@ -133,14 +134,18 @@ it.skipIf(process.platform === "win32")(
       stopProcess: incompleteStop,
     });
     const result = await manager.execute(sessionId, "slow");
-    expect(result.ok).toBe(false);
-    if (!result.ok)
-      expect(result.error.message).toContain("injected stop uncertainty");
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.result.completion_status).toBe("unknown");
+      expect(result.value.evidence.limitations.join(" ")).toContain(
+        "injected stop uncertainty",
+      );
+    }
   },
 );
 
 it.skipIf(process.platform === "win32")(
-  "keeps truncated output unavailable when cleanup cannot confirm process stop",
+  "preserves truncated output when cleanup cannot be confirmed",
   async () => {
     const provider = await makeProvider(
       `process.stdout.write("\\0");
@@ -162,9 +167,13 @@ process.stdin.on("data", (chunk) => {
       stopProcess: incompleteStop,
     });
     const result = await manager.execute(sessionId, "many");
-    expect(result.ok).toBe(false);
-    if (!result.ok)
-      expect(result.error.message).toContain("injected stop uncertainty");
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.result.completion_status).toBe("unknown");
+      expect(result.value.evidence.limitations.join(" ")).toContain(
+        "injected stop uncertainty",
+      );
+    }
   },
 );
 

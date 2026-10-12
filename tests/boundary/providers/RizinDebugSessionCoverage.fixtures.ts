@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { PassThrough, Writable } from "node:stream";
 
 import { RizinDebugSessionManager } from "../../../src/rizin/RizinDebugSessionManager.js";
+import { createRizinTestManager, rizinTestInferiorTty } from "./RizinTestInferiorTty.js";
 import { stopOwnedDebuggerProcess } from "../../../src/process/ownedDebuggerSession.js";
 import type {
   ProviderProcessHandle,
@@ -183,12 +184,12 @@ export const createRizinCoverageHarness = () => {
     provider: string,
     options: ConstructorParameters<typeof RizinDebugSessionManager>[1] = {},
   ): Promise<{ manager: RizinDebugSessionManager; sessionId: string }> => {
-    const manager = new RizinDebugSessionManager(
+    const manager = createRizinTestManager(
       { REA_RIZIN_COMMAND: provider },
       options,
     );
     track(manager);
-    const result = await manager.start({ path: "/tmp/coverage-target" });
+    const result = await manager.start({ path: "/tmp/coverage-target", inferior_tty: await rizinTestInferiorTty() });
     if (!result.ok) throw result.error;
     return { manager, sessionId: result.value.session_id };
   };

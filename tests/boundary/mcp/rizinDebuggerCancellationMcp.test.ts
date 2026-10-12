@@ -10,6 +10,7 @@ import { z } from "zod";
 
 import { toolContract } from "../../../src/contracts/toolContracts.js";
 import { RizinDebugSessionManager } from "../../../src/rizin/RizinDebugSessionManager.js";
+import { createRizinTestManager, rizinTestInferiorTty } from "../providers/RizinTestInferiorTty.js";
 import { silentLogger } from "../../../src/logger.js";
 import { registerRizinDebugTools } from "../../../src/server/registerRizinDebugTools.js";
 import { createToolResultDelivery } from "../../../src/server/toolResult.js";
@@ -66,7 +67,7 @@ process.stdin.on("data", async (chunk) => {
 `,
     );
     await chmod(provider, 0o700);
-    const manager = new RizinDebugSessionManager({
+    const manager = createRizinTestManager({
       REA_RIZIN_COMMAND: provider,
     });
     const server = new McpServer({ name: "rizin-cancellation", version: "1" });
@@ -84,7 +85,10 @@ process.stdin.on("data", async (chunk) => {
       await client.connect(clientTransport);
       const started = await client.callTool({
         name: "start_rizin_debug_session",
-        arguments: { path: "/tmp/fixture.bin" },
+        arguments: {
+          path: "/tmp/fixture.bin",
+          inferior_tty: await rizinTestInferiorTty(),
+        },
       });
       const sessionId = z
         .object({ session_id: z.string().uuid() })

@@ -116,6 +116,7 @@ process.stdin.on("data", (chunk) => {
       });
       expect(started.error).not.toMatchObject({ _tag: "AnalysisTimeoutError" });
       expect(JSON.stringify(started.error)).toContain("GDB startup diagnostic");
+      expect(started.error.message).toContain("exit code 7, signal null");
       expect(JSON.stringify(started.error)).toContain("process_exit_observed");
       expect(started.error.partialObservation).toMatchObject({
         parameters: {
@@ -312,13 +313,26 @@ it.skipIf(process.platform === "win32")(
     directory = await mkdtemp(join(tmpdir(), "rea-gdb-start-shutdown-"));
     const provider = join(directory, "fake-gdb-blocked.mjs");
     const pidPath = join(directory, "pid");
+    const signalPath = join(directory, "signal");
+    const releasePath = join(directory, "release");
     await writeFile(
       provider,
       `#!/usr/bin/env node
-import { writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 await writeFile(${JSON.stringify(pidPath)}, String(process.pid));
+process.on("SIGTERM", async () => {
+  await writeFile(${JSON.stringify(signalPath)}, "SIGTERM");
+  while (true) {
+    try {
+      await readFile(${JSON.stringify(releasePath)}, "utf8");
+      break;
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  }
+  process.exit(0);
+});
 process.stdin.resume();
-setTimeout(() => process.exit(0), 250);
 `,
     );
     await chmod(provider, 0o700);
@@ -339,9 +353,29 @@ setTimeout(() => process.exit(0), 250);
     }
     if (pidText === undefined) throw new Error("fake GDB did not start");
 
-    await manager.closeAll();
-    const started = await starting;
+    let closeSettled = false;
+    const closing = manager.closeAll().then(() => {
+      closeSettled = true;
+    });
+    let startSettled = false;
+    const startResult = starting.then((result) => {
+      startSettled = true;
+      return result;
+    });
+    try {
+      await expect
+        .poll(() => readFile(signalPath, "utf8").catch(() => undefined))
+        .toBe("SIGTERM");
+      expect(closeSettled).toBe(false);
+      expect(startSettled).toBe(false);
+    } finally {
+      await writeFile(releasePath, "release");
+    }
+    const started = await startResult;
+    await closing;
     expect(started.ok).toBe(false);
+    if (started.ok) throw new Error("GDB unexpectedly started");
+    expect(started.error._tag).toBe("AnalysisCancelledError");
     await expectOwnedProcessExited(pidText);
     expect(manager.status("unknown-session")).toBeUndefined();
     await expect(manager.start()).resolves.toMatchObject({

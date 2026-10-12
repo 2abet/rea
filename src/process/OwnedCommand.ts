@@ -49,7 +49,7 @@ export const runOwnedCommand = async (
     readonly acceptNonZeroExit?: boolean;
   },
   options: {
-    readonly signal?: AbortSignal;
+    readonly signal?: AbortSignal | undefined;
     readonly launcher?: (
       input: OwnedProviderProcessSpawnOptions,
     ) => Promise<SpawnedOwnedProviderProcess>;

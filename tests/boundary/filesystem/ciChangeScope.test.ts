@@ -145,6 +145,8 @@ it.each([
   "tests/boundary/providers/RizinDebugSessionReviewRegressions.test.ts",
   "tests/boundary/mcp/gdbCancellationMcp.test.ts",
   "tests/boundary/mcp/rizinDebuggerCancellationMcp.test.ts",
+  "tests/composition/reverseEngineeringAdmission.test.ts",
+  "tests/boundary/cli/gdbStartupCleanupCli.test.ts",
   "vitest.reverse-tools.config.ts",
   "vitest.reverse-tools-semantics.config.ts",
   "stryker.config.json",

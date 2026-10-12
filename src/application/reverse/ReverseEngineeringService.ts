@@ -587,10 +587,10 @@ interface OwnedOutputFailureOptions {
   readonly code: number | string | null;
   readonly signal: string | null;
   readonly outputTruncated: boolean;
-  readonly stdoutInvalidUtf8?: boolean;
-  readonly stderrInvalidUtf8?: boolean;
-  readonly stdoutBytes?: number;
-  readonly stderrBytes?: number;
+  readonly stdoutInvalidUtf8: boolean;
+  readonly stderrInvalidUtf8: boolean;
+  readonly stdoutBytes: number;
+  readonly stderrBytes: number;
   readonly capabilityError?: AnalysisCapabilityUnavailableError;
   readonly collectionFailure?: boolean;
   readonly cleanup?: AnalysisCleanupObservation;
@@ -620,10 +620,10 @@ class OwnedOutputFailure extends Error {
     this.code = options.code;
     this.signal = options.signal;
     this.outputTruncated = options.outputTruncated;
-    this.stdoutInvalidUtf8 = options.stdoutInvalidUtf8 ?? false;
-    this.stderrInvalidUtf8 = options.stderrInvalidUtf8 ?? false;
-    this.stdoutBytes = options.stdoutBytes ?? Buffer.byteLength(options.stdout);
-    this.stderrBytes = options.stderrBytes ?? Buffer.byteLength(options.stderr);
+    this.stdoutInvalidUtf8 = options.stdoutInvalidUtf8;
+    this.stderrInvalidUtf8 = options.stderrInvalidUtf8;
+    this.stdoutBytes = options.stdoutBytes;
+    this.stderrBytes = options.stderrBytes;
     this.capabilityError = options.capabilityError;
     this.collectionFailure = options.collectionFailure ?? false;
     this.cleanup = options.cleanup;
@@ -659,7 +659,7 @@ const runOwnedCommandOutput = (
         acceptNonZeroExit: true,
       },
       {
-        ...(options.signal === undefined ? {} : { signal: options.signal }),
+        signal: options.signal,
       },
     );
     // Stryker disable next-line ConditionalExpression,EqualityOperator -- null and undefined both mean no signal; wrapping a successful snapshot with those values is observationally equivalent after normalization.
