@@ -325,6 +325,7 @@ export const createServer = (
     session === undefined
       ? undefined
       : (evidence) => session.recordEvidence(evidence),
+    analysisAdmission,
   );
   const previousOnclose = server.server.onclose;
   server.server.onclose = () => {

@@ -1027,3 +1027,72 @@ it("fails with partial unknown Evidence when owned output collection fails after
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+it("does not claim provider completion or a final digest while owned cleanup is incomplete", async () => {
+  const { directory, path } = await createArtifact();
+  const service = new ReverseEngineeringService({
+    runOwned: async () => {
+      throw new OwnedCommandFailure(
+        "process",
+        "Owned process cleanup remains incomplete.",
+        providerSnapshot({ exitCode: 0 }),
+        "descendant remains active",
+        undefined,
+        ["run-id", "pid:42"],
+      );
+    },
+  });
+
+  try {
+    const result = await service.executeRizinCommand({ path, command: "iI" });
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        _tag: "AnalysisOutputError",
+        partialObservation: {
+          raw_result: {
+            exit_code: 0,
+            completion_status: "unknown",
+            artifact_sha256_after: null,
+            artifact_changed: null,
+          },
+          limitations: expect.arrayContaining([
+            expect.stringContaining("owned provider cleanup is incomplete"),
+          ]),
+        },
+      },
+    });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+it("records an explicit loss marker when provider bytes are invalid UTF-8", async () => {
+  const { directory, path } = await createArtifact();
+  const service = new ReverseEngineeringService({
+    runOwned: async () =>
+      providerSnapshot({
+        stdout: {
+          text: "captured � output",
+          bytes: 17,
+          observedBytes: 17,
+          invalidUtf8: true,
+        },
+      }),
+  });
+
+  try {
+    const result = await service.executeRizinCommand({ path, command: "iI" });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value).toMatchObject({
+        raw_result: { stdout: "captured � output" },
+      });
+      expect(result.value.limitations).toContain(
+        "Captured stdout bytes contain invalid or incomplete UTF-8; replacement characters in the text capture do not preserve the original bytes.",
+      );
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
