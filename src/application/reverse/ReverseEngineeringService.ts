@@ -14,6 +14,7 @@ import type {
   AnalysisCleanupObservation,
   AnalysisError,
 } from "../../domain/analysisErrorBase.js";
+import { AnalysisOutputError } from "../../domain/analysisErrorCore.js";
 import { createEvidence, type Evidence } from "../../domain/evidence.js";
 import type { JsonValue } from "../../domain/jsonValue.js";
 import { err, ok, type Result } from "../../domain/result.js";
@@ -21,42 +22,113 @@ import {
   objdumpInputSchema,
   rizinInputSchema,
 } from "../../domain/reverseEngineering.js";
-import { objdumpCommand } from "../../objdump/ObjdumpCommand.js";
-import { OBJDUMP_PROVIDER_IDENTITY } from "../../objdump/ObjdumpCommand.js";
+import type {
+  ReverseEngineeringCommandPort,
+  ReverseEngineeringProviderCommand,
+} from "./ReverseEngineeringCommandPort.js";
 import {
   execFileOutput,
   execFileOutputFailure,
 } from "../../process/ExecFileOutput.js";
 import { OwnedCommandFailure, runOwnedCommand } from "../../process/OwnedCommand.js";
-import { rizinCommand } from "../../rizin/RizinCommand.js";
-import { RIZIN_PROVIDER_IDENTITY } from "../../rizin/RizinCommand.js";
+import type { ProviderProcessSupervisor } from "../../process/ProviderProcess.js";
 
 export type ReverseEngineeringOperation =
   | "inspect_with_objdump"
   | "execute_rizin_command";
 
 const DEFAULT_TIMEOUT_MS = 120_000;
-const MAX_OUTPUT_BYTES_PER_STREAM = 16 * 1024 * 1024;
+const MAX_COMBINED_OUTPUT_BYTES = 16 * 1024 * 1024;
+
+export interface ReverseEngineeringServiceOptions {
+  readonly environment?: Readonly<NodeJS.ProcessEnv>;
+  readonly commands: ReverseEngineeringCommandPort;
+  readonly run?: typeof execFileOutput;
+  readonly runOwned?: typeof runOwnedCommand;
+  readonly digest?: typeof digestFile;
+}
+
+export type ReverseEngineeringServiceRuntimeOptions = Omit<
+  ReverseEngineeringServiceOptions,
+  "commands" | "environment"
+>;
 
 /** Shared application workflow for caller-selected local analysis commands. */
 export class ReverseEngineeringService {
   readonly #environment: Readonly<NodeJS.ProcessEnv>;
+  readonly #commands: ReverseEngineeringCommandPort;
   readonly #run: typeof execFileOutput;
   readonly #digest: typeof digestFile;
+  readonly #pendingCleanup = new Map<
+    ProviderProcessSupervisor,
+    AnalysisCleanupObservation
+  >();
+  readonly #activeOperations = new Map<
+    AbortController,
+    Promise<Result<Evidence, AnalysisError>>
+  >();
+  #closing = false;
+  #closePromise: Promise<void> | undefined;
 
   constructor(
-    options: {
-      readonly environment?: Readonly<NodeJS.ProcessEnv>;
-      readonly run?: typeof execFileOutput;
-      readonly runOwned?: typeof runOwnedCommand;
-      readonly digest?: typeof digestFile;
-    } = {},
+    options: ReverseEngineeringServiceOptions,
   ) {
     this.#environment = options.environment ?? process.env;
+    this.#commands = options.commands;
     this.#run =
       options.run ??
-      runOwnedCommandOutput(options.runOwned ?? runOwnedCommand);
+      runOwnedCommandOutput(
+        options.runOwned ?? runOwnedCommand,
+        (owner, cleanup) => this.#pendingCleanup.set(owner, cleanup),
+      );
     this.#digest = options.digest ?? digestFile;
+  }
+
+  /** Retry cleanup for provider process groups retained after an incomplete stop. */
+  close(): Promise<void> {
+    this.#closing = true;
+    this.#closePromise ??= this.#closeActiveOperationsAndCleanup().catch((cause: unknown) => {
+      this.#closePromise = undefined;
+      throw cause;
+    });
+    return this.#closePromise;
+  }
+
+  async #closeActiveOperationsAndCleanup(): Promise<void> {
+    const active = [...this.#activeOperations.entries()];
+    for (const [controller] of active) controller.abort();
+    await Promise.allSettled(active.map(([, operation]) => operation));
+
+    const failures: AnalysisCleanupObservation[] = [];
+    for (const [owner, previous] of this.#pendingCleanup) {
+      let result: Awaited<ReturnType<ProviderProcessSupervisor["stop"]>>;
+      try {
+        result = await owner.stop();
+      } catch (cause) {
+        result = {
+          status: "incomplete",
+          reason: cause instanceof Error ? cause.message : String(cause),
+        };
+      }
+      if (result.status === "incomplete") {
+        const cleanup = {
+          reason: result.reason,
+          resources: previous.resources,
+        };
+        this.#pendingCleanup.set(owner, cleanup);
+        failures.push(cleanup);
+      } else {
+        this.#pendingCleanup.delete(owner);
+      }
+    }
+    if (failures.length > 0) {
+      const cleanup = failures[0]!;
+      throw new AnalysisOutputError(
+        "reverse_engineering_cleanup",
+        "Provider process cleanup remains incomplete.",
+        { cleanup },
+      );
+    }
   }
 
   inspectWithObjdump(
@@ -69,14 +141,13 @@ export class ReverseEngineeringService {
         err(new AnalysisInputError("inspect_with_objdump")),
       );
     const input = parsed.data;
+    const command = this.#commands.objdump(input);
     return this.#observe(
       "inspect_with_objdump",
-      this.#environment.REA_OBJDUMP_COMMAND ?? "objdump",
-      objdumpCommand(input),
+      command,
       input.path,
       input,
       options.signal,
-      { DEBUGINFOD_URLS: "" },
     );
   }
 
@@ -90,26 +161,84 @@ export class ReverseEngineeringService {
         err(new AnalysisInputError("execute_rizin_command")),
       );
     const input = parsed.data;
+    const command = this.#commands.rizin(input);
     return this.#observe(
       "execute_rizin_command",
-      this.#environment.REA_RIZIN_COMMAND ?? "rizin",
-      rizinCommand(input),
+      command,
       input.path,
       input,
       options.signal,
     );
   }
 
-  async #observe(
+  #observe(
     operation: ReverseEngineeringOperation,
-    command: string,
-    args: readonly string[],
+    profile: ReverseEngineeringProviderCommand,
     path: string,
     parameters: Readonly<Record<string, JsonValue>>,
     signal?: AbortSignal,
-    environmentOverrides: Readonly<NodeJS.ProcessEnv> = {},
   ): Promise<Result<Evidence, AnalysisError>> {
+    if (this.#closing)
+      return Promise.resolve(
+        err(new AnalysisOutputError(operation, "Reverse-engineering service is closed.")),
+      );
+    const controller = new AbortController();
+    const relayAbort = (): void => controller.abort(signal?.reason);
+    if (signal !== undefined && signal instanceof AbortSignal) {
+      if (signal.aborted) relayAbort();
+      else signal.addEventListener("abort", relayAbort, { once: true });
+    }
+    const operationSignal =
+      signal === undefined || signal instanceof AbortSignal
+        ? controller.signal
+        : signal;
+    const running = this.#observeProvider(
+      operation,
+      profile,
+      path,
+      parameters,
+      operationSignal,
+    );
+    const tracked = running.finally(() => {
+      signal?.removeEventListener("abort", relayAbort);
+      this.#activeOperations.delete(controller);
+    });
+    this.#activeOperations.set(controller, tracked);
+    return tracked;
+  }
+
+  async #observeProvider(
+    operation: ReverseEngineeringOperation,
+    profile: ReverseEngineeringProviderCommand,
+    path: string,
+    parameters: Readonly<Record<string, JsonValue>>,
+    signal?: AbortSignal,
+  ): Promise<Result<Evidence, AnalysisError>> {
+    const { executable: command, arguments: args } = profile;
     if (signal?.aborted) return err(new AnalysisCancelledError(operation));
+    for (const [owner, previous] of this.#pendingCleanup) {
+      let stopped: Awaited<ReturnType<ProviderProcessSupervisor["stop"]>>;
+      try {
+        stopped = await owner.stop();
+      } catch (cause) {
+        stopped = {
+          status: "incomplete",
+          reason: cause instanceof Error ? cause.message : String(cause),
+        };
+      }
+      if (stopped.status === "incomplete") {
+        const cleanup = { reason: stopped.reason, resources: previous.resources };
+        this.#pendingCleanup.set(owner, cleanup);
+        return err(
+          new AnalysisOutputError(
+            operation,
+            "A previous provider process still requires cleanup.",
+            { cleanup },
+          ),
+        );
+      }
+      this.#pendingCleanup.delete(owner);
+    }
     const absolutePath = resolve(path);
     let digest: string;
     try {
@@ -142,12 +271,12 @@ export class ReverseEngineeringService {
         env: {
           ...process.env,
           ...this.#environment,
-          ...environmentOverrides,
+          ...profile.environmentOverrides,
         },
         signal,
         timeout: DEFAULT_TIMEOUT_MS,
         stopSignal: "SIGTERM",
-        maxBuffer: MAX_OUTPUT_BYTES_PER_STREAM,
+        maxBuffer: MAX_COMBINED_OUTPUT_BYTES,
       });
       stdout = output.stdout;
       stderr = output.stderr;
@@ -210,6 +339,16 @@ export class ReverseEngineeringService {
           cause,
           capturedOutput,
         });
+      if (
+        failure === undefined &&
+        cause instanceof OwnedOutputFailure &&
+        cause.cleanup !== undefined
+      )
+        failure = new AnalysisOutputError(
+          operation,
+          "Provider process cleanup remains incomplete.",
+          { cause, capturedOutput, cleanup: cause.cleanup },
+        );
       if (capture.signal !== null || typeof capture.code !== "number") {
         exitCode = null;
         completionStatus = "unknown";
@@ -277,17 +416,15 @@ export class ReverseEngineeringService {
     ];
     const evidence = createEvidence(
       { path: absolutePath, sha256: digest, format: "unknown" },
-      operation === "inspect_with_objdump"
-        ? OBJDUMP_PROVIDER_IDENTITY
-        : RIZIN_PROVIDER_IDENTITY,
+      profile.identity,
       {
         predicateType: "rea.reverse-engineering.command-observation",
         operation,
-      parameters: {
-        ...parameters,
-        provider_executable: command,
-        command_arguments: [...args],
-      },
+        parameters: {
+          ...parameters,
+          provider_executable: command,
+          command_arguments: [...args],
+        },
         rawResult: result,
         result,
         limitations,
@@ -333,6 +470,10 @@ class OwnedOutputFailure extends Error {
 
 const runOwnedCommandOutput = (
   runOwned: typeof runOwnedCommand,
+  onCleanupOwner: (
+    owner: ProviderProcessSupervisor,
+    cleanup: AnalysisCleanupObservation,
+  ) => void,
 ): typeof execFileOutput => async (
   command,
   args,
@@ -351,7 +492,7 @@ const runOwnedCommandOutput = (
       },
       {
         timeoutMs: DEFAULT_TIMEOUT_MS,
-        diagnosticBytes: MAX_OUTPUT_BYTES_PER_STREAM,
+        diagnosticBytes: MAX_COMBINED_OUTPUT_BYTES,
         acceptNonZeroExit: true,
       },
       {
@@ -378,6 +519,11 @@ const runOwnedCommandOutput = (
     return { stdout: snapshot.stdout.text, stderr: snapshot.stderr.text };
   } catch (cause) {
     if (!(cause instanceof OwnedCommandFailure)) throw cause;
+    if (cause.cleanupOwner !== undefined && cause.cleanupFailure !== null)
+      onCleanupOwner(cause.cleanupOwner, {
+        reason: cause.cleanupFailure,
+        resources: cause.resources,
+      });
     const snapshot = cause.snapshot;
     const code =
       cause.reason === "cancelled"

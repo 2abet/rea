@@ -2,7 +2,7 @@ import pino from "pino";
 import type { McpServer } from "@modelcontextprotocol/server";
 import { expect, it, vi } from "vitest";
 
-import { ReverseEngineeringService } from "../../../src/application/reverse/ReverseEngineeringService.js";
+import { TestReverseEngineeringService as ReverseEngineeringService } from "../../support/reverseEngineeringService.js";
 import { AnalysisInputError } from "../../../src/domain/analysisErrorCore.js";
 import { EvidenceIntegrityError } from "../../../src/domain/evidenceErrors.js";
 import { err, ok } from "../../../src/domain/result.js";

@@ -4,6 +4,7 @@ import {
   AnalysisCapabilityUnavailableError,
   AnalysisCancelledError,
   AnalysisInputError,
+  AnalysisResourceConstraintError,
   AnalysisTimeoutError,
 } from "../domain/analysisErrorCore.js";
 import type { AnalysisError } from "../domain/analysisErrorBase.js";
@@ -26,6 +27,7 @@ const MAX_COMMAND_OUTPUT_BYTES = 16 * 1024 * 1024;
 const MAX_MI_LINE_BYTES = 16 * 1024 * 1024;
 const MAX_RECENT_MI_LINE_BYTES = 64 * 1024;
 const MAX_DIAGNOSTIC_BYTES = 64 * 1024;
+const DEFAULT_MAX_SESSIONS = 8;
 
 export const GDB_PROVIDER_IDENTITY = {
   id: "gnu.gdb",
@@ -92,12 +94,25 @@ interface GdbSession {
 /** Owns persistent GDB/MI sessions independently from the active binary target. */
 export class GdbSessionManager {
   readonly #sessions = new Map<string, GdbSession>();
+  readonly #activeStarts = new Map<
+    AbortController,
+    Promise<
+      Result<
+        { readonly session_id: string; readonly mi_version: "mi3" | "mi2" },
+        AnalysisError
+      >
+    >
+  >();
   readonly #command: string;
   readonly #commandTimeoutMs: number;
   readonly #startupTimeoutMs: number;
   readonly #platform: NodeJS.Platform;
   readonly #stopProcess: typeof stopOwnedDebuggerProcess;
   readonly #spawnProcess: typeof spawnOwnedProviderProcess;
+  readonly #maxSessions: number;
+  #sessionReservations = 0;
+  #closing = false;
+  #closePromise: Promise<void> | undefined;
 
   constructor(
     options: {
@@ -107,6 +122,7 @@ export class GdbSessionManager {
       readonly platform?: NodeJS.Platform;
       readonly stopProcess?: typeof stopOwnedDebuggerProcess;
       readonly spawnProcess?: typeof spawnOwnedProviderProcess;
+      readonly maxSessions?: number;
     } = {},
   ) {
     this.#command =
@@ -118,9 +134,72 @@ export class GdbSessionManager {
     this.#platform = options.platform ?? process.platform;
     this.#stopProcess = options.stopProcess ?? stopOwnedDebuggerProcess;
     this.#spawnProcess = options.spawnProcess ?? spawnOwnedProviderProcess;
+    this.#maxSessions = options.maxSessions ?? DEFAULT_MAX_SESSIONS;
   }
 
   async start(
+    signal?: AbortSignal,
+  ): Promise<
+    Result<
+      { readonly session_id: string; readonly mi_version: "mi3" | "mi2" },
+      AnalysisError
+    >
+  > {
+    if (this.#closing || signal?.aborted)
+      return err(new AnalysisCancelledError("start_gdb_session"));
+    const controller = new AbortController();
+    const relayAbort = (): void => controller.abort(signal?.reason);
+    signal?.addEventListener("abort", relayAbort, { once: true });
+    if (signal?.aborted) relayAbort();
+    const tracked = Promise.resolve()
+      .then(() => this.#startWithReservation(controller.signal))
+      .finally(() => {
+        signal?.removeEventListener("abort", relayAbort);
+        this.#activeStarts.delete(controller);
+      });
+    this.#activeStarts.set(controller, tracked);
+    return tracked;
+  }
+
+  async #startWithReservation(
+    signal?: AbortSignal,
+  ): Promise<
+    Result<
+      { readonly session_id: string; readonly mi_version: "mi3" | "mi2" },
+      AnalysisError
+    >
+  > {
+    if (signal?.aborted)
+      return err(new AnalysisCancelledError("start_gdb_session"));
+    const occupied = this.#sessions.size + this.#sessionReservations;
+    if (occupied >= this.#maxSessions)
+      return err(
+        new AnalysisResourceConstraintError(
+          "start_gdb_session",
+          "memory",
+          "GDB session capacity reached.",
+          {
+            max_sessions: this.#maxSessions,
+            active_or_reserved_sessions: occupied,
+          },
+        ),
+      );
+    this.#sessionReservations += 1;
+    let reservationHeld = true;
+    const releaseReservation = (): void => {
+      if (!reservationHeld) return;
+      reservationHeld = false;
+      this.#sessionReservations -= 1;
+    };
+    try {
+      return await this.#startReserved(releaseReservation, signal);
+    } finally {
+      releaseReservation();
+    }
+  }
+
+  async #startReserved(
+    releaseReservation: () => void,
     signal?: AbortSignal,
   ): Promise<
     Result<
@@ -139,15 +218,16 @@ export class GdbSessionManager {
         ),
       );
     const id = randomUUID();
-    const mi3 = await this.#startProtocol(id, "mi3", signal);
+    const mi3 = await this.#startProtocol(id, "mi3", releaseReservation, signal);
     return mi3.ok || signal?.aborted || this.#sessions.has(id)
       ? mi3
-      : this.#startProtocol(id, "mi2", signal);
+      : this.#startProtocol(id, "mi2", releaseReservation, signal);
   }
 
   async #startProtocol(
     id: string,
     miVersion: "mi3" | "mi2",
+    releaseReservation: () => void,
     signal?: AbortSignal,
   ): Promise<
     Result<
@@ -271,11 +351,13 @@ export class GdbSessionManager {
       if (signal?.aborted)
         throw new AnalysisCancelledError("start_gdb_session");
       this.#sessions.set(id, session);
+      releaseReservation();
       return ok({ session_id: id, mi_version: miVersion });
     } catch (cause) {
       const stopped = await this.#stopDebuggerOnly(session);
       if (stopped.status === "incomplete") {
         this.#sessions.set(id, session);
+        releaseReservation();
         return err(
           new AnalysisCapabilityUnavailableError(
             "gdb",
@@ -550,7 +632,21 @@ export class GdbSessionManager {
   }
 
   async closeAll(): Promise<void> {
-    return closeOwnedDebuggerSessions(
+    this.#closing = true;
+    this.#closePromise ??= this.#drainStartsAndCloseSessions().catch(
+      (cause: unknown) => {
+        this.#closePromise = undefined;
+        throw cause;
+      },
+    );
+    return this.#closePromise;
+  }
+
+  async #drainStartsAndCloseSessions(): Promise<void> {
+    const active = [...this.#activeStarts.entries()];
+    for (const [controller] of active) controller.abort();
+    await Promise.allSettled(active.map(([, start]) => start));
+    await closeOwnedDebuggerSessions(
       this.#sessions,
       (session) => this.#stopDebuggerOnly(session),
       "GDB",

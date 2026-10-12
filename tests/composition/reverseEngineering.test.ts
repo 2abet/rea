@@ -5,7 +5,7 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { ReverseEngineeringService } from "../../src/application/reverse/ReverseEngineeringService.js";
+import { TestReverseEngineeringService as ReverseEngineeringService } from "../support/reverseEngineeringService.js";
 import { projectAnalysisError } from "../../src/domain/analysisErrorProjection.js";
 
 describe("reverse engineering command services", () => {
@@ -35,6 +35,7 @@ describe("reverse engineering command services", () => {
         operation: "dwarf",
         follow_debug_links: true,
       });
+      if (!result.ok) throw result.error;
       expect(result.ok).toBe(true);
       if (!result.ok) return;
       expect(calls).toEqual([
