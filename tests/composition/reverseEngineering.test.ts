@@ -75,6 +75,11 @@ describe("reverse engineering command services", () => {
         operation: "file_headers",
       });
       expect(result.ok).toBe(false);
+      if (!result.ok)
+        expect(result.error.cause).toMatchObject({
+          code: "EINVAL",
+          message: "Artifact digest requires a regular file",
+        });
       expect(invoked).toBe(false);
     } finally {
       await rm(directory, { recursive: true, force: true });
@@ -151,6 +156,69 @@ describe("reverse engineering command services", () => {
   });
 });
 
+it("marks signal-terminated provider commands as unknown completion", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "rea-provider-signal-exit-"));
+  const path = join(directory, "fixture.bin");
+  await writeFile(path, "fixture");
+  let invocation = 0;
+  const service = new ReverseEngineeringService({
+    run: async () => {
+      invocation += 1;
+      if (invocation === 1)
+      throw Object.assign(new Error("provider killed by signal"), {
+        stdout: "partial output",
+        stderr: "",
+        code: null,
+        signal: "SIGKILL",
+        killed: true,
+      });
+      throw Object.assign(new Error("provider exited with status 2"), {
+        stdout: "ordinary partial output",
+        stderr: "ordinary diagnostic",
+        code: 2,
+        signal: null,
+        killed: false,
+      });
+    },
+  });
+
+  try {
+    const signaled = await service.executeRizinCommand({
+      path,
+      command: "wx 00 @ 0",
+    });
+    expect(signaled.ok).toBe(true);
+    if (signaled.ok) {
+      expect(signaled.value.raw_result).toMatchObject({
+        stdout: "partial output",
+        exit_code: null,
+        signal: "SIGKILL",
+        completion_status: "unknown",
+      });
+      expect(signaled.value.limitations.join(" ")).toContain("signal");
+    }
+    const ordinaryExit = await service.executeRizinCommand({
+      path,
+      command: "iI",
+    });
+    expect(ordinaryExit.ok).toBe(true);
+    if (ordinaryExit.ok) {
+      expect(ordinaryExit.value.raw_result).toMatchObject({
+        stdout: "ordinary partial output",
+        exit_code: 2,
+        signal: null,
+        completion_status: "complete",
+      });
+      expect(ordinaryExit.value.limitations.join(" ")).not.toContain(
+        "terminated by signal",
+      );
+      expect(ordinaryExit.value.limitations).toHaveLength(3);
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 describe("Rizin command service", () => {
   it("runs Rizin with user scripts suppressed while retaining plugins and preserves nonzero output", async () => {
     const directory = await mkdtemp(join(tmpdir(), "rea-rizin-"));
@@ -193,7 +261,10 @@ describe("Rizin command service", () => {
         stdout: "partial data",
         stderr: "command error",
         exit_code: 2,
+        completion_status: "complete",
       });
+      expect(result.value.limitations.join(" ")).not.toContain("terminated by signal");
+      expect(result.value.limitations).toHaveLength(3);
       expect(result.value.parameters).toMatchObject({
         command: "iI",
         provider_executable: "/tools/rizin",
@@ -325,6 +396,12 @@ it("preserves provider facts when cancellation interrupts the post-run digest", 
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error._tag).toBe("AnalysisCancelledError");
+      expect(result.error.capturedOutput).toMatchObject({
+        stdout: "provider completed",
+        stderr: "",
+        exit_code: 0,
+        signal: null,
+      });
       expect(result.error.partialObservation).toMatchObject({
         raw_result: {
           stdout: "provider completed",
