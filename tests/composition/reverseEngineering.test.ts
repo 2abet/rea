@@ -13,9 +13,9 @@ describe("reverse engineering command services", () => {
   it("documents the shared combined capture limit for both command tools", () => {
     for (const contract of REVERSE_ENGINEERING_TOOL_CONTRACTS)
       expect(contract.description).toContain("shared 16 MiB combined limit");
-    expect(
-      REVERSE_ENGINEERING_TOOL_CONTRACTS[0]?.description,
-    ).toContain("does not follow local debug links by default");
+    expect(REVERSE_ENGINEERING_TOOL_CONTRACTS[0]?.description).toContain(
+      "does not follow local debug links by default",
+    );
   });
 
   it("uses compatible local DWARF link flags and disables debuginfod through the environment", async () => {
@@ -175,13 +175,13 @@ it("marks signal-terminated provider commands as unknown completion", async () =
     run: async () => {
       invocation += 1;
       if (invocation === 1)
-      throw Object.assign(new Error("provider killed by signal"), {
-        stdout: "partial output",
-        stderr: "",
-        code: null,
-        signal: "SIGKILL",
-        killed: true,
-      });
+        throw Object.assign(new Error("provider killed by signal"), {
+          stdout: "partial output",
+          stderr: "",
+          code: null,
+          signal: "SIGKILL",
+          killed: true,
+        });
       throw Object.assign(new Error("provider exited with status 2"), {
         stdout: "ordinary partial output",
         stderr: "ordinary diagnostic",
@@ -276,7 +276,9 @@ describe("Rizin command service", () => {
         exit_code: 2,
         completion_status: "complete",
       });
-      expect(result.value.limitations.join(" ")).not.toContain("terminated by signal");
+      expect(result.value.limitations.join(" ")).not.toContain(
+        "terminated by signal",
+      );
       expect(result.value.limitations).toContain(
         "Rizin commands and retained plugins may read files or access network resources outside the selected artifact; those external inputs are not bound to Evidence.",
       );
@@ -369,7 +371,10 @@ it("retains partial Evidence when a provider command times out", async () => {
   });
 
   try {
-    const result = await service.executeRizinCommand({ path, command: "wx 00 @ 0" });
+    const result = await service.executeRizinCommand({
+      path,
+      command: "wx 00 @ 0",
+    });
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error._tag).toBe("AnalysisTimeoutError");

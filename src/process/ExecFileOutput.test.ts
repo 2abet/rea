@@ -224,7 +224,7 @@ describe.skipIf(process.platform === "win32")(
       const script = [
         'const fs = require("node:fs");',
         'for (const name of ["SIGINT", "SIGTERM"])',
-        '  process.on(name, () => process.exit(1));',
+        "  process.on(name, () => process.exit(1));",
         `fs.writeFileSync(${JSON.stringify(ready)}, "");`,
         "setInterval(() => {}, 1000);",
       ].join("\n");

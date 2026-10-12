@@ -32,7 +32,11 @@ it("uses provider profiles supplied through the application port", async () => {
       objdump: () => ({
         executable: "injected-objdump",
         arguments: ["--injected", path],
-        identity: { id: "test.objdump", name: "Injected objdump", version: null },
+        identity: {
+          id: "test.objdump",
+          name: "Injected objdump",
+          version: null,
+        },
         environmentOverrides: { INJECTED_PROFILE: "yes" },
       }),
       rizin: () => ({
@@ -45,7 +49,10 @@ it("uses provider profiles supplied through the application port", async () => {
   });
 
   try {
-    const result = await service.inspectWithObjdump({ path, operation: "file_headers" });
+    const result = await service.inspectWithObjdump({
+      path,
+      operation: "file_headers",
+    });
     expect(result.ok).toBe(true);
     const call = run.mock.calls[0];
     expect(call?.[0]).toBe("injected-objdump");
@@ -77,7 +84,11 @@ it("does not reintroduce ambient variables absent from the captured provider env
       objdump: () => ({
         executable: "captured-objdump",
         arguments: [path],
-        identity: { id: "test.objdump", name: "Captured objdump", version: null },
+        identity: {
+          id: "test.objdump",
+          name: "Captured objdump",
+          version: null,
+        },
         environmentOverrides: { PROFILE_VALUE: "explicit" },
       }),
       rizin: () => ({

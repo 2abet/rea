@@ -31,7 +31,10 @@ import {
   execFileOutput,
   execFileOutputFailure,
 } from "../../process/ExecFileOutput.js";
-import { OwnedCommandFailure, runOwnedCommand } from "../../process/OwnedCommand.js";
+import {
+  OwnedCommandFailure,
+  runOwnedCommand,
+} from "../../process/OwnedCommand.js";
 import type { ProviderProcessSupervisor } from "../../process/ProviderProcess.js";
 
 export type ReverseEngineeringOperation =
@@ -86,9 +89,7 @@ export class ReverseEngineeringService {
   #closing = false;
   #closePromise: Promise<void> | undefined;
 
-  constructor(
-    options: ReverseEngineeringServiceOptions,
-  ) {
+  constructor(options: ReverseEngineeringServiceOptions) {
     this.#environment = { ...(options.environment ?? process.env) };
     this.#commands = options.commands;
     this.#run =
@@ -103,10 +104,12 @@ export class ReverseEngineeringService {
   /** Retry cleanup for provider process groups retained after an incomplete stop. */
   close(): Promise<void> {
     this.#closing = true;
-    this.#closePromise ??= this.#closeActiveOperationsAndCleanup().catch((cause: unknown) => {
-      this.#closePromise = undefined;
-      throw cause;
-    });
+    this.#closePromise ??= this.#closeActiveOperationsAndCleanup().catch(
+      (cause: unknown) => {
+        this.#closePromise = undefined;
+        throw cause;
+      },
+    );
     return this.#closePromise;
   }
 
@@ -198,7 +201,12 @@ export class ReverseEngineeringService {
       return Promise.resolve(err(new AnalysisCancelledError(operation)));
     if (this.#closing)
       return Promise.resolve(
-        err(new AnalysisOutputError(operation, "Reverse-engineering service is closed.")),
+        err(
+          new AnalysisOutputError(
+            operation,
+            "Reverse-engineering service is closed.",
+          ),
+        ),
       );
     if (
       this.#activeOperations.size >=
@@ -263,7 +271,10 @@ export class ReverseEngineeringService {
         };
       }
       if (stopped.status === "incomplete") {
-        const cleanup = { reason: stopped.reason, resources: previous.resources };
+        const cleanup = {
+          reason: stopped.reason,
+          resources: previous.resources,
+        };
         this.#pendingCleanup.set(owner, cleanup);
         return err(
           new AnalysisOutputError(
@@ -281,7 +292,8 @@ export class ReverseEngineeringService {
     const absolutePath = resolve(path);
     let digest: string | undefined;
     try {
-      if (!providerCapability) digest = await this.#digest(absolutePath, signal);
+      if (!providerCapability)
+        digest = await this.#digest(absolutePath, signal);
     } catch (cause) {
       const code = (cause as NodeJS.ErrnoException).code;
       if (signal?.aborted)
@@ -476,8 +488,12 @@ export class ReverseEngineeringService {
     };
     const limitations = [
       ...(providerCapability
-        ? ["The objdump version is not reported; the output lists BFD targets advertised by the installed tool and does not establish support for the selected artifact."]
-        : ["The executable version and supported formats are reported as unknown because no reliable version probe was performed."]),
+        ? [
+            "The objdump version is not reported; the output lists BFD targets advertised by the installed tool and does not establish support for the selected artifact.",
+          ]
+        : [
+            "The executable version and supported formats are reported as unknown because no reliable version probe was performed.",
+          ]),
       "A non-zero process exit is preserved as an observed command result.",
       ...(operation === "inspect_with_objdump" &&
       parameters.follow_debug_links === true
@@ -495,7 +511,9 @@ export class ReverseEngineeringService {
             `Captured ${[
               ...(stdoutInvalidUtf8 ? ["stdout"] : []),
               ...(stderrInvalidUtf8 ? ["stderr"] : []),
-            ].join(" and ")} bytes contain invalid or incomplete UTF-8; replacement characters in the text capture do not preserve the original bytes.`,
+            ].join(
+              " and ",
+            )} bytes contain invalid or incomplete UTF-8; replacement characters in the text capture do not preserve the original bytes.`,
           ]
         : []),
       ...(outputTruncated
@@ -514,8 +532,12 @@ export class ReverseEngineeringService {
             `Command completion is unknown because the operation failed with ${failure._tag}: ${failure.message}`,
           ]),
       ...(providerCapability
-        ? ["This output lists BFD targets advertised by the installed objdump and is independent of the selected artifact."]
-        : ["When both are available, pre-run and post-run digests detect artifact changes across the provider call but cannot prove the exact bytes consumed during the call."]),
+        ? [
+            "This output lists BFD targets advertised by the installed objdump and is independent of the selected artifact.",
+          ]
+        : [
+            "When both are available, pre-run and post-run digests detect artifact changes across the provider call but cannot prove the exact bytes consumed during the call.",
+          ]),
       ...(artifactChanged === true
         ? [
             "The provider command may have changed the artifact while analysis was running; pre-run and post-run digests are both reported.",
@@ -540,9 +562,7 @@ export class ReverseEngineeringService {
         predicateType: "rea.reverse-engineering.command-observation",
         operation,
         parameters: {
-          ...(providerCapability
-            ? { operation: "architectures" }
-            : parameters),
+          ...(providerCapability ? { operation: "architectures" } : parameters),
           provider_executable: command,
           command_arguments: [...args],
         },
@@ -604,110 +624,108 @@ class OwnedOutputFailure extends Error {
   }
 }
 
-const runOwnedCommandOutput = (
-  runOwned: typeof runOwnedCommand,
-  onCleanupOwner: (
-    owner: ProviderProcessSupervisor,
-    cleanup: AnalysisCleanupObservation,
-  ) => void,
-): ReverseEngineeringCommandRunner => async (
-  command,
-  args,
-  options = {},
-) => {
-  const spawnEnv = { ...options.env };
-  try {
-    const snapshot = await runOwned(
-      {
-        command,
-        arguments: [...args],
-        runId: randomUUID(),
-        expectedCommand: null,
-        env: spawnEnv,
-        hostEnvironment: {},
-        sweepTokenOwnedProcesses: true,
-      },
-      {
-        timeoutMs: DEFAULT_TIMEOUT_MS,
-        diagnosticBytes: MAX_COMBINED_OUTPUT_BYTES,
-        acceptNonZeroExit: true,
-      },
-      {
-        ...(options.signal === undefined ? {} : { signal: options.signal }),
-      },
-    );
-    // Stryker disable next-line ConditionalExpression,EqualityOperator -- null and undefined both mean no signal; wrapping a successful snapshot with those values is observationally equivalent after normalization.
-    if (snapshot.signal !== null && snapshot.signal !== undefined)
-      throw new OwnedOutputFailure({
+const runOwnedCommandOutput =
+  (
+    runOwned: typeof runOwnedCommand,
+    onCleanupOwner: (
+      owner: ProviderProcessSupervisor,
+      cleanup: AnalysisCleanupObservation,
+    ) => void,
+  ): ReverseEngineeringCommandRunner =>
+  async (command, args, options = {}) => {
+    const spawnEnv = { ...options.env };
+    try {
+      const snapshot = await runOwned(
+        {
+          command,
+          arguments: [...args],
+          runId: randomUUID(),
+          expectedCommand: null,
+          env: spawnEnv,
+          hostEnvironment: {},
+          sweepTokenOwnedProcesses: true,
+        },
+        {
+          timeoutMs: DEFAULT_TIMEOUT_MS,
+          diagnosticBytes: MAX_COMBINED_OUTPUT_BYTES,
+          acceptNonZeroExit: true,
+        },
+        {
+          ...(options.signal === undefined ? {} : { signal: options.signal }),
+        },
+      );
+      // Stryker disable next-line ConditionalExpression,EqualityOperator -- null and undefined both mean no signal; wrapping a successful snapshot with those values is observationally equivalent after normalization.
+      if (snapshot.signal !== null && snapshot.signal !== undefined)
+        throw new OwnedOutputFailure({
+          stdout: snapshot.stdout.text,
+          stderr: snapshot.stderr.text,
+          code: snapshot.exitCode ?? null,
+          signal: snapshot.signal,
+          outputTruncated: snapshot.diagnosticTruncated === true,
+          stdoutInvalidUtf8: snapshot.stdout.invalidUtf8 === true,
+          stderrInvalidUtf8: snapshot.stderr.invalidUtf8 === true,
+        });
+      if (snapshot.exitCode !== 0)
+        throw new OwnedOutputFailure({
+          stdout: snapshot.stdout.text,
+          stderr: snapshot.stderr.text,
+          code: snapshot.exitCode ?? null,
+          signal: null,
+          outputTruncated: snapshot.diagnosticTruncated === true,
+          stdoutInvalidUtf8: snapshot.stdout.invalidUtf8 === true,
+          stderrInvalidUtf8: snapshot.stderr.invalidUtf8 === true,
+        });
+      return {
         stdout: snapshot.stdout.text,
         stderr: snapshot.stderr.text,
-        code: snapshot.exitCode ?? null,
-        signal: snapshot.signal,
-        outputTruncated: snapshot.diagnosticTruncated === true,
         stdoutInvalidUtf8: snapshot.stdout.invalidUtf8 === true,
         stderrInvalidUtf8: snapshot.stderr.invalidUtf8 === true,
-      });
-    if (snapshot.exitCode !== 0)
+      };
+    } catch (cause) {
+      if (!(cause instanceof OwnedCommandFailure)) throw cause;
+      if (cause.cleanupOwner !== undefined && cause.cleanupFailure !== null)
+        onCleanupOwner(cause.cleanupOwner, {
+          reason: cause.cleanupFailure,
+          resources: cause.resources,
+        });
+      const snapshot = cause.snapshot;
+      const launchErrorCode =
+        cause.cause instanceof Error
+          ? Reflect.get(cause.cause, "code")
+          : undefined;
+      const code =
+        cause.reason === "cancelled"
+          ? "ABORT_ERR"
+          : cause.reason === "timeout"
+            ? "ETIMEDOUT"
+            : cause.reason === "output-limit"
+              ? "ERR_CHILD_PROCESS_STDIO_MAXBUFFER"
+              : launchErrorCode === "E2BIG"
+                ? "E2BIG"
+                : snapshot === null
+                  ? "ERR_PROVIDER_LAUNCH"
+                  : (snapshot.exitCode ?? null);
       throw new OwnedOutputFailure({
-        stdout: snapshot.stdout.text,
-        stderr: snapshot.stderr.text,
-        code: snapshot.exitCode ?? null,
-        signal: null,
-        outputTruncated: snapshot.diagnosticTruncated === true,
-        stdoutInvalidUtf8: snapshot.stdout.invalidUtf8 === true,
-        stderrInvalidUtf8: snapshot.stderr.invalidUtf8 === true,
+        stdout: snapshot?.stdout.text ?? "",
+        stderr: snapshot?.stderr.text ?? "",
+        code,
+        signal: snapshot?.signal ?? null,
+        outputTruncated: snapshot?.diagnosticTruncated === true,
+        stdoutInvalidUtf8: snapshot?.stdout.invalidUtf8 === true,
+        stderrInvalidUtf8: snapshot?.stderr.invalidUtf8 === true,
+        ...(cause.collectionFailure ? { collectionFailure: true } : {}),
+        ...(cause.cleanupFailure === null
+          ? {}
+          : {
+              cleanup: {
+                reason: cause.cleanupFailure,
+                resources: cause.resources,
+              },
+            }),
+        cause,
       });
-    return {
-      stdout: snapshot.stdout.text,
-      stderr: snapshot.stderr.text,
-      stdoutInvalidUtf8: snapshot.stdout.invalidUtf8 === true,
-      stderrInvalidUtf8: snapshot.stderr.invalidUtf8 === true,
-    };
-  } catch (cause) {
-    if (!(cause instanceof OwnedCommandFailure)) throw cause;
-    if (cause.cleanupOwner !== undefined && cause.cleanupFailure !== null)
-      onCleanupOwner(cause.cleanupOwner, {
-        reason: cause.cleanupFailure,
-        resources: cause.resources,
-      });
-    const snapshot = cause.snapshot;
-    const launchErrorCode =
-      cause.cause instanceof Error
-        ? Reflect.get(cause.cause, "code")
-        : undefined;
-    const code =
-      cause.reason === "cancelled"
-        ? "ABORT_ERR"
-        : cause.reason === "timeout"
-          ? "ETIMEDOUT"
-          : cause.reason === "output-limit"
-            ? "ERR_CHILD_PROCESS_STDIO_MAXBUFFER"
-            : launchErrorCode === "E2BIG"
-              ? "E2BIG"
-          : snapshot === null
-            ? "ERR_PROVIDER_LAUNCH"
-            : (snapshot.exitCode ?? null);
-    throw new OwnedOutputFailure({
-      stdout: snapshot?.stdout.text ?? "",
-      stderr: snapshot?.stderr.text ?? "",
-      code,
-      signal: snapshot?.signal ?? null,
-      outputTruncated: snapshot?.diagnosticTruncated === true,
-      stdoutInvalidUtf8: snapshot?.stdout.invalidUtf8 === true,
-      stderrInvalidUtf8: snapshot?.stderr.invalidUtf8 === true,
-      ...(cause.collectionFailure ? { collectionFailure: true } : {}),
-      ...(cause.cleanupFailure === null
-        ? {}
-        : {
-            cleanup: {
-              reason: cause.cleanupFailure,
-              resources: cause.resources,
-            },
-          }),
-      cause,
-    });
-  }
-};
+    }
+  };
 
 const ownedCleanupOptions = (
   cause: unknown,

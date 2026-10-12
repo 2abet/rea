@@ -3,7 +3,10 @@ import type { Logger } from "pino";
 
 import { createReverseEngineeringService } from "../composition/reverseEngineering.js";
 import { AnalysisError } from "../domain/analysisErrorBase.js";
-import { AnalysisInputError, AnalysisOutputError } from "../domain/analysisErrorCore.js";
+import {
+  AnalysisInputError,
+  AnalysisOutputError,
+} from "../domain/analysisErrorCore.js";
 import { evidenceSchema, type Evidence } from "../domain/evidence.js";
 import type { Result } from "../domain/result.js";
 import { err } from "../domain/result.js";
@@ -33,10 +36,7 @@ const executeWithCleanup = async (
     await service.close();
   } catch (cause) {
     if (result.ok) return err(asCleanupError(cause));
-    const cleanup =
-      cause instanceof AnalysisError
-        ? cause.cleanup
-        : undefined;
+    const cleanup = cause instanceof AnalysisError ? cause.cleanup : undefined;
     const error = new AnalysisOutputError(
       "reverse_engineering_cleanup",
       "Provider cleanup remains incomplete after the command failed.",
@@ -95,8 +95,10 @@ export const registerReverseEngineeringCommands = (
   cli: CliInstance,
   logger: Logger,
   environment: Readonly<NodeJS.ProcessEnv>,
-  createGdbManager: (environment: Readonly<NodeJS.ProcessEnv>) => GdbSessionManager =
-    (providerEnvironment) => new GdbSessionManager({ environment: providerEnvironment }),
+  createGdbManager: (
+    environment: Readonly<NodeJS.ProcessEnv>,
+  ) => GdbSessionManager = (providerEnvironment) =>
+    new GdbSessionManager({ environment: providerEnvironment }),
 ): void => {
   const service = createReverseEngineeringService(environment);
   cli.command(CLI_COMMANDS.inspectWithObjdump, {
@@ -167,13 +169,18 @@ export const registerReverseEngineeringCommands = (
     description:
       "Run one unrestricted GDB console command in an ephemeral MI session; provide an inferior TTY so a live target can be safely detached",
     args: z.object({
-      command: z.string().min(1).describe("One unrestricted GDB console command."),
+      command: z
+        .string()
+        .min(1)
+        .describe("One unrestricted GDB console command."),
     }),
     options: z.object({
       inferiorTty: z
         .string()
         .min(1)
-        .describe("Caller-selected durable TTY for output from a live GDB inferior."),
+        .describe(
+          "Caller-selected durable TTY for output from a live GDB inferior.",
+        ),
     }),
     run: ({ args, options }) =>
       withCommandCancellation((signal) =>
@@ -197,7 +204,11 @@ export const registerReverseEngineeringCommands = (
             });
             if (!started.ok) return projectAnalysisError(started.error);
             sessionId = started.value.session_id;
-            const executed = await manager.execute(sessionId, args.command, signal);
+            const executed = await manager.execute(
+              sessionId,
+              args.command,
+              signal,
+            );
             return executed.ok
               ? executed.value.evidence
               : projectAnalysisError(executed.error);
@@ -209,13 +220,22 @@ export const registerReverseEngineeringCommands = (
                 cleanupFailed = !closed.ok;
                 if (!closed.ok)
                   logger.error(
-                    { command: CLI_COMMANDS.debugWithGdb, cleanup: projectAnalysisError(closed.error) },
+                    {
+                      command: CLI_COMMANDS.debugWithGdb,
+                      cleanup: projectAnalysisError(closed.error),
+                    },
                     "GDB cleanup failed after collecting command output",
                   );
               } catch (cause) {
                 cleanupFailed = true;
                 logger.error(
-                  { command: CLI_COMMANDS.debugWithGdb, cleanup: cause instanceof Error ? cause.message : "Unknown cleanup failure" },
+                  {
+                    command: CLI_COMMANDS.debugWithGdb,
+                    cleanup:
+                      cause instanceof Error
+                        ? cause.message
+                        : "Unknown cleanup failure",
+                  },
                   "GDB cleanup failed after collecting command output",
                 );
               }
@@ -228,7 +248,10 @@ export const registerReverseEngineeringCommands = (
               logger.error(
                 {
                   command: CLI_COMMANDS.debugWithGdb,
-                  cleanup: cause instanceof Error ? cause.message : "Unknown cleanup failure",
+                  cleanup:
+                    cause instanceof Error
+                      ? cause.message
+                      : "Unknown cleanup failure",
                 },
                 "GDB fallback cleanup failed",
               );

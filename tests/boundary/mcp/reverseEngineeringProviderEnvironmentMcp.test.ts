@@ -12,10 +12,7 @@ import { ok } from "../../../src/domain/result.js";
 const analysis = {
   execute: async () =>
     ok(
-      createAnalysisExecution(
-        {},
-        { id: "test", name: "Test", version: null },
-      ),
+      createAnalysisExecution({}, { id: "test", name: "Test", version: null }),
     ),
 };
 
@@ -55,7 +52,12 @@ it("uses the server-selected environment unless a provider environment overrides
           environment: { ...process.env, PATH: scenario.environment },
           ...(scenario.provider === undefined
             ? {}
-            : { providerEnvironment: { ...process.env, PATH: scenario.provider } }),
+            : {
+                providerEnvironment: {
+                  ...process.env,
+                  PATH: scenario.provider,
+                },
+              }),
         },
       );
       const client = new Client({ name: "reverse-env-test", version: "1" });

@@ -43,7 +43,8 @@ it("records partial Evidence and references it in the original MCP error", async
     recordEvidence,
   );
   const invoke = registrations.get("execute_rizin_command");
-  if (invoke === undefined) throw new Error("Rizin MCP handler was not registered");
+  if (invoke === undefined)
+    throw new Error("Rizin MCP handler was not registered");
 
   const response = (await invoke(
     { path: "package.json", command: "iI" },
@@ -101,7 +102,8 @@ it("preserves a partial MCP error without claiming failed Evidence retention", a
     recordEvidence,
   );
   const invoke = registrations.get("execute_rizin_command");
-  if (invoke === undefined) throw new Error("Rizin MCP handler was not registered");
+  if (invoke === undefined)
+    throw new Error("Rizin MCP handler was not registered");
 
   const response = (await invoke(
     { path: "package.json", command: "iI" },
@@ -163,7 +165,9 @@ it("delivers objdump Evidence and ordinary input errors through their named tool
   };
   const failure = (await rizin({}, context)) as {
     readonly isError?: boolean;
-    readonly structuredContent?: { readonly error?: { readonly code?: string } };
+    readonly structuredContent?: {
+      readonly error?: { readonly code?: string };
+    };
   };
   const cancelled = new AbortController();
   cancelled.abort();
@@ -213,7 +217,8 @@ it("does not treat a malformed partial observation as retained Evidence", async 
     recordEvidence,
   );
   const invoke = registrations.get("execute_rizin_command");
-  if (invoke === undefined) throw new Error("Rizin MCP handler was not registered");
+  if (invoke === undefined)
+    throw new Error("Rizin MCP handler was not registered");
 
   const response = (await invoke(
     { path: "package.json", command: "iI" },
@@ -262,7 +267,8 @@ it("keeps provider execution and Evidence recording inside analysis admission", 
     admission,
   );
   const invoke = registrations.get("inspect_with_objdump");
-  if (invoke === undefined) throw new Error("objdump MCP handler was not registered");
+  if (invoke === undefined)
+    throw new Error("objdump MCP handler was not registered");
 
   await invoke(
     { path: "package.json", operation: "file_headers" },
