@@ -145,6 +145,50 @@ REA follows `HERMES_HOME` whitespace trimming, environment-variable expansion,
 and home expansion before resolving that profile. Setup previews the resolved
 configuration and skill destinations; doctor and uninstall use those same paths.
 
+## Qoder CLI
+
+For [Qoder](https://docs.qoder.com/cli/mcp-reference), setup writes
+`mcpServers.rea` into the user-level `~/.qoder/settings.json` (the
+`QODER_CONFIG_DIR` override is honored). Entries carry `command`, `args`, and
+`env`; stdio is the default transport. Qoder CLI discovers personal skills
+from `~/.qoder/skills` (following `QODER_CONFIG_DIR` when set), so setup
+installs its skill copy there.
+
+## Trae
+
+For [Trae](https://docs.trae.ai/ide/add-mcp-servers), setup writes
+`mcpServers.rea` into the user-scope `mcp.json` under Trae's VS Code-style
+user directory (`%APPDATA%\Trae\User` on Windows,
+`~/Library/Application Support/Trae/User` on macOS, and
+`~/.config/Trae/User` elsewhere). Entries carry `command`, `args`, and
+`env`; stdio is the default transport. Trae discovers personal skills from
+`~/.trae/skills` (`%userprofile%\.trae\skills` on Windows), so setup
+installs its skill copy there.
+
+The user-level MCP paths follow the editor's VS Code layout. Trae's official
+documentation describes the raw JSON editor without specifying those paths;
+loading this registration in Trae remains unverified.
+
+## ZCode
+
+For [ZCode](https://zcode.z.ai/en/docs/mcp-services), setup registers `rea` in the nested `mcp.servers` table of the
+user-level `~/.zcode/cli/config.json`. Entries carry `command`, `args`, and
+`env` without a transport discriminator. ZCode discovers personal skills from
+`~/.zcode/skills` rather than the shared directory, so setup installs its
+skill copy there.
+
+ZCode reads the user-scope `~/.agents/mcp.json` fallback only while the native
+`.zcode` config defines no servers at all, with no merging. When setup writes
+the first native server into an empty table, it copies the fallback's
+`mcpServers` entries into the native table so they keep loading, and leaves
+the fallback file untouched. Existing REA environment overrides are preserved
+when refreshing its command. A malformed or unreadable fallback file fails setup instead of
+being silently suppressed; repair or remove it and rerun. ZCode disables a
+server with `enable: false` on its entry; doctor reports such a registration
+as stale, and rerunning setup removes the flag to repair it. Native configuration
+uses strict JSON; setup refuses comments, trailing commas and a BOM rather than
+writing a registration ZCode cannot load.
+
 ## DeepSeek Harness
 
 DeepSeek Harness registers MCP clients through a Cordis YAML patch sequence
