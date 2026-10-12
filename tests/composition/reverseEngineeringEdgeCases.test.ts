@@ -4,13 +4,14 @@ import { join } from "node:path";
 
 import { expect, it, vi } from "vitest";
 
-import { ReverseEngineeringService } from "../../src/application/reverse/ReverseEngineeringService.js";
+import { TestReverseEngineeringService as ReverseEngineeringService } from "../support/reverseEngineeringService.js";
 import { objdumpCommand } from "../../src/objdump/ObjdumpCommand.js";
 import {
   OwnedCommandFailure,
   runOwnedCommand,
 } from "../../src/process/OwnedCommand.js";
 import type { ProviderProcessSnapshot } from "../../src/process/ProviderProcess.js";
+import type { ProviderProcessSupervisor } from "../../src/process/ProviderProcess.js";
 
 const createArtifact = async (): Promise<{
   directory: string;
@@ -30,6 +31,49 @@ it("uses the local-only DWARF option when debug links are disabled", () => {
       follow_debug_links: false,
     }),
   ).toEqual(["-W", "-WN", expect.stringMatching(/sample\.bin$/u)]);
+});
+
+it("does not follow DWARF debug links by default", async () => {
+  const { directory, path } = await createArtifact();
+  const calls: string[][] = [];
+  const service = new ReverseEngineeringService({
+    run: async (_command, args) => {
+      calls.push([...args]);
+      return { stdout: "DWARF output", stderr: "" };
+    },
+  });
+
+  try {
+    const result = await service.inspectWithObjdump({ path, operation: "dwarf" });
+    expect(result.ok).toBe(true);
+    expect(calls[0]).toEqual(["-W", "-WN", path]);
+    if (result.ok)
+      expect(result.value.parameters.follow_debug_links).toBe(false);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+it("marks opted-in external DWARF debug files as unbound Evidence sources", async () => {
+  const { directory, path } = await createArtifact();
+  const service = new ReverseEngineeringService({
+    run: async () => ({ stdout: "DWARF output", stderr: "" }),
+  });
+
+  try {
+    const result = await service.inspectWithObjdump({
+      path,
+      operation: "dwarf",
+      follow_debug_links: true,
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok)
+      expect(result.value.limitations).toContain(
+        "DWARF output may include local debug-link files whose identities are not bound to Evidence.",
+      );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 it("rejects malformed objdump requests before touching the provider", async () => {
@@ -92,6 +136,70 @@ it.each([
     }
   },
 );
+
+it("retains and retries an owned cleanup after an output-limit failure", async () => {
+  const { directory, path } = await createArtifact();
+  const stop = vi
+    .fn()
+    .mockResolvedValueOnce({ status: "incomplete", reason: "still running" })
+    .mockResolvedValueOnce({ status: "incomplete", reason: "still running" })
+    .mockResolvedValueOnce({ status: "incomplete", reason: "still running" })
+    .mockResolvedValueOnce({ status: "verified-cleanup" });
+  await stop(); // The owned-command runner's first cleanup attempt failed.
+  const cleanupOwner = { stop } as unknown as ProviderProcessSupervisor;
+  const runOwned = vi.fn<typeof runOwnedCommand>(async () => {
+    throw new OwnedCommandFailure(
+      "output-limit",
+      "output limit",
+      providerSnapshot({ diagnosticTruncated: true }),
+      "still running",
+      undefined,
+      ["run-id", "pid:42"],
+      cleanupOwner,
+    );
+  });
+  const service = new ReverseEngineeringService({
+    runOwned,
+  });
+
+  try {
+    const result = await service.executeRizinCommand({ path, command: "wx 00" });
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        cleanupIncomplete: true,
+        cleanup: { reason: "still running", resources: ["run-id", "pid:42"] },
+        partialObservation: {
+          raw_result: {
+            stdout: "captured owned output",
+            output_truncated: true,
+            completion_status: "unknown",
+          },
+        },
+      },
+    });
+    expect(stop).toHaveBeenCalledTimes(1);
+    const blocked = await service.executeRizinCommand({
+      path,
+      command: "iI",
+    });
+    expect(blocked).toMatchObject({
+      ok: false,
+      error: { cleanupIncomplete: true },
+    });
+    expect(stop).toHaveBeenCalledTimes(2);
+    expect(runOwned).toHaveBeenCalledTimes(1);
+    await expect(service.close()).rejects.toMatchObject({
+      cleanupIncomplete: true,
+      cleanup: { reason: "still running", resources: ["run-id", "pid:42"] },
+    });
+    expect(stop).toHaveBeenCalledTimes(3);
+    await service.close();
+    expect(stop).toHaveBeenCalledTimes(4);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 it("maps cancellation during the initial digest to a cancellation error", async () => {
   const { directory, path } = await createArtifact();
@@ -451,6 +559,75 @@ const providerSnapshot = (
   ...overrides,
 });
 
+it("waits for active provider cleanup during shutdown and rejects new work", async () => {
+  const { directory, path } = await createArtifact();
+  let signal: AbortSignal | undefined;
+  let announceStarted: (() => void) | undefined;
+  const started = new Promise<void>((resolve) => {
+    announceStarted = resolve;
+  });
+  let releaseProvider: (() => void) | undefined;
+  const providerGate = new Promise<void>((resolve) => {
+    releaseProvider = resolve;
+  });
+  const stop = vi
+    .fn()
+    .mockResolvedValueOnce({ status: "incomplete", reason: "still running" })
+    .mockResolvedValueOnce({ status: "verified-cleanup" });
+  const cleanupOwner = { stop } as unknown as ProviderProcessSupervisor;
+  const runOwned = vi.fn<typeof runOwnedCommand>(async (_spawn, _limits, options) => {
+    signal = options?.signal;
+    announceStarted?.();
+    await providerGate;
+    throw new OwnedCommandFailure(
+      "cancelled",
+      "Command cancelled during shutdown.",
+      providerSnapshot({ exitCode: null }),
+      "still running",
+      undefined,
+      ["run-id", "pid:42"],
+      cleanupOwner,
+    );
+  });
+  const service = new ReverseEngineeringService({ runOwned });
+
+  try {
+    const operation = service.executeRizinCommand({ path, command: "iI" });
+    await started;
+    let closeSettled = false;
+    const closing = service.close().finally(() => {
+      closeSettled = true;
+    });
+    expect(signal?.aborted).toBe(true);
+    await Promise.resolve();
+    expect(closeSettled).toBe(false);
+    releaseProvider?.();
+
+    await expect(operation).resolves.toMatchObject({
+      ok: false,
+      error: { _tag: "AnalysisCancelledError", cleanupIncomplete: true },
+    });
+    await expect(closing).rejects.toMatchObject({
+      cleanupIncomplete: true,
+      cleanup: { reason: "still running" },
+    });
+    expect(stop).toHaveBeenCalledTimes(1);
+    await expect(
+      service.executeRizinCommand({ path, command: "iI" }),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { _tag: "AnalysisOutputError" },
+    });
+    expect(runOwned).toHaveBeenCalledTimes(1);
+
+    await service.close();
+    expect(stop).toHaveBeenCalledTimes(2);
+  } finally {
+    releaseProvider?.();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 it.each([
   ["normal exit", providerSnapshot(), "complete", 0, false],
   [
@@ -512,7 +689,7 @@ it.each([
           diagnosticBytes: 16 * 1024 * 1024,
           acceptNonZeroExit: true,
         },
-        {},
+        { signal: expect.any(AbortSignal) },
       );
       expect(result).toMatchObject({
         ok: true,
@@ -648,7 +825,9 @@ it("forwards a caller abort signal to the owned command supervisor", async () =>
       { signal: controller.signal },
     );
     expect(result.ok).toBe(true);
-    expect(runOwned.mock.calls[0]?.[2]).toEqual({ signal: controller.signal });
+    expect(runOwned.mock.calls[0]?.[2]).toMatchObject({
+      signal: expect.any(AbortSignal),
+    });
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

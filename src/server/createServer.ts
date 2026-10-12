@@ -224,6 +224,9 @@ export const createServer = (
   const javascriptRecovery =
     options.javascriptRecovery ?? createJavaScriptRecoveryProvider(environment);
   const artifactResources = new ArtifactResourceScope();
+  const reverseEngineering = createReverseEngineeringService(
+    options.providerEnvironment ?? environment,
+  );
   const firmwareAnalysis = new FirmwareAnalysisService(
     options.firmwareAnalysis ?? createFirmwareAnalysisProvider(environment),
   );
@@ -266,6 +269,7 @@ export const createServer = (
       webModuleTrace.close(),
       javascriptRecovery.close?.() ?? Promise.resolve(),
       artifactResources.close(),
+      reverseEngineering.close(),
       firmwareAnalysis.close(),
       options.browserScenarioCapture?.close?.() ?? Promise.resolve(),
     ])
@@ -311,7 +315,7 @@ export const createServer = (
   registerBinaryAnalysisTools(toolContext);
   registerReverseEngineeringTools(
     server,
-    createReverseEngineeringService(options.providerEnvironment),
+    reverseEngineering,
     toolLogger,
     delivery,
     session === undefined

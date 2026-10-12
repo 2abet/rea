@@ -14,7 +14,7 @@ export const objdumpInputSchema = z
       "disassemble_all",
       "architectures",
     ]),
-    follow_debug_links: z.boolean().default(true),
+    follow_debug_links: z.boolean().default(false),
   })
   .strict();
 
