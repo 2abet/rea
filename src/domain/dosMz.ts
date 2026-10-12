@@ -62,7 +62,7 @@ export const observeMzWindowsHeader = (
   const observedPePrefix =
     available !== undefined &&
     available.length >= 2 &&
-    available.toString("ascii", 0, 2) === "PE";
+    available.toString("latin1", 0, 2) === "PE";
   if (fileSize - offset < (observedPePrefix ? 4 : 2))
     return { state: "absent" };
   return { state: "signature-needed", offset };
@@ -92,7 +92,7 @@ export const parseDosMzHeader = (
   fileSize = bytes.length,
   signatureAtOffset?: Buffer,
 ): Result<DosMzHeader, string> => {
-  if (bytes.length < 28 || bytes.toString("ascii", 0, 2) !== "MZ")
+  if (bytes.length < 28 || bytes.toString("latin1", 0, 2) !== "MZ")
     return err("invalid or truncated DOS MZ header");
   if (!Number.isSafeInteger(fileSize) || fileSize < bytes.length)
     return err("invalid DOS MZ file length");
