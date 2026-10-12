@@ -42,7 +42,7 @@ export const registerReverseEngineeringTools = (
     toolRegistrationOptions(objdump),
     (input, context: ServerContext) =>
       runAdmitted(
-        objdump.name,
+        objdump,
         context,
         withAdmittedAnalysis,
         delivery,
@@ -117,7 +117,7 @@ export const registerReverseEngineeringTools = (
         );
       }
       return runAdmitted(
-        rizin.name,
+        rizin,
         context,
         withAdmittedAnalysis,
         delivery,
@@ -151,7 +151,7 @@ export const registerReverseEngineeringTools = (
 };
 
 const runAdmitted = async (
-  operationName: string,
+  contract: ToolContract,
   context: ServerContext,
   admission: WithAdmittedAnalysis | undefined,
   delivery: ToolResultDelivery,
@@ -159,13 +159,13 @@ const runAdmitted = async (
 ): Promise<CallToolResult> => {
   if (admission === undefined) return operation();
   const admitted = await admission(
-    operationName,
+    contract.name,
     context.mcpReq.signal,
     async () => operation(),
   );
   return admitted.ok
     ? admitted.value
-    : delivery.toErrorToolResult(admitted.error);
+    : delivery.toErrorToolResult(admitted.error, contract.returnsTargetContent);
 };
 
 const deliverFailure = (
@@ -180,8 +180,9 @@ const deliverFailure = (
       error,
       partial.evidence_id,
       recordEvidence(partial),
+      contract.returnsTargetContent,
     );
-  return delivery.toErrorToolResult(error);
+  return delivery.toErrorToolResult(error, contract.returnsTargetContent);
 };
 
 const isEvidence = (value: unknown): value is Evidence =>
