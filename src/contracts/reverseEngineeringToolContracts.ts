@@ -44,7 +44,7 @@ export const REVERSE_ENGINEERING_TOOL_CONTRACTS = [
     ...toolContractMetadata("execute_rizin_command"),
     kind: "native-provider",
     description:
-      "Execute one caller-selected Rizin command against a local artifact using the Rizin CLI profile that suppresses user settings and scripts while retaining plugins. Preserves captured stdout and stderr inline with SHA-256 Evidence, up to a shared 16 MiB combined limit; output_truncated reports output beyond that limit and completion_status is unknown if buffer enforcement terminated the process. Command effects depend on the Rizin command and loaded plugins; JSON is command-specific and raw output remains authoritative.",
+      "Execute one caller-selected Rizin command against a local artifact using the Rizin CLI profile that suppresses user settings and scripts while retaining plugins. Preserves captured stdout and stderr inline with SHA-256 Evidence, up to a shared 16 MiB combined limit; output_truncated reports output beyond that limit and completion_status is unknown if buffer enforcement terminated the process. Rizin commands and retained plugins can execute foreign code, mutate files, access the network, and read files outside the selected artifact; identities and contents of those external inputs are not bound to Evidence. Command effects depend on the Rizin command and loaded plugins; JSON is command-specific and raw output remains authoritative.",
     inputSchema: rizinInputSchema,
     outputSchema: evidenceResultOf(commandObservationSchema),
     examples: [

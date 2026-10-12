@@ -413,6 +413,11 @@ export class ReverseEngineeringService {
             "DWARF output may include local debug-link files whose identities are not bound to Evidence.",
           ]
         : []),
+      ...(operation === "execute_rizin_command"
+        ? [
+            "Rizin commands and retained plugins may read files or access network resources outside the selected artifact; those external inputs are not bound to Evidence.",
+          ]
+        : []),
       ...(outputTruncated
         ? [
             "The provider command ended before completion could be confirmed; captured output is partial.",
