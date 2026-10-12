@@ -1,6 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { realpath } from "node:fs/promises";
-import { isAbsolute, resolve } from "node:path";
 
 import type { BinaryTarget } from "../../domain/binaryTargetTypes.js";
 import {
@@ -377,37 +375,33 @@ export class BinarySession
         return err(new AnalysisCancelledError("execute_rizin_command"));
 
       const activeAtDispatch = this.#active;
-      let mutationPath = isAbsolute(path) ? path : resolve(path);
-      try {
-        mutationPath = await realpath(mutationPath);
-      } catch {
-        // The provider workflow will report missing or unreadable input before
-        // dispatch; retain the lexical filesystem path for that outcome.
-      }
-      const rebindTarget =
-        activeAtDispatch?.target.path === mutationPath ||
-        activeAtDispatch?.target.sourcePath === mutationPath;
+      // Rizin commands are unrestricted: a hard link, symlink alias, plugin,
+      // or command script can mutate the active file through another path.
+      // Rebind every active session after the admitted call rather than infer
+      // file identity with an uncancellable path lookup.
+      const rebindTarget = activeAtDispatch !== undefined;
       this.invalidateSnapshot();
       const value = await operation();
       if (!rebindTarget) return ok(value);
 
-      const retired = await this.#closeActive({});
+      const retired = await this.#closeActive({}, false);
       if (!retired.ok) return err(rebindFailure(value, retired.error));
 
       const target = activeAtDispatch?.target;
       const reopenOptions: BinarySessionOpenOptions = {
         targetKind: target?.kind,
-        providerId:
-          activeAtDispatch?.profile?.provider.id ??
-          activeAtDispatch?.route.identity.id,
+        ...(activeAtDispatch?.profile === null ||
+        activeAtDispatch?.profile === undefined
+          ? {}
+          : { providerId: activeAtDispatch.profile.provider.id }),
         ...(target?.format === "dos-com" || target?.format === "raw-binary"
           ? { formatHint: target.format }
           : {}),
-        ...(target !== undefined && "architecture" in target
-          ? { architecture: target.architecture }
-          : {}),
-        ...(target !== undefined && "entryPoint" in target
-          ? { entryPoint: target.entryPoint }
+        ...(target?.format === "raw-binary"
+          ? {
+              architecture: target.architecture,
+              entryPoint: target.entryPoint,
+            }
           : {}),
       };
       const reopened = await this.#openWithinTransition(
@@ -416,14 +410,16 @@ export class BinarySession
           resolveSessionOpen({
             router: this.#providerRouter,
             current: this.#active,
-            path,
+            path: target?.sourcePath ?? target?.path ?? path,
             options: reopenOptions,
             stagedSnapshotMatches: (target, profile) =>
               this.matchesSnapshot(target, profile),
           }),
         reopenOptions,
       );
-      return reopened.ok ? ok(value) : err(rebindFailure(value, reopened.error));
+      return reopened.ok
+        ? ok(value)
+        : err(rebindFailure(value, reopened.error));
     });
   }
 
@@ -471,6 +467,7 @@ export class BinarySession
     options: Pick<ExecutionOptions, "progress"> & {
       readonly retainProviderDocuments?: boolean;
     },
+    clearRecords = true,
   ): Promise<Result<null, AnalysisError>> {
     const previous = this.#active;
     this.#active = undefined;
@@ -492,7 +489,7 @@ export class BinarySession
                 : {}),
             },
           );
-    this.clearSessionRecords();
+    if (clearRecords) this.clearSessionRecords();
     this.#clearRuntimeAvailability();
     const fileResources = await this.closeWriteResources();
     if (!closed.ok && !fileResources.ok)

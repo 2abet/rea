@@ -30,7 +30,10 @@ it("uses the captured server environment to resolve reverse-engineering provider
       },
     },
   );
-  const client = new Client({ name: "reverse-provider-environment", version: "1" });
+  const client = new Client({
+    name: "reverse-provider-environment",
+    version: "1",
+  });
   onTestFinished(async () => {
     await client.close();
     await server.close();
@@ -79,7 +82,10 @@ it("prefers an explicit provider environment over the captured server environmen
       providerEnvironment: { REA_RIZIN_COMMAND: override },
     },
   );
-  const client = new Client({ name: "reverse-provider-override", version: "1" });
+  const client = new Client({
+    name: "reverse-provider-override",
+    version: "1",
+  });
   onTestFinished(async () => {
     await client.close();
     await server.close();
@@ -96,8 +102,12 @@ it("prefers an explicit provider environment over the captured server environmen
     arguments: { path: artifact, command: "iI" },
   });
   expect(response.isError).not.toBe(true);
-  expect(JSON.stringify(response.structuredContent)).toContain("explicit-override");
-  expect(JSON.stringify(response.structuredContent)).not.toContain('"captured"');
+  expect(JSON.stringify(response.structuredContent)).toContain(
+    "explicit-override",
+  );
+  expect(JSON.stringify(response.structuredContent)).not.toContain(
+    '"captured"',
+  );
 });
 
 it("snapshots an explicit provider environment when the server is created", async () => {
@@ -128,7 +138,10 @@ it("snapshots an explicit provider environment when the server is created", asyn
     },
   );
   providerEnvironment.REA_RIZIN_COMMAND = configured;
-  const client = new Client({ name: "reverse-provider-snapshot", version: "1" });
+  const client = new Client({
+    name: "reverse-provider-snapshot",
+    version: "1",
+  });
   onTestFinished(async () => {
     await client.close();
     await server.close();
@@ -148,5 +161,7 @@ it("snapshots an explicit provider environment when the server is created", asyn
   expect(JSON.stringify(response.structuredContent)).toContain(
     "explicit-snapshot",
   );
-  expect(JSON.stringify(response.structuredContent)).not.toContain('"captured"');
+  expect(JSON.stringify(response.structuredContent)).not.toContain(
+    '"captured"',
+  );
 });

@@ -101,7 +101,12 @@ export const registerReverseEngineeringTools = (
           },
         );
         if (!admitted.ok)
-          return deliverFailure(admitted.error, rizin, delivery, recordEvidence);
+          return deliverFailure(
+            admitted.error,
+            rizin,
+            delivery,
+            recordEvidence,
+          );
         const result = admitted.value;
         if (!result.ok)
           return deliverFailure(result.error, rizin, delivery, recordEvidence);

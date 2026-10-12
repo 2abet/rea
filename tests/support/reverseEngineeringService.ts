@@ -1,6 +1,4 @@
-import {
-  createReverseEngineeringCommandPort,
-} from "../../src/composition/reverseEngineering.js";
+import { createReverseEngineeringCommandPort } from "../../src/composition/reverseEngineering.js";
 import {
   ReverseEngineeringService,
   type ReverseEngineeringServiceOptions,
