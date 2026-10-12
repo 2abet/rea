@@ -370,6 +370,18 @@ export const createServer = (
       ? undefined
       : (evidence) => session.recordEvidence(evidence),
     analysisAdmission,
+    session === undefined
+      ? undefined
+      : () => session.invalidateSnapshotForExternalMutation(),
+    session === undefined
+      ? undefined
+      : (path, signal, operation, rebindFailure) =>
+          session.withAdmittedExternalMutation(
+            path,
+            signal,
+            operation,
+            rebindFailure,
+          ),
   );
   registerGdbTools(
     server,

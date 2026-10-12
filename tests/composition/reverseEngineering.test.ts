@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { TestReverseEngineeringService as ReverseEngineeringService } from "../support/reverseEngineeringService.js";
+import { createReverseEngineeringService } from "../../src/composition/reverseEngineering.js";
 import { projectAnalysisError } from "../../src/domain/analysisErrorProjection.js";
 import { REVERSE_ENGINEERING_TOOL_CONTRACTS } from "../../src/contracts/reverseEngineeringToolContracts.js";
 
@@ -164,6 +165,46 @@ describe("reverse engineering command services", () => {
       await rm(directory, { recursive: true, force: true });
     }
   });
+});
+
+it("uses one selected environment snapshot for provider selection and execution", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "rea-provider-environment-"));
+  const path = join(directory, "fixture.bin");
+  await writeFile(path, Buffer.from([0x7f, 0x45, 0x4c, 0x46]));
+  const selectedEnvironment = {
+    REA_RIZIN_COMMAND: "/selected/rizin",
+    PATH: "/selected/bin",
+    SELECTED_VALUE: "captured",
+  };
+  const calls: { command: string; env: NodeJS.ProcessEnv | undefined }[] = [];
+  const service = createReverseEngineeringService(selectedEnvironment, {
+    run: async (command, _args, options) => {
+      calls.push({ command, env: options?.env });
+      return { stdout: "headers", stderr: "" };
+    },
+  });
+  selectedEnvironment.REA_RIZIN_COMMAND = "/changed/rizin";
+  selectedEnvironment.SELECTED_VALUE = "changed after construction";
+
+  try {
+    const result = await service.executeRizinCommand({
+      path,
+      command: "iI",
+    });
+    expect(result.ok).toBe(true);
+    expect(calls).toEqual([
+      {
+        command: "/selected/rizin",
+        env: {
+          REA_RIZIN_COMMAND: "/selected/rizin",
+          PATH: "/selected/bin",
+          SELECTED_VALUE: "captured",
+        },
+      },
+    ]);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 it("marks signal-terminated provider commands as unknown completion", async () => {
@@ -397,15 +438,26 @@ it("retains partial Evidence when a provider command times out", async () => {
   }
 });
 
-it("preserves provider facts when cancellation interrupts the post-run digest", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "rea-rizin-digest-cancel-"));
+it("preserves raw byte counts when cancellation rejects invalid UTF-8 output", async () => {
+  const directory = await mkdtemp(
+    join(tmpdir(), "rea-rizin-abort-invalid-utf8-"),
+  );
   const path = join(directory, "fixture.bin");
   await writeFile(path, "fixture");
   const controller = new AbortController();
+  const failure = Object.assign(new Error("The operation was aborted"), {
+    stdout: "�",
+    stderr: "€",
+    stdoutBytes: 1,
+    stderrBytes: 3,
+    code: "ABORT_ERR",
+    signal: null,
+    killed: true,
+  });
   const service = new ReverseEngineeringService({
     run: async () => {
       controller.abort();
-      return { stdout: "provider completed", stderr: "" };
+      throw failure;
     },
   });
 
@@ -418,14 +470,55 @@ it("preserves provider facts when cancellation interrupts the post-run digest", 
     if (!result.ok) {
       expect(result.error._tag).toBe("AnalysisCancelledError");
       expect(result.error.capturedOutput).toMatchObject({
-        stdout: "provider completed",
-        stderr: "",
+        stdout: "�",
+        stderr: "€",
+        stdout_bytes: 1,
+        stderr_bytes: 3,
+      });
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+it("preserves provider facts when cancellation interrupts the post-run digest", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "rea-rizin-digest-cancel-"));
+  const path = join(directory, "fixture.bin");
+  await writeFile(path, "fixture");
+  const controller = new AbortController();
+  const service = new ReverseEngineeringService({
+    run: async () => {
+      controller.abort();
+      return {
+        stdout: "�",
+        stderr: "�",
+        stdoutInvalidUtf8: true,
+        stderrInvalidUtf8: true,
+        stdoutBytes: 1,
+        stderrBytes: 1,
+      };
+    },
+  });
+
+  try {
+    const result = await service.executeRizinCommand(
+      { path, command: "iI" },
+      { signal: controller.signal },
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error._tag).toBe("AnalysisCancelledError");
+      expect(result.error.capturedOutput).toMatchObject({
+        stdout: "�",
+        stderr: "�",
+        stdout_bytes: 1,
+        stderr_bytes: 1,
         exit_code: 0,
         signal: null,
       });
       expect(result.error.partialObservation).toMatchObject({
         raw_result: {
-          stdout: "provider completed",
+          stdout: "�",
           exit_code: null,
           completion_status: "unknown",
           artifact_sha256_after: null,

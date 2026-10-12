@@ -49,9 +49,11 @@ const providerExecutable = (
 export const createReverseEngineeringService = (
   environment: Readonly<NodeJS.ProcessEnv> = process.env,
   options: ReverseEngineeringServiceRuntimeOptions = {},
-): ReverseEngineeringService =>
-  new ReverseEngineeringService({
+): ReverseEngineeringService => {
+  const environmentSnapshot = { ...environment };
+  return new ReverseEngineeringService({
     ...options,
-    environment,
-    commands: createReverseEngineeringCommandPort(environment),
+    environment: environmentSnapshot,
+    commands: createReverseEngineeringCommandPort(environmentSnapshot),
   });
+};
