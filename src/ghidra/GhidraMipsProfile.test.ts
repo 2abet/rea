@@ -13,6 +13,7 @@ import { GhidraProvider } from "./GhidraProvider.js";
 import type { GhidraInstallationHost } from "./GhidraInstallation.js";
 import { GHIDRA_SESSION_CAPABILITIES } from "./GhidraSessionValues.js";
 import type { GhidraMipsSoftFloatReport } from "./GhidraMipsProfile.js";
+import { ghidraProfileLanguageOverride } from "./GhidraAnalysisProfile.js";
 
 // Fake installation inspection tests admission/profile contracts, not Ghidra.
 const host: GhidraInstallationHost = {
@@ -117,9 +118,8 @@ describe("bounded Ghidra MIPS admission", () => {
 
   it.each([
     [{ elfClass: 64 }, "ELF32"],
-    [{ type: 1 }, "ET_EXEC"],
-    [{ type: 3 }, "ET_EXEC"],
-    [{ type: 0xffa0 }, "ET_EXEC"],
+    [{ type: 3 }, "ET_EXEC and ET_REL"],
+    [{ type: 0xffa0 }, "ET_EXEC and ET_REL"],
     [{ flags: 0x10a23001 }, "separate MIPS ABI flags"],
     [{ flags: 0x70001021 }, "o32"],
     [{ flags: 0x70000001 }, "o32"],
@@ -161,64 +161,188 @@ describe("bounded Ghidra MIPS admission", () => {
   });
 });
 
-describe("soft-float MIPS storage", () => {
-  const report: GhidraMipsSoftFloatReport = {
-    policy: "o32-soft-float-prototype-v1",
-    functions: 5,
-    definitions: 1,
+const report: GhidraMipsSoftFloatReport = {
+  policy: "o32-soft-float-prototype-v1",
+  functions: 5,
+  definitions: 1,
+};
+const session = async (
+  value: BinaryTarget,
+  reported: GhidraMipsSoftFloatReport | undefined,
+  profileFor: BinaryTarget = value,
+) => {
+  const counts = { starts: 0, calls: 0, closes: 0 };
+  const ghidra = new GhidraProvider(config, silentLogger, {}, host, () => ({
+    start: () => {
+      counts.starts++;
+      return Promise.resolve(
+        ok({
+          name: "REA Ghidra bridge" as const,
+          run_id: "11111111-1111-4111-8111-111111111111",
+          profile_digest: "a".repeat(64),
+          provider: { id: "ghidra" as const, version: "12.1.4" },
+          read_only: false,
+          analysis_complete: true,
+          analysis_timed_out: false,
+          capabilities: [...GHIDRA_SESSION_CAPABILITIES],
+          target: {
+            name: "fixture.elf",
+            language_id: "MIPS:LE:32:default",
+            compiler_spec_id: "default",
+            image_base: "0x0",
+            default_address_space: "ram",
+            sha256: "a".repeat(64),
+          },
+          ...(reported === undefined
+            ? {}
+            : { mips_soft_float_storage: reported }),
+        }),
+      );
+    },
+    callTool: () => {
+      counts.calls++;
+      return Promise.resolve(ok(null));
+    },
+    close: () => {
+      counts.closes++;
+      return Promise.resolve(ok(null));
+    },
+  }));
+  const resolved = await ghidra.resolveAnalysisProfile(profileFor);
+  if (!resolved.ok || resolved.value.profile === null)
+    throw new Error("expected a MIPS profile");
+  return {
+    counts,
+    profile: resolved.value.profile,
+    client: ghidra.createClient(value, resolved.value.profile),
   };
-  const session = async (
-    value: BinaryTarget,
-    reported: GhidraMipsSoftFloatReport | undefined,
-    profileFor: BinaryTarget = value,
-  ) => {
-    const counts = { starts: 0, calls: 0, closes: 0 };
-    const ghidra = new GhidraProvider(config, silentLogger, {}, host, () => ({
-      start: () => {
-        counts.starts++;
-        return Promise.resolve(
-          ok({
-            name: "REA Ghidra bridge" as const,
-            run_id: "11111111-1111-4111-8111-111111111111",
-            profile_digest: "a".repeat(64),
-            provider: { id: "ghidra" as const, version: "12.1.4" },
-            read_only: false,
-            analysis_complete: true,
-            analysis_timed_out: false,
-            capabilities: [...GHIDRA_SESSION_CAPABILITIES],
-            target: {
-              name: "fixture.elf",
-              language_id: "MIPS:LE:32:default",
-              compiler_spec_id: "default",
-              image_base: "0x0",
-              default_address_space: "ram",
-              sha256: "a".repeat(64),
-            },
-            ...(reported === undefined
-              ? {}
-              : { mips_soft_float_storage: reported }),
-          }),
-        );
-      },
-      callTool: () => {
-        counts.calls++;
-        return Promise.resolve(ok(null));
-      },
-      close: () => {
-        counts.closes++;
-        return Promise.resolve(ok(null));
-      },
-    }));
-    const resolved = await ghidra.resolveAnalysisProfile(profileFor);
-    if (!resolved.ok || resolved.value.profile === null)
-      throw new Error("expected a MIPS profile");
-    return {
-      counts,
-      profile: resolved.value.profile,
-      client: ghidra.createClient(value, resolved.value.profile),
-    };
-  };
+};
 
+describe("MIPS16 shared-image profile", () => {
+  const shared = (change: Partial<MipsElfMetadata> = {}) =>
+    target({
+      type: 3,
+      flags: 0x74001005,
+      abiFlags: null,
+      sharedLoad: {
+        status: "complete",
+        relocationCount: 14,
+        relocationTypes: [0, 3],
+        symbolRelativeCount: 0,
+      },
+      ...change,
+    });
+  it.each(["little", "big"] as const)(
+    "pins a generic 32-bit %s language and retains the source ABI uncertainty",
+    async (byteOrder) => {
+      const ghidra = new GhidraProvider(config, silentLogger, {}, host);
+      const value = shared({ byteOrder });
+      expect(ghidra.inspectTargetSupport(value).status).toBe("supported");
+      const resolved = await ghidra.resolveAnalysisProfile(value);
+      if (!resolved.ok || resolved.value.profile === null)
+        throw new Error("expected shared profile");
+      const parameters = resolved.value.profile.parameters;
+      expect(parameters).toMatchObject({
+        language_id: `MIPS:${byteOrder === "little" ? "LE" : "BE"}:32:default`,
+        compiler_spec_id: "default",
+        language_selection: "provider-pinned-v1",
+        mips_support_lane: "elf32-dyn-o32-arch32r2-mips16-local-rel32-v1",
+        mips_elf: { abi_flags: null },
+      });
+      expect(ghidraProfileLanguageOverride(parameters)).toEqual({
+        languageId: parameters.language_id,
+        compilerSpecId: "default",
+      });
+    },
+  );
+  it("retains shared-image and unknown floating-point limitations on the session", async () => {
+    const { client } = await session(shared(), undefined);
+    const health = await client.execute("health", {});
+    if (!health.ok) throw health.error;
+    expect(health.value.limitations).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("External GOT bindings"),
+        expect.stringContaining("does not establish the floating-point ABI"),
+      ]),
+    );
+  });
+  it("continues to admit a declared FPXX record only when its MIPS16 ASE agrees", () => {
+    const ghidra = new GhidraProvider(config, silentLogger, {}, host);
+    expect(
+      ghidra.inspectTargetSupport(shared(abi({ ases: 0x400 }))).status,
+    ).toBe("supported");
+    expect(ghidra.inspectTargetSupport(shared(abi({ ases: 0 }))).status).toBe(
+      "unsupported",
+    );
+  });
+  it.each([
+    { flags: 0x74001045 },
+    { limitations: ["Unexamined section declarations"] },
+    {
+      sharedLoad: {
+        status: "complete",
+        relocationCount: 1,
+        relocationTypes: [3],
+        symbolRelativeCount: 1,
+      },
+    },
+  ] satisfies Partial<MipsElfMetadata>[])(
+    "refuses incomplete or unverified source declarations %j",
+    (change) => {
+      const ghidra = new GhidraProvider(config, silentLogger, {}, host);
+      expect(ghidra.inspectTargetSupport(shared(change)).status).toBe(
+        "unsupported",
+      );
+    },
+  );
+  it.each(["sharedLoad", "abiFlags"] as const)(
+    "refuses an uninspected %s declaration",
+    (declaration) => {
+      const value = shared();
+      if (value.kind !== "executable" || value.architecture !== "mips")
+        throw new Error("expected MIPS target");
+      const facts = { ...value.mips };
+      delete facts[declaration];
+      const ghidra = new GhidraProvider(config, silentLogger, {}, host);
+      expect(
+        ghidra.inspectTargetSupport({ ...value, mips: facts }),
+      ).toMatchObject({
+        status: "unsupported",
+        reason: expect.stringContaining(
+          declaration === "abiFlags"
+            ? "inspected ABI flags"
+            : "have not been inspected",
+        ),
+      });
+    },
+  );
+  it("refuses an endian pin committed for a different target", async () => {
+    const { counts, client } = await session(
+      shared({ byteOrder: "big" }),
+      undefined,
+      shared(),
+    );
+    const health = await client.execute("health", {});
+    expect(health.ok).toBe(false);
+    expect(counts.starts).toBe(0);
+  });
+  it("rejects a caller-selected global MIPS16 processor without replacing the request", async () => {
+    const parsed = parseConfig({
+      GHIDRA_INSTALL_DIR: "/ghidra",
+      REA_GHIDRA_LANGUAGE_ID: "MIPS:LE:32:16e",
+    });
+    if (!parsed.ok) throw parsed.error;
+    const ghidra = new GhidraProvider(parsed.value, silentLogger, {}, host);
+    const resolved = await ghidra.resolveAnalysisProfile(shared());
+    expect(resolved.ok).toBe(false);
+    if (!resolved.ok)
+      expect(resolved.error.message).toContain(
+        "requested override has not been changed",
+      );
+  });
+});
+
+describe("soft-float MIPS storage", () => {
   it("admits soft-float o32 and commits its storage policy only for it", async () => {
     const soft = target(softFloat);
     const ghidra = new GhidraProvider(config, silentLogger, {}, host);
@@ -265,21 +389,55 @@ describe("soft-float MIPS storage", () => {
     );
   });
 
-  it("fails closed on a soft-float session without a storage report before any analysis call", async () => {
-    const { counts, client } = await session(target(softFloat), undefined);
-    const failed = await client.execute("list_procedures", {});
-    expect(failed.ok).toBe(false);
-    if (!failed.ok) expect(failed.error._tag).toBe("ProviderAdapterError");
-    expect(counts).toEqual({ starts: 1, calls: 0, closes: 1 });
+  it("admits relocatable objects under their own lane with coordinate limitations", async () => {
+    const relocatable = target({ type: 1 });
+    const { profile, client } = await session(relocatable, undefined);
+    expect(profile.parameters.mips_support_lane).toBe(
+      "elf32-rel-o32-arch32r2-standard-v1",
+    );
+    const executable = await session(target(), undefined);
+    expect(executable.profile.parameters.mips_support_lane).toBe(
+      "elf32-exec-o32-arch32r2-standard-v3",
+    );
+    const health = await client.execute("health", {});
+    if (!health.ok) throw health.error;
+    expect(health.value.limitations).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("analysis coordinates"),
+        expect.stringContaining("EXTERNAL block"),
+      ]),
+    );
+    const executableHealth = await executable.client.execute("health", {});
+    if (!executableHealth.ok) throw executableHealth.error;
+    expect(executableHealth.value.limitations.join(" ")).not.toContain(
+      "Relocatable MIPS ELF",
+    );
   });
 
-  it("rejects soft-float storage reported by a hard-float session", async () => {
-    const { counts, client } = await session(target(), report);
-    const failed = await client.execute("health", {});
-    expect(failed.ok).toBe(false);
-    if (!failed.ok) expect(failed.error._tag).toBe("ProviderAdapterError");
-    expect(counts).toEqual({ starts: 1, calls: 0, closes: 1 });
-  });
+  it.each([
+    {
+      reason:
+        "a soft-float session without a storage report before any analysis call",
+      value: target(softFloat),
+      storageReport: undefined,
+      operation: "list_procedures",
+    },
+    {
+      reason: "soft-float storage reported by a hard-float session",
+      value: target(),
+      storageReport: report,
+      operation: "health",
+    },
+  ] as const)(
+    "rejects $reason",
+    async ({ value, storageReport, operation }) => {
+      const { counts, client } = await session(value, storageReport);
+      const failed = await client.execute(operation, {});
+      expect(failed.ok).toBe(false);
+      if (!failed.ok) expect(failed.error._tag).toBe("ProviderAdapterError");
+      expect(counts).toEqual({ starts: 1, calls: 0, closes: 1 });
+    },
+  );
 
   it("refuses a profile whose storage policy disagrees with the target", async () => {
     for (const [value, profileFor] of [

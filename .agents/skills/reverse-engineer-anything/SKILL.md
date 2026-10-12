@@ -77,6 +77,12 @@ explicit path or endpoint and do not need it.
   argument strings and mutability as inferred candidates; this performs no chain
   lookup or target execution. See the
   [EVM bytecode guide](https://github.com/morluto/rea/blob/main/docs/evm-bytecode.md).
+- Embedded Go compiler, module or build-setting metadata: `inspect_go_binary`
+  with the explicit local file. This built-in target-free inspection requires no
+  Go installation or disassembler. Preserve raw module bytes and source ranges;
+  absent metadata does not prove a binary is not Go, and unparsed text records
+  remain explicit. See the
+  [Go binary guide](https://github.com/morluto/rea/blob/main/docs/go-binaries.md).
 - Explicit Linux ELF file for offline layout, symbols, relocations or static
   mitigation evidence: `inspect_binary_layout`. This target-free operation uses
   caller-supplied pwntools without opening a disassembler database. Preserve its
@@ -115,8 +121,14 @@ ask when matches are ambiguous. Never choose an example app on the user's behalf
 In a target-free session, use `open_binary` to bind any archive/package or
 native target whose analysis tool operates on the active target. Do not call an
 unadvertised tool; inspect `binary_session` with `{}` and its
-`result.tool_availability` for availability reasons and remediation. The tool
-list stays complete; availability depends on the operation, target, and host.
+`result.tool_availability` for availability reasons and remediation. Expand each
+group's `names` into entries, inheriting the inventory-level client requirements
+unless the group overrides them. In its closed effect and annotation vocabularies,
+listed flags are true and omitted known flags are false. The grouped name union
+is the complete tool inventory; use `tools/list` for canonical tool schemas.
+Provider candidate facts describe possible providers, while top-level session
+capabilities describe the current route and `analysis_provider_binding` names the
+selected provider. Do not treat those scopes as interchangeable.
 
 ## Work summary-first
 

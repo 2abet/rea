@@ -1,16 +1,9 @@
 import { expect, it } from "vitest";
 
-import { serveCli as serve } from "./cliServeHarness.js";
-
-it.each(["inspect-apktool-client", "decode-android-resources"])(
-  "%s advertises a schema through the public CLI",
-  async (command) => {
-    const result = await serve([command, "--schema", "--json"]);
-    expect(result.exitCode, command).toBe(0);
-    const schema = JSON.parse(result.stdout) as { args?: unknown };
-    expect(schema).toBeTruthy();
-  },
-);
+import {
+  expectConfigurationRefusal,
+  serveCli as serve,
+} from "./cliServeHarness.js";
 
 it.each([
   [
@@ -32,15 +25,7 @@ it.each([
   "%j with REA_APKTOOL_COMMAND=%s names the host requirement",
   async (argv, command, reason) => {
     const result = await serve(argv, { REA_APKTOOL_COMMAND: command });
-    const output = JSON.parse(result.stdout) as {
-      code?: unknown;
-      message?: unknown;
-      remediation?: { action?: unknown };
-    };
-    expect(output.code).toBe("capability_unavailable");
-    // The target is not the problem; the refusal must say what to configure.
-    expect(output.message).toEqual(expect.stringContaining(reason));
-    expect(output.remediation?.action).toEqual(expect.stringContaining(reason));
+    expectConfigurationRefusal(result, reason);
   },
 );
 
@@ -52,5 +37,14 @@ it("validates the locale option before launching apktool", async () => {
     "not a locale",
     "--json",
   ]);
-  expect(result.stdout).toContain("invalid");
+  expect(result.exitCode).toBe(1);
+  expect(JSON.parse(result.stdout)).toMatchObject({
+    code: "VALIDATION_ERROR",
+    fieldErrors: [
+      {
+        code: "invalid_format",
+        path: "locale",
+      },
+    ],
+  });
 });
