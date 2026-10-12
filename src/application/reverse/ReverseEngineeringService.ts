@@ -275,10 +275,13 @@ export class ReverseEngineeringService {
       }
       this.#pendingCleanup.delete(owner);
     }
+    const providerCapability =
+      operation === "inspect_with_objdump" &&
+      parameters.operation === "architectures";
     const absolutePath = resolve(path);
-    let digest: string;
+    let digest: string | undefined;
     try {
-      digest = await this.#digest(absolutePath, signal);
+      if (!providerCapability) digest = await this.#digest(absolutePath, signal);
     } catch (cause) {
       const code = (cause as NodeJS.ErrnoException).code;
       if (signal?.aborted)
@@ -430,7 +433,9 @@ export class ReverseEngineeringService {
       }
     }
     let digestAfter: string | null = null;
-    if (cleanupIncomplete) {
+    if (providerCapability) {
+      digestAfter = null;
+    } else if (cleanupIncomplete) {
       completionStatus = "unknown";
     } else {
       try {
@@ -454,8 +459,11 @@ export class ReverseEngineeringService {
       exitCode = null;
       completionStatus = "unknown";
     }
-    const artifactChanged =
-      digestAfter === null ? null : digestAfter !== digest;
+    const artifactChanged = providerCapability
+      ? null
+      : digestAfter === null
+        ? null
+        : digestAfter !== digest;
     const result = {
       stdout,
       stderr,
@@ -463,11 +471,14 @@ export class ReverseEngineeringService {
       signal: signalName,
       output_truncated: outputTruncated,
       completion_status: completionStatus,
-      artifact_sha256_after: digestAfter,
-      artifact_changed: artifactChanged,
+      ...(!providerCapability
+        ? { artifact_sha256_after: digestAfter, artifact_changed: artifactChanged }
+        : {}),
     };
     const limitations = [
-      "The executable version and supported formats are reported as unknown because no reliable version probe was performed.",
+      ...(providerCapability
+        ? ["The objdump version is not reported; the output lists BFD targets advertised by the installed tool and does not establish support for the selected artifact."]
+        : ["The executable version and supported formats are reported as unknown because no reliable version probe was performed."]),
       "A non-zero process exit is preserved as an observed command result.",
       ...(operation === "inspect_with_objdump" &&
       parameters.follow_debug_links === true
@@ -503,13 +514,15 @@ export class ReverseEngineeringService {
         : [
             `Command completion is unknown because the operation failed with ${failure._tag}: ${failure.message}`,
           ]),
-      "When both are available, pre-run and post-run digests detect artifact changes across the provider call but cannot prove the exact bytes consumed during the call.",
+      ...(providerCapability
+        ? ["This output lists BFD targets advertised by the installed objdump and is independent of the selected artifact."]
+        : ["When both are available, pre-run and post-run digests detect artifact changes across the provider call but cannot prove the exact bytes consumed during the call."]),
       ...(artifactChanged === true
         ? [
             "The provider command may have changed the artifact while analysis was running; pre-run and post-run digests are both reported.",
           ]
         : []),
-      ...(digestAfter === null
+      ...(!providerCapability && digestAfter === null
         ? [
             cleanupIncomplete
               ? "The post-run artifact digest is unknown because owned provider cleanup is incomplete; a remaining process may still change the artifact."
@@ -520,20 +533,30 @@ export class ReverseEngineeringService {
         : []),
     ];
     const evidence = createEvidence(
-      { path: absolutePath, sha256: digest, format: "unknown" },
+      providerCapability || digest === undefined
+        ? undefined
+        : { path: absolutePath, sha256: digest, format: "unknown" },
       profile.identity,
       {
         predicateType: "rea.reverse-engineering.command-observation",
         operation,
         parameters: {
-          ...parameters,
+          ...(providerCapability
+            ? { operation: "architectures" }
+            : parameters),
           provider_executable: command,
           command_arguments: [...args],
         },
         rawResult: result,
         result,
         limitations,
-        locations: [{ kind: "artifact-path", path: absolutePath }],
+        ...(providerCapability
+          ? {}
+          : {
+              locations: [
+                { kind: "artifact-path" as const, path: absolutePath },
+              ],
+            }),
       },
     );
     return failure === undefined

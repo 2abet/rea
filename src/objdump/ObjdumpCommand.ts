@@ -20,5 +20,7 @@ export const objdumpCommand = (input: ObjdumpInput): readonly string[] => {
     disassemble_all: ["-D"],
     architectures: ["-i"],
   } satisfies Record<ObjdumpInput["operation"], readonly string[]>;
-  return [...argumentsByOperation[input.operation], resolve(input.path)];
+  return input.operation === "architectures"
+    ? [...argumentsByOperation[input.operation]]
+    : [...argumentsByOperation[input.operation], resolve(input.path)];
 };

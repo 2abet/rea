@@ -79,6 +79,7 @@ export const GDB_TOOL_CONTRACTS = [
       stderr: z.string(),
       stderr_observed_bytes: z.number().int().nonnegative(),
       stderr_truncated: z.boolean(),
+      stderr_invalid_utf8: z.boolean(),
       diagnostics_truncated: z.boolean(),
       inferior_tty: z.string().nullable(),
       inferior_tty_verified: z.boolean(),
@@ -95,7 +96,7 @@ export const GDB_TOOL_CONTRACTS = [
     ...toolContractMetadata("close_gdb_session"),
     kind: "native-provider",
     description:
-      "Close the owned GDB process only after GDB reports no live thread groups. If groups remain, use the unrestricted console to choose a disposition for each one. REA never kills attached or remote targets as part of debugger cleanup.",
+      "Close the owned GDB process after verifying the inferior state. When one live thread group has a verified durable output TTY, REA automatically detaches it, which may resume target execution; otherwise close reports that a disposition is required. REA never kills attached or remote targets as part of debugger cleanup.",
     inputSchema: z.strictObject({ session_id: sessionId }),
     outputSchema: z.strictObject({
       target_state: z.enum(["none_observed", "unknown"]),

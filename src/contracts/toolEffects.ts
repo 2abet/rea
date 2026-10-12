@@ -72,7 +72,13 @@ export const TOOL_EFFECTS: Readonly<Record<string, ToolEffects>> = {
     idempotent: false,
   }),
   gdb_session_status: effects(),
-  close_gdb_session: effects({ launchesProcess: true, mutatesSession: true }),
+  close_gdb_session: effects({
+    launchesProcess: true,
+    mutatesSession: true,
+    mutatesTarget: true,
+    executesForeignCode: true,
+    idempotent: false,
+  }),
   execute_rizin_command: effects({
     mutatesTarget: true,
     mutatesSession: true,

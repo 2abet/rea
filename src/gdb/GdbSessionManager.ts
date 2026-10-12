@@ -144,6 +144,8 @@ interface GdbSession {
   /** Confirms target disposition and any durable sink before process cleanup. */
   readonly detachInferior: () => Promise<OwnedDebuggerDetachResult>;
   readonly inferiorTty: string | undefined;
+  readonly stdoutSettled: Promise<void>;
+  readonly settleStdout: () => void;
   inferiorTtyVerified: boolean;
   noInferiorVerified: boolean;
   stopAttempt: ReturnType<typeof stopOwnedDebuggerProcess> | undefined;
@@ -348,6 +350,8 @@ export class GdbSessionManager {
       };
       launched = await this.#spawnProcess(spawnOptions);
     } catch (cause) {
+      if (signal?.aborted || cause instanceof AnalysisCancelledError)
+        return err(new AnalysisCancelledError("start_gdb_session", { cause }));
       return err(
         new AnalysisCapabilityUnavailableError(
           "gdb",
@@ -360,6 +364,8 @@ export class GdbSessionManager {
       { process: launched.process, ownsProcessLifetime: false },
       { captureStdout: false, maxDiagnosticBytes: MAX_DIAGNOSTIC_BYTES },
     );
+    let settleStdout!: () => void;
+    const stdoutSettled = new Promise<void>((resolve) => { settleStdout = resolve; });
     const session: GdbSession = {
       id,
       miVersion,
@@ -367,6 +373,8 @@ export class GdbSessionManager {
       supervisor,
       detachInferior: () => this.#detachInferior(session),
       inferiorTty,
+      stdoutSettled,
+      settleStdout,
       inferiorTtyVerified: false,
       noInferiorVerified: false,
       stopAttempt: undefined,
@@ -389,6 +397,8 @@ export class GdbSessionManager {
     launched.process.stdout?.on("data", (chunk: string | Buffer) =>
       this.#receive(session, String(chunk)),
     );
+    if (launched.process.stdout === null) settleStdout();
+    else launched.process.stdout.once("end", settleStdout);
     launched.process.stdin?.on("error", (cause: Error) =>
       this.#failProtocol(session, `GDB stdin stream failed: ${cause.message}`),
     );
@@ -400,32 +410,8 @@ export class GdbSessionManager {
       session.exited = true;
       session.exitCode = code;
       session.exitSignal = signalCode;
-      for (const pending of session.pending.values()) {
-        clearTimeout(pending.timer);
-        pending.reject(
-          new GdbCommandProcessExitError({
-            command: pending.command,
-            mi: "",
-            records: [...pending.lines],
-            console: pending.lines
-              .filter((line) => line.startsWith("~"))
-              .join("\n"),
-            target: pending.lines
-              .filter((line) => line.startsWith("@"))
-              .join("\n"),
-            log: pending.lines
-              .filter((line) => line.startsWith("&"))
-              .join("\n"),
-            process_exit_observed: true,
-            process_exit_code: code,
-            process_exit_signal: signalCode,
-            output_truncated: pending.outputTruncated,
-            completion_status: "unknown",
-          }),
-        );
-      }
-      session.pending.clear();
       session.startupReject?.(new Error("GDB exited during startup"));
+      void this.#settleExitedCommands(session, code, signalCode);
     });
     let startupTimer!: ReturnType<typeof setTimeout>;
     let startupAbortListener!: () => void;
@@ -691,6 +677,7 @@ export class GdbSessionManager {
   > {
     const session = this.#sessions.get(sessionId);
     if (
+      this.#closing ||
       session === undefined ||
       !session.ready ||
       session.exited ||
@@ -838,6 +825,7 @@ export class GdbSessionManager {
         readonly stderr: string;
         readonly stderr_observed_bytes: number;
         readonly stderr_truncated: boolean;
+        readonly stderr_invalid_utf8: boolean;
         readonly diagnostics_truncated: boolean;
         readonly inferior_tty: string | null;
         readonly inferior_tty_verified: boolean;
@@ -859,6 +847,7 @@ export class GdbSessionManager {
       stderr_observed_bytes: diagnostics.stderr.observedBytes,
       stderr_truncated:
         diagnostics.stderr.observedBytes > diagnostics.stderr.bytes,
+      stderr_invalid_utf8: diagnostics.stderr.invalidUtf8 === true,
       diagnostics_truncated: diagnostics.diagnosticTruncated === true,
       inferior_tty: session.inferiorTty ?? null,
       inferior_tty_verified: session.inferiorTtyVerified,
@@ -873,6 +862,8 @@ export class GdbSessionManager {
       AnalysisError
     >
   > {
+    if (this.#closing)
+      return err(new AnalysisCancelledError("close_gdb_session"));
     const session = this.#sessions.get(sessionId);
     if (session === undefined)
       return err(new AnalysisInputError("close_gdb_session"));
@@ -987,6 +978,9 @@ export class GdbSessionManager {
     const active = [...this.#activeStarts.entries()];
     for (const [controller] of active) controller.abort();
     await Promise.allSettled(active.map(([, start]) => start));
+    await Promise.all(
+      [...this.#sessions.values()].map((session) => session.commandTail),
+    );
     await closeOwnedDebuggerSessions(
       this.#sessions,
       (session) => this.#stopDebuggerOnly(session),
@@ -1143,6 +1137,7 @@ export class GdbSessionManager {
   async #detachInferior(
     session: GdbSession,
   ): Promise<OwnedDebuggerDetachResult> {
+    if (session.noInferiorVerified) return { status: "no-inferior" };
     if (session.exited)
       throw new Error("GDB exited before inferior state could be verified.");
     if (
@@ -1198,6 +1193,54 @@ export class GdbSessionManager {
     )
       throw new Error("GDB did not confirm inferior detachment.");
     return { status: "detached", outputSink: "durable" };
+  }
+
+  async #settleExitedCommands(
+    session: GdbSession,
+    code: number | null,
+    signalCode: NodeJS.Signals | null,
+  ): Promise<void> {
+    await this.#waitForStdoutSettlement(session);
+    for (const pending of session.pending.values()) {
+      clearTimeout(pending.timer);
+      pending.reject(
+        new GdbCommandProcessExitError({
+          command: pending.command,
+          mi: "",
+          records: [...pending.lines],
+          console: pending.lines
+            .filter((line) => line.startsWith("~"))
+            .join("\n"),
+          target: pending.lines
+            .filter((line) => line.startsWith("@"))
+            .join("\n"),
+          log: pending.lines
+            .filter((line) => line.startsWith("&"))
+            .join("\n"),
+          process_exit_observed: true,
+          process_exit_code: code,
+          process_exit_signal: signalCode,
+          output_truncated: pending.outputTruncated,
+          completion_status: "unknown",
+        }),
+      );
+    }
+    session.pending.clear();
+  }
+
+  async #waitForStdoutSettlement(session: GdbSession): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        session.stdoutSettled,
+        new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, 1_000);
+          timer.unref?.();
+        }),
+      ]);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
   }
 
   #request(
@@ -1508,11 +1551,15 @@ const miStringField = (record: string, field: string): string | undefined => {
     : undefined;
 };
 
-const commandMayChangeInferiorOutput = (command: string): boolean =>
-  /^\s*with(?:\s|$)/iu.test(command) ||
+const commandMayChangeInferiorOutput = (command: string): boolean => {
+  const setting = /^\s*(?:set|with)\s+(\S+)/iu.exec(command)?.[1];
+  const maySetInferiorTty =
+    setting !== undefined && "inferior-tty".startsWith(setting.toLowerCase());
+  return maySetInferiorTty ||
   /\binferior-tty\b/iu.test(command) ||
   /^\s*(?:tty(?:\s|$)|source\b|python(?:\s|$)|define\b)/iu.test(command) ||
   /^\s*(?:run|r|start|starti)\b[^\n;]*(?:^|\s)(?:\d?>|>>|<|&>)/iu.test(command);
+};
 
 /** Terminate only the directly owned debugger process, never its process group or inferiors. */
 export const waitForGdbCommandTurn = (

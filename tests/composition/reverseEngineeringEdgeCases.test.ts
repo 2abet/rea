@@ -51,6 +51,23 @@ it("rejects malformed objdump requests before touching the provider", async () =
   expect(invoked).toBe(false);
 });
 
+it("records objdump architecture support as subjectless provider capability evidence", async () => {
+  const { directory, path } = await createArtifact();
+  expect(objdumpCommand({ path, operation: "architectures" })).toEqual(["-i"]);
+  const service = new ReverseEngineeringService({ run: async () => ({ stdout: "elf64-x86-64", stderr: "" }) });
+  try {
+    const result = await service.inspectWithObjdump({ path, operation: "architectures" });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.subject).toBeNull();
+      expect(result.value.parameters).not.toHaveProperty("path");
+      expect(result.value.parameters).not.toHaveProperty("artifact_sha256_before");
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 it("returns cancellation that arrived before the artifact digest starts", async () => {
   const controller = new AbortController();
   controller.abort();
