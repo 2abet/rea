@@ -76,6 +76,8 @@ export interface ExecFileOutputFailure {
   readonly signal: string | null;
   readonly killed: boolean;
   readonly outputTruncated: boolean;
+  readonly stdoutBytes?: number;
+  readonly stderrBytes?: number;
   readonly collectionFailure?: boolean;
 }
 
@@ -90,12 +92,24 @@ export const execFileOutputFailure = (
   const signal = Reflect.get(cause, "signal");
   const killed = Reflect.get(cause, "killed");
   const outputTruncated = Reflect.get(cause, "outputTruncated");
+  const stdoutBytes = Reflect.get(cause, "stdoutBytes");
+  const stderrBytes = Reflect.get(cause, "stderrBytes");
   const collectionFailure = Reflect.get(cause, "collectionFailure");
   if (typeof stdout !== "string" || typeof stderr !== "string")
     return undefined;
   return {
     stdout,
     stderr,
+    ...(typeof stdoutBytes === "number" &&
+    Number.isSafeInteger(stdoutBytes) &&
+    stdoutBytes >= 0
+      ? { stdoutBytes }
+      : {}),
+    ...(typeof stderrBytes === "number" &&
+    Number.isSafeInteger(stderrBytes) &&
+    stderrBytes >= 0
+      ? { stderrBytes }
+      : {}),
     code: typeof code === "string" || typeof code === "number" ? code : null,
     signal: typeof signal === "string" ? signal : null,
     killed: killed === true,
@@ -155,6 +169,8 @@ export const execFileBytes = (
         if (failure !== null) {
           Reflect.set(failure, "stdout", stdout.toString("utf8"));
           Reflect.set(failure, "stderr", stderr.toString("utf8"));
+          Reflect.set(failure, "stdoutBytes", stdout.byteLength);
+          Reflect.set(failure, "stderrBytes", stderr.byteLength);
           reject(failure);
           return;
         }

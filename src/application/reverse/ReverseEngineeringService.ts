@@ -364,14 +364,8 @@ export class ReverseEngineeringService {
       }
       stdout = capture.stdout;
       stderr = capture.stderr;
-      stdoutBytes =
-        cause instanceof OwnedOutputFailure
-          ? cause.stdoutBytes
-          : Buffer.byteLength(stdout);
-      stderrBytes =
-        cause instanceof OwnedOutputFailure
-          ? cause.stderrBytes
-          : Buffer.byteLength(stderr);
+      stdoutBytes = capture.stdoutBytes ?? Buffer.byteLength(stdout);
+      stderrBytes = capture.stderrBytes ?? Buffer.byteLength(stderr);
       exitCode = capture.code;
       signalName = capture.signal;
       outputTruncated = capture.outputTruncated;
@@ -383,14 +377,8 @@ export class ReverseEngineeringService {
         stdout,
         stderr,
         truncated: outputTruncated,
-        stdout_bytes:
-          cause instanceof OwnedOutputFailure
-            ? cause.stdoutBytes
-            : Buffer.byteLength(stdout),
-        stderr_bytes:
-          cause instanceof OwnedOutputFailure
-            ? cause.stderrBytes
-            : Buffer.byteLength(stderr),
+        stdout_bytes: stdoutBytes,
+        stderr_bytes: stderrBytes,
         exit_code:
           !capture.collectionFailure && typeof capture.code === "number"
             ? capture.code

@@ -438,6 +438,49 @@ it("retains partial Evidence when a provider command times out", async () => {
   }
 });
 
+it("preserves raw byte counts when cancellation rejects invalid UTF-8 output", async () => {
+  const directory = await mkdtemp(
+    join(tmpdir(), "rea-rizin-abort-invalid-utf8-"),
+  );
+  const path = join(directory, "fixture.bin");
+  await writeFile(path, "fixture");
+  const controller = new AbortController();
+  const failure = Object.assign(new Error("The operation was aborted"), {
+    stdout: "�",
+    stderr: "€",
+    stdoutBytes: 1,
+    stderrBytes: 3,
+    code: "ABORT_ERR",
+    signal: null,
+    killed: true,
+  });
+  const service = new ReverseEngineeringService({
+    run: async () => {
+      controller.abort();
+      throw failure;
+    },
+  });
+
+  try {
+    const result = await service.executeRizinCommand(
+      { path, command: "iI" },
+      { signal: controller.signal },
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error._tag).toBe("AnalysisCancelledError");
+      expect(result.error.capturedOutput).toMatchObject({
+        stdout: "�",
+        stderr: "€",
+        stdout_bytes: 1,
+        stderr_bytes: 3,
+      });
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 it("preserves provider facts when cancellation interrupts the post-run digest", async () => {
   const directory = await mkdtemp(join(tmpdir(), "rea-rizin-digest-cancel-"));
   const path = join(directory, "fixture.bin");
