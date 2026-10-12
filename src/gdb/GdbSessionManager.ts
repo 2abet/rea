@@ -1618,7 +1618,7 @@ const commandMayChangeInferiorOutput = (command: string): boolean => {
   return (
     maySetInferiorTty ||
     /\binferior-tty\b/iu.test(command) ||
-    /^\s*(?:tty(?:\s|$)|source\b|python(?:\s|$)|define\b)/iu.test(command) ||
+    /^\s*(?:tty(?:\s|$)|source\b|py\w*|define\b)/iu.test(command) ||
     /^\s*(?:run|r|start|starti)\b[^\n;]*(?:\d?>|>>|<|&>)/iu.test(command)
   );
 };
