@@ -37,7 +37,7 @@ it.skipIf(process.platform === "win32")(
     await writeFile(path, "before");
     await writeFile(
       provider,
-      `#!/usr/bin/env node
+      `#!${process.execPath}
 import { writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 writeFileSync(process.env.REA_TEST_STARTED, "started");
@@ -62,14 +62,17 @@ setInterval(() => {}, 1000);
         { path, command: "sleep" },
         { signal: controller.signal },
       );
-      for (let attempt = 0; attempt < 100; attempt += 1) {
+      let processStarted = false;
+      for (let attempt = 0; attempt < 500; attempt += 1) {
         try {
           await readFile(marker);
+          processStarted = true;
           break;
         } catch {
           await new Promise((resolveDelay) => setTimeout(resolveDelay, 10));
         }
       }
+      expect(processStarted).toBe(true);
       controller.abort();
 
       const result = await pending;

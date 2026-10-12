@@ -54,6 +54,20 @@ describe("execFileOutput", () => {
     expect(result.stderr).toEqual(Buffer.from([0xfe]));
   });
 
+  it("reports raw byte counts when UTF-8 decoding changes the captured text", async () => {
+    const result = await execFileOutput(process.execPath, [
+      "-e",
+      "process.stdout.write(Buffer.from([0x61, 0xff])); process.stderr.write(Buffer.from([0xe2, 0x82, 0xac]));",
+    ]);
+
+    expect(result).toMatchObject({
+      stdout: "a�",
+      stderr: "€",
+      stdoutBytes: 2,
+      stderrBytes: 3,
+    });
+  });
+
   it("captures output larger than Node's default execFile limit", async () => {
     const marker = "tail-marker";
     const result = await execFileOutput(process.execPath, [
@@ -224,7 +238,7 @@ describe.skipIf(process.platform === "win32")(
       const script = [
         'const fs = require("node:fs");',
         'for (const name of ["SIGINT", "SIGTERM"])',
-        '  process.on(name, () => process.exit(1));',
+        "  process.on(name, () => process.exit(1));",
         `fs.writeFileSync(${JSON.stringify(ready)}, "");`,
         "setInterval(() => {}, 1000);",
       ].join("\n");

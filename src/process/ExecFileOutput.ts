@@ -184,8 +184,15 @@ export const execFileOutput = (
   command: string,
   arguments_: readonly string[],
   options: ExecFileOutputOptions = {},
-): Promise<{ readonly stdout: string; readonly stderr: string }> =>
+): Promise<{
+  readonly stdout: string;
+  readonly stderr: string;
+  readonly stdoutBytes: number;
+  readonly stderrBytes: number;
+}> =>
   execFileBytes(command, arguments_, options).then(({ stdout, stderr }) => ({
     stdout: stdout.toString("utf8"),
     stderr: stderr.toString("utf8"),
+    stdoutBytes: stdout.byteLength,
+    stderrBytes: stderr.byteLength,
   }));
