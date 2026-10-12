@@ -1,5 +1,5 @@
 import type { WasmArtifactService } from "../application/wasm/WasmArtifactService.js";
-import { createWasmArtifactService } from "../composition/wasm.js";
+import { wasmArtifactModule } from "../composition/wasm.js";
 import { registerWasmTools } from "./registerWasmTools.js";
 import { snapshotEnvironment } from "../process/snapshotEnvironment.js";
 import { createPeResourcesService } from "../composition/binaryDiagnostics.js";
@@ -15,6 +15,8 @@ import { registerGoTools } from "./registerGoTools.js";
 import type { RecordedCrashService } from "../application/binaryDiagnostics/RecordedCrashService.js";
 import { registerAnalysisViewTool } from "./registerAnalysisViewTool.js";
 import { registerBinaryDiagnosticsTools } from "./registerBinaryDiagnosticsTools.js";
+import { FridaInstrumentationManager } from "../frida/FridaInstrumentationManager.js";
+import { registerFridaTools } from "./registerFridaTools.js";
 import { createBinaryLayoutService } from "../composition/binaryDiagnostics.js";
 import type { BinaryLayoutService } from "../application/binaryDiagnostics/BinaryLayoutService.js";
 import { EvidenceMcpServer } from "./EvidenceMcpServer.js";
@@ -36,6 +38,7 @@ import type { BrowserScenarioCapturePort } from "../application/BrowserScenarioC
 import type { ElectronActiveObservationPort } from "../application/javascript/ElectronActiveObservationPort.js";
 import type { ElectronObservationPort } from "../application/javascript/ElectronObservationPort.js";
 import type { JavaScriptRuntimeObservationPort } from "../application/javascript/JavaScriptRuntimeObservationPort.js";
+import type { FridaInstrumentationPort } from "../application/frida/FridaInstrumentationPort.js";
 import type { OptionalProviderLoadFailures } from "../application/OptionalObservationProviders.js";
 import { PRODUCT_IDENTITY } from "../identity.js";
 import { silentLogger } from "../logger.js";
@@ -72,6 +75,7 @@ import type { FirmwareAnalysisPort } from "../application/firmware/FirmwareAnaly
 import { createFirmwareAnalysisProvider } from "../composition/firmware.js";
 import { registerAndroidTools } from "./registerAndroidTools.js";
 import { registerApktoolTools } from "./registerApktoolTools.js";
+import { registerFlutterTools } from "./registerFlutterTools.js";
 import { registerJebTools } from "./registerJebTools.js";
 import { registerAdbTools } from "./registerAdbTools.js";
 import { AndroidAnalysisService } from "../application/android/AndroidAnalysisService.js";
@@ -79,8 +83,11 @@ import { JebAnalysisService } from "../application/jeb/JebAnalysisService.js";
 import type { AndroidAnalysisPort } from "../application/android/AndroidAnalysisPort.js";
 import type { ApktoolResourceAnalysisPort } from "../application/apktool/ApktoolResourceAnalysisPort.js";
 import { ApktoolResourceAnalysisService } from "../application/apktool/ApktoolResourceAnalysisService.js";
+import type { FlutterBuildAnalysisPort } from "../application/flutter/FlutterBuildAnalysisPort.js";
+import { FlutterBuildAnalysisService } from "../application/flutter/FlutterBuildAnalysisService.js";
 import { createAndroidAnalysisProvider } from "../composition/android.js";
 import { createApktoolResourceAnalysisProvider } from "../composition/apktool.js";
+import { createFlutterBuildAnalysisProvider } from "../composition/flutter.js";
 import type { JebAnalysisPort } from "../application/jeb/JebAnalysisPort.js";
 import { createJebAnalysisProvider } from "../composition/jeb.js";
 import type { AdbDeviceAnalysisPort } from "../application/adb/AdbDeviceAnalysisPort.js";
@@ -126,6 +133,7 @@ export interface CreateServerOptions {
   readonly webNetworkCapture?: WebNetworkCaptureService;
   readonly androidAnalysis?: AndroidAnalysisPort;
   readonly apktoolAnalysis?: ApktoolResourceAnalysisPort;
+  readonly flutterAnalysis?: FlutterBuildAnalysisPort;
   readonly jebAnalysis?: JebAnalysisPort;
   readonly adbDeviceAnalysis?: AdbDeviceAnalysisPort;
   readonly browserObservation?: BrowserObservationPort;
@@ -133,6 +141,7 @@ export interface CreateServerOptions {
   readonly electronObservation?: ElectronObservationPort;
   readonly electronActiveObservation?: ElectronActiveObservationPort;
   readonly javascriptRuntimeObservation?: JavaScriptRuntimeObservationPort;
+  readonly fridaInstrumentation?: FridaInstrumentationPort;
   readonly availabilityPolicy?: () => AvailabilityPolicy;
   readonly optionalProviderLoadFailures?: OptionalProviderLoadFailures;
 }
@@ -141,13 +150,14 @@ const installSessionToolAvailability = (
   session: BinarySessionPort | undefined,
   options: CreateServerOptions,
   environment: Readonly<NodeJS.ProcessEnv>,
+  fridaInstrumentation: FridaInstrumentationPort,
 ) => {
   if (session === undefined) return undefined;
   const linux = process.platform === "linux";
   const linuxX64 = linux && process.arch === "x64";
   const pwntools =
     linuxX64 && isAbsolute(environment.REA_PWNTOOLS_PYTHON ?? "");
-  const policy = sessionAvailabilityPolicy(options.availabilityPolicy, {
+  const basePolicy = sessionAvailabilityPolicy(options.availabilityPolicy, {
     optionalProviderLoadFailures: options.optionalProviderLoadFailures,
     optionalFeatures: {
       wasmArtifactEnabled:
@@ -177,6 +187,21 @@ const installSessionToolAvailability = (
         options.javascriptRuntimeObservation !== undefined,
     },
   });
+  const policy = (): AvailabilityPolicy => {
+    const value = basePolicy();
+    const fridaFailure =
+      options.optionalProviderLoadFailures?.fridaInstrumentation ??
+      fridaInstrumentation.availabilityFailure?.();
+    return fridaFailure === undefined
+      ? value
+      : {
+          ...value,
+          optionalProviderLoadFailures: {
+            ...value.optionalProviderLoadFailures,
+            fridaInstrumentation: fridaFailure,
+          },
+        };
+  };
   return {
     policy,
   };
@@ -252,8 +277,14 @@ export const createServer = (
   );
   const android =
     options.androidAnalysis ?? createAndroidAnalysisProvider(environment);
-  const wasmArtifact =
-    options.wasmArtifact ?? createWasmArtifactService(environment);
+  const flutter =
+    options.flutterAnalysis ?? createFlutterBuildAnalysisProvider();
+  const fridaInstrumentation =
+    options.fridaInstrumentation ?? new FridaInstrumentationManager();
+  const wasmArtifact = wasmArtifactModule.create(
+    environment,
+    options.wasmArtifact,
+  );
   const apktool =
     options.apktoolAnalysis ??
     createApktoolResourceAnalysisProvider(environment);
@@ -264,10 +295,12 @@ export const createServer = (
   const closeProviders = (): Promise<void> => {
     providerClose ??= Promise.allSettled([
       android.close(),
+      fridaInstrumentation.closeAll(),
       wasmArtifact.close(),
       apktool.close(),
       jeb.close(),
       adbDevice.close(),
+      flutter.close(),
       evmInterface.close(),
       webSourceLocation.close(),
       webModuleTrace.close(),
@@ -275,7 +308,6 @@ export const createServer = (
       artifactResources.close(),
       reverseEngineering.close(),
       firmwareAnalysis.close(),
-      options.browserScenarioCapture?.close?.() ?? Promise.resolve(),
     ])
       .then((results) => {
         const failures = results.flatMap((result) =>
@@ -294,6 +326,7 @@ export const createServer = (
     session,
     options,
     environment,
+    fridaInstrumentation,
   );
   const toolLogger = logger.child({ layer: "server" });
   const {
@@ -339,6 +372,15 @@ export const createServer = (
             rebindFailure,
           ),
   );
+  registerFridaTools(
+    server,
+    fridaInstrumentation,
+    toolLogger,
+    delivery,
+    session === undefined
+      ? undefined
+      : (input) => session.recordEvidence(input),
+  );
   const previousOnclose = server.server.onclose;
   server.server.onclose = () => {
     previousOnclose?.();
@@ -365,6 +407,13 @@ export const createServer = (
   registerAdbTools(
     server,
     new AdbDeviceAnalysisService(adbDevice),
+    toolLogger,
+    recordEvidence,
+    analysisAdmission,
+  );
+  registerFlutterTools(
+    server,
+    new FlutterBuildAnalysisService(flutter),
     toolLogger,
     recordEvidence,
     analysisAdmission,
@@ -428,7 +477,7 @@ const registerConfiguredAnalysisTools = (
     withAdmittedAnalysis,
   }: ServerToolContext,
   android: AndroidAnalysisPort,
-  wasmArtifact: WasmArtifactService,
+  wasmArtifact: Pick<WasmArtifactService, "inspect" | "close">,
   jeb: JebAnalysisPort,
   firmwareAnalysis: FirmwareAnalysisService,
 ): void => {
@@ -481,6 +530,7 @@ const registerConfiguredAnalysisTools = (
     toolLogger,
     recordEvidence,
     withAdmittedAnalysis,
+    evidenceById,
   );
   registerEvmTools(
     server,
@@ -586,6 +636,7 @@ const registerBinaryAnalysisTools = ({
   activeTarget,
   recordEvidence,
   recordEvidenceWithUnknown,
+  evidenceById,
   withAdmittedAnalysis,
 }: ServerToolContext): void => {
   const recordUnknown =
@@ -621,7 +672,7 @@ const registerBinaryAnalysisTools = ({
     withAdmittedAnalysis,
   };
   registerEvidenceTools(server, NATIVE_TOOL_CONTRACTS, evidenceOptions);
-  registerArtifactTools(server, evidenceOptions);
+  registerArtifactTools(server, { ...evidenceOptions, evidenceById });
   registerManagedTools(server, evidenceOptions);
   if (session !== undefined)
     registerManagedWorkflowTools(server, {
