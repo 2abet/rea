@@ -11,6 +11,7 @@ interface OwnedDebuggerProcess {
   };
   readonly supervisor: {
     waitForExit(timeoutMs: number): Promise<boolean>;
+    unrefOutputStreams(): void;
     dispose(): void;
   };
 }
@@ -21,11 +22,13 @@ export const stopOwnedDebuggerProcess = async (
   debuggerName: string,
   options: { readonly platform?: NodeJS.Platform } = {},
 ): Promise<OwnedDebuggerStopResult> => {
+  const platform = options.platform ?? process.platform;
   if (session.exited) {
+    if (platform !== "win32") session.supervisor.unrefOutputStreams();
     session.supervisor.dispose();
     return { status: "already_exited" };
   }
-  if ((options.platform ?? process.platform) === "win32")
+  if (platform === "win32")
     return {
       status: "incomplete",
       reason: `Owned ${debuggerName} process cannot be stopped safely on Windows because job termination can also terminate its inferior processes.`,
@@ -35,6 +38,7 @@ export const stopOwnedDebuggerProcess = async (
     session.launched.process.kill("SIGKILL");
     const exitedAfterKill = await session.supervisor.waitForExit(1_000);
     if (exitedAfterKill) {
+      session.supervisor.unrefOutputStreams();
       session.supervisor.dispose();
       return { status: "stopped" };
     }
@@ -43,6 +47,7 @@ export const stopOwnedDebuggerProcess = async (
       reason: `Owned ${debuggerName} process did not exit after direct termination.`,
     };
   }
+  session.supervisor.unrefOutputStreams();
   session.supervisor.dispose();
   return { status: "stopped" };
 };

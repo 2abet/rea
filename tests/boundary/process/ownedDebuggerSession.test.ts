@@ -1,13 +1,18 @@
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+
 import { expect, it } from "vitest";
 
 import {
   closeOwnedDebuggerSessions,
   stopOwnedDebuggerProcess,
 } from "../../../src/process/ownedDebuggerSession.js";
+import { ProviderProcessSupervisor } from "../../../src/process/ProviderProcess.js";
 
 it("retains process supervision after an incomplete stop and disposes after a retry observes exit", async () => {
   let waits = 0;
   let disposals = 0;
+  let outputUnrefs = 0;
   const signals: NodeJS.Signals[] = [];
   const session = {
     id: "debugger-session",
@@ -28,18 +33,26 @@ it("retains process supervision after an incomplete stop and disposes after a re
       dispose: (): void => {
         disposals += 1;
       },
+      unrefOutputStreams: (): void => {
+        outputUnrefs += 1;
+      },
     },
   };
 
-  const first = await stopOwnedDebuggerProcess(session, "GDB");
+  const first = await stopOwnedDebuggerProcess(session, "GDB", {
+    platform: "linux",
+  });
   expect(first).toEqual({
     status: "incomplete",
     reason: "Owned GDB process did not exit after direct termination.",
   });
   expect(disposals).toBe(0);
+  expect(outputUnrefs).toBe(0);
   expect(signals).toEqual(["SIGTERM", "SIGKILL"]);
 
-  const retry = await stopOwnedDebuggerProcess(session, "GDB");
+  const retry = await stopOwnedDebuggerProcess(session, "GDB", {
+    platform: "linux",
+  });
   expect(retry).toEqual({ status: "stopped" });
   expect(disposals).toBe(1);
   expect(waits).toBe(3);
@@ -47,6 +60,7 @@ it("retains process supervision after an incomplete stop and disposes after a re
 
 it("refuses Windows job-backed debugger termination before signaling", async () => {
   const signals: NodeJS.Signals[] = [];
+  let outputUnrefs = 0;
   const session = {
     id: "windows-debugger",
     exited: false,
@@ -61,6 +75,9 @@ it("refuses Windows job-backed debugger termination before signaling", async () 
     supervisor: {
       waitForExit: async (): Promise<boolean> => false,
       dispose: (): void => {},
+      unrefOutputStreams: (): void => {
+        outputUnrefs += 1;
+      },
     },
   };
 
@@ -72,10 +89,40 @@ it("refuses Windows job-backed debugger termination before signaling", async () 
       "Owned GDB process cannot be stopped safely on Windows because job termination can also terminate its inferior processes.",
   });
   expect(signals).toEqual([]);
+  expect(outputUnrefs).toBe(0);
+});
+
+it("disposes an already-exited Windows session without unreferencing its streams", async () => {
+  let outputUnrefs = 0;
+  let disposals = 0;
+  const result = await stopOwnedDebuggerProcess(
+    {
+      id: "windows-already-exited",
+      exited: true,
+      launched: { process: { kill: () => true } },
+      supervisor: {
+        waitForExit: async () => false,
+        dispose: () => {
+          disposals += 1;
+        },
+        unrefOutputStreams: () => {
+          outputUnrefs += 1;
+        },
+      },
+    },
+    "GDB",
+    { platform: "win32" },
+  );
+
+  expect(result).toEqual({ status: "already_exited" });
+  expect(disposals).toBe(1);
+  expect(outputUnrefs).toBe(0);
 });
 
 it("disposes supervision when a process had already exited", async () => {
   let disposals = 0;
+  const lifecycle: string[] = [];
+  let outputUnrefs = 0;
   const result = await stopOwnedDebuggerProcess(
     {
       id: "already-exited",
@@ -84,19 +131,28 @@ it("disposes supervision when a process had already exited", async () => {
       supervisor: {
         waitForExit: async () => false,
         dispose: () => {
+          lifecycle.push("dispose");
           disposals += 1;
+        },
+        unrefOutputStreams: () => {
+          lifecycle.push("unref");
+          outputUnrefs += 1;
         },
       },
     },
     "GDB",
+    { platform: "linux" },
   );
 
   expect(result).toEqual({ status: "already_exited" });
   expect(disposals).toBe(1);
+  expect(outputUnrefs).toBe(1);
+  expect(lifecycle).toEqual(["unref", "dispose"]);
 });
 
 it("does not escalate when the debugger exits after SIGTERM", async () => {
   const signals: NodeJS.Signals[] = [];
+  const lifecycle: string[] = [];
   let disposals = 0;
   const result = await stopOwnedDebuggerProcess(
     {
@@ -113,21 +169,26 @@ it("does not escalate when the debugger exits after SIGTERM", async () => {
       supervisor: {
         waitForExit: async () => true,
         dispose: () => {
+          lifecycle.push("dispose");
           disposals += 1;
         },
+        unrefOutputStreams: () => lifecycle.push("unref"),
       },
     },
     "Rizin",
+    { platform: "linux" },
   );
 
   expect(result).toEqual({ status: "stopped" });
   expect(signals).toEqual(["SIGTERM"]);
   expect(disposals).toBe(1);
+  expect(lifecycle).toEqual(["unref", "dispose"]);
 });
 
 it("disposes supervision when the debugger exits after SIGKILL", async () => {
   let waits = 0;
   let disposals = 0;
+  const lifecycle: string[] = [];
   const signals: NodeJS.Signals[] = [];
   const result = await stopOwnedDebuggerProcess(
     {
@@ -147,17 +208,257 @@ it("disposes supervision when the debugger exits after SIGKILL", async () => {
           return waits === 2;
         },
         dispose: () => {
+          lifecycle.push("dispose");
           disposals += 1;
         },
+        unrefOutputStreams: () => lifecycle.push("unref"),
       },
     },
     "Rizin",
+    { platform: "linux" },
   );
 
   expect(result).toEqual({ status: "stopped" });
   expect(signals).toEqual(["SIGTERM", "SIGKILL"]);
   expect(disposals).toBe(1);
+  expect(lifecycle).toEqual(["unref", "dispose"]);
 });
+
+it.skipIf(process.platform === "win32")(
+  "lets the probe exit while an inferior still holds debugger output pipes open",
+  async () => {
+    const providerProcessUrl = new URL(
+      "../../../dist/process/ProviderProcess.js",
+      import.meta.url,
+    ).href;
+    const debuggerSessionUrl = new URL(
+      "../../../dist/process/ownedDebuggerSession.js",
+      import.meta.url,
+    ).href;
+    const debuggerSource = [
+      'const { spawn } = require("node:child_process");',
+      'const inferior = spawn(process.execPath, ["-e", "setTimeout(() => {}, 10000)"], { stdio: "inherit" });',
+      "process.stdout.write(`debugger=${process.pid} inferior=${inferior.pid}\\n`);",
+      "setInterval(() => {}, 1000);",
+    ].join("\n");
+    const probeSource = [
+      'import { spawn } from "node:child_process";',
+      `import { ProviderProcessSupervisor } from ${JSON.stringify(providerProcessUrl)};`,
+      `import { stopOwnedDebuggerProcess } from ${JSON.stringify(debuggerSessionUrl)};`,
+      `const child = spawn(process.execPath, ["-e", ${JSON.stringify(debuggerSource)}], { stdio: ["ignore", "pipe", "pipe"] });`,
+      "const supervisor = new ProviderProcessSupervisor({ process: child, ownsProcessLifetime: true });",
+      "let output = '';",
+      "let debuggerPid;",
+      "const pid = await new Promise((resolve, reject) => {",
+      "  const timer = setTimeout(() => reject(new Error('debugger did not report inferior pid')), 2000);",
+      "  child.stdout.on('data', (chunk) => {",
+      "    output += chunk.toString();",
+      "    const debuggerMatch = /^debugger=(\\d+)/mu.exec(output);",
+      "    if (debuggerMatch) process.stderr.write(`debugger-pid=${debuggerMatch[1]}\\n`);",
+      "    const match = /inferior=(\\d+)\\r?\\n/mu.exec(output);",
+      "    if (match) { clearTimeout(timer); resolve(Number(match[1])); }",
+      "  });",
+      "  child.once('error', reject);",
+      "});",
+      "const session = { id: 'debugger', get exited() { return child.exitCode !== null || child.signalCode !== null; }, launched: { process: child }, supervisor };",
+      "const result = await stopOwnedDebuggerProcess(session, 'GDB', { platform: 'linux' });",
+      "process.stdout.write(JSON.stringify({ pid, result }));",
+    ].join("\n");
+    const probe = spawn(
+      process.execPath,
+      ["--input-type=module", "-e", probeSource],
+      {
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+    let probeOutput = "";
+    let debuggerPid: number | undefined;
+    probe.stdout.on("data", (chunk) => {
+      probeOutput += chunk.toString();
+    });
+    probe.stderr.on("data", (chunk: Buffer) => {
+      const match = /^debugger-pid=(\d+)$/mu.exec(chunk.toString());
+      if (match?.[1] !== undefined) debuggerPid = Number(match[1]);
+    });
+    let inferiorPid: number | undefined;
+
+    try {
+      const resultLine = await new Promise<string>((resolve, reject) => {
+        const timeout = setTimeout(
+          () => reject(new Error("probe did not report debugger stop")),
+          3_000,
+        );
+        const onData = (chunk: Buffer | string): void => {
+          const text = chunk.toString();
+          const line = text.match(
+            /\{"pid":\d+,"result":\{"status":"stopped"\}\}/u,
+          );
+          if (line !== null) {
+            clearTimeout(timeout);
+            resolve(line[0]);
+          }
+        };
+        probe.stdout.on("data", onData);
+        probe.once("error", (cause) => {
+          clearTimeout(timeout);
+          reject(cause);
+        });
+      });
+      const result = JSON.parse(resultLine) as { pid: number };
+      inferiorPid = result.pid;
+
+      const exited = await Promise.race([
+        once(probe, "exit").then(() => true),
+        new Promise<false>((resolve) =>
+          setTimeout(() => resolve(false), 1_000),
+        ),
+      ]);
+      expect(exited).toBe(true);
+      expect(probeOutput).toContain('"status":"stopped"');
+      expect(() => process.kill(inferiorPid!, 0)).not.toThrow();
+    } finally {
+      if (inferiorPid !== undefined) {
+        try {
+          process.kill(inferiorPid, "SIGKILL");
+        } catch {
+          // The fixture may have exited on its own.
+        }
+      }
+      if (debuggerPid !== undefined) {
+        try {
+          process.kill(debuggerPid, "SIGKILL");
+        } catch {
+          // The debugger may have exited on its own.
+        }
+      }
+      if (probe.exitCode === null && probe.signalCode === null)
+        probe.kill("SIGKILL");
+      if (probe.exitCode === null && probe.signalCode === null)
+        await once(probe, "exit").catch(() => undefined);
+    }
+  },
+);
+
+it.skipIf(process.platform === "win32")(
+  "preserves inferior stdout and stderr after the debugger stops",
+  async () => {
+    const inferiorSource = [
+      'setTimeout(() => { process.stdout.write("stdout-after-stop-sentinel\\n"); process.stderr.write("stderr-after-stop-sentinel\\n"); }, 700);',
+      "setTimeout(() => process.exit(0), 4000);",
+    ].join("\n");
+    const debuggerSource = [
+      'const { spawn } = require("node:child_process");',
+      `const inferior = spawn(process.execPath, ["-e", ${JSON.stringify(inferiorSource)}], { stdio: "inherit" });`,
+      "process.stdout.write(`inferior=${inferior.pid}\\n`);",
+      "setInterval(() => {}, 1000);",
+    ].join("\n");
+    const child = spawn(process.execPath, ["-e", debuggerSource], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const supervisor = new ProviderProcessSupervisor({
+      process: child,
+      ownsProcessLifetime: true,
+    });
+    let stdout = "";
+    let stderr = "";
+    let inferiorPid: number | undefined;
+    let checkOutput: (() => void) | undefined;
+    let finishOutput: (() => void) | undefined;
+    const outputReceived = new Promise<void>((resolve) => {
+      finishOutput = resolve;
+    });
+    const trackOutput = (stream: "stdout" | "stderr", chunk: Buffer): void => {
+      if (stream === "stdout") stdout += chunk.toString();
+      else stderr += chunk.toString();
+      checkOutput?.();
+    };
+    child.stdout.on("data", (chunk: Buffer) => trackOutput("stdout", chunk));
+    child.stderr.on("data", (chunk: Buffer) => trackOutput("stderr", chunk));
+    checkOutput = () => {
+      if (
+        stdout.includes("stdout-after-stop-sentinel") &&
+        stderr.includes("stderr-after-stop-sentinel")
+      )
+        finishOutput?.();
+    };
+    const ready = new Promise<number>((resolve, reject) => {
+      const timeout = setTimeout(
+        () => reject(new Error("debugger did not report inferior pid")),
+        2_000,
+      );
+      const checkReady = (): void => {
+        const match = /^inferior=(\d+)$/mu.exec(stdout);
+        if (match?.[1] !== undefined) {
+          clearTimeout(timeout);
+          resolve(Number(match[1]));
+        }
+      };
+      const onStdout = (): void => checkReady();
+      child.stdout.on("data", onStdout);
+      child.once("error", (cause) => {
+        clearTimeout(timeout);
+        reject(cause);
+      });
+    });
+
+    try {
+      const pid = await ready;
+      inferiorPid = pid;
+      const result = await stopOwnedDebuggerProcess(
+        {
+          id: "debugger-with-inferior",
+          get exited() {
+            return child.exitCode !== null || child.signalCode !== null;
+          },
+          launched: { process: child },
+          supervisor,
+        },
+        "GDB",
+        { platform: "linux" },
+      );
+
+      expect(result).toEqual({ status: "stopped" });
+      await Promise.race([
+        outputReceived,
+        new Promise<never>((_resolve, reject) =>
+          setTimeout(
+            () =>
+              reject(new Error("inferior output sentinels were not observed")),
+            2_000,
+          ),
+        ),
+      ]);
+      expect(stdout).toContain("stdout-after-stop-sentinel");
+      expect(stderr).toContain("stderr-after-stop-sentinel");
+      expect(child.stdout.destroyed).toBe(false);
+      expect(child.stderr.destroyed).toBe(false);
+      expect(() => process.kill(pid, 0)).not.toThrow();
+    } finally {
+      if (inferiorPid !== undefined) {
+        try {
+          process.kill(inferiorPid, "SIGKILL");
+        } catch {
+          // The fixture may have exited on its own.
+        }
+        await Promise.race([
+          once(child, "close"),
+          new Promise<void>((resolve) => setTimeout(resolve, 1_000)),
+        ]);
+        if (child.exitCode === null && child.signalCode === null) {
+          child.kill("SIGKILL");
+          await Promise.race([
+            once(child, "exit"),
+            new Promise<void>((resolve) => setTimeout(resolve, 1_000)),
+          ]);
+        }
+      } else if (child.exitCode === null && child.signalCode === null) {
+        child.kill("SIGKILL");
+        await once(child, "exit").catch(() => undefined);
+      }
+      supervisor.dispose();
+    }
+  },
+);
 
 it("removes stopped sessions and retains incomplete sessions when closing all", async () => {
   const sessions = new Map([
