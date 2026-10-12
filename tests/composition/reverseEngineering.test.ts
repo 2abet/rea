@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { TestReverseEngineeringService as ReverseEngineeringService } from "../support/reverseEngineeringService.js";
+import { createReverseEngineeringService } from "../../src/composition/reverseEngineering.js";
 import { projectAnalysisError } from "../../src/domain/analysisErrorProjection.js";
 import { REVERSE_ENGINEERING_TOOL_CONTRACTS } from "../../src/contracts/reverseEngineeringToolContracts.js";
 
@@ -164,6 +165,46 @@ describe("reverse engineering command services", () => {
       await rm(directory, { recursive: true, force: true });
     }
   });
+});
+
+it("uses one selected environment snapshot for provider selection and execution", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "rea-provider-environment-"));
+  const path = join(directory, "fixture.bin");
+  await writeFile(path, Buffer.from([0x7f, 0x45, 0x4c, 0x46]));
+  const selectedEnvironment = {
+    REA_RIZIN_COMMAND: "/selected/rizin",
+    PATH: "/selected/bin",
+    SELECTED_VALUE: "captured",
+  };
+  const calls: { command: string; env: NodeJS.ProcessEnv | undefined }[] = [];
+  const service = createReverseEngineeringService(selectedEnvironment, {
+    run: async (command, _args, options) => {
+      calls.push({ command, env: options?.env });
+      return { stdout: "headers", stderr: "" };
+    },
+  });
+  selectedEnvironment.REA_RIZIN_COMMAND = "/changed/rizin";
+  selectedEnvironment.SELECTED_VALUE = "changed after construction";
+
+  try {
+    const result = await service.executeRizinCommand({
+      path,
+      command: "iI",
+    });
+    expect(result.ok).toBe(true);
+    expect(calls).toEqual([
+      {
+        command: "/selected/rizin",
+        env: {
+          REA_RIZIN_COMMAND: "/selected/rizin",
+          PATH: "/selected/bin",
+          SELECTED_VALUE: "captured",
+        },
+      },
+    ]);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 it("marks signal-terminated provider commands as unknown completion", async () => {

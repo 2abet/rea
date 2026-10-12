@@ -347,6 +347,15 @@ export const createServer = (
     session === undefined
       ? undefined
       : () => session.invalidateSnapshotForExternalMutation(),
+    session === undefined
+      ? undefined
+      : (path, signal, operation, rebindFailure) =>
+          session.withAdmittedExternalMutation(
+            path,
+            signal,
+            operation,
+            rebindFailure,
+          ),
   );
   registerCutterTools(
     server,

@@ -15,6 +15,9 @@ import { toolRegistrationOptions } from "./toolRegistrationOptions.js";
 import type { ToolResultDelivery } from "./toolResult.js";
 import type { WithAdmittedAnalysis } from "./analysisAdmission.js";
 import { rizinInputSchema } from "../domain/reverseEngineering.js";
+import { AnalysisOutputError } from "../domain/analysisErrorCore.js";
+import type { AnalysisError } from "../domain/analysisErrorBase.js";
+import type { Result } from "../domain/result.js";
 
 /** Register objdump and Rizin operations against their exact named contracts. */
 export const registerReverseEngineeringTools = (
@@ -25,6 +28,12 @@ export const registerReverseEngineeringTools = (
   recordEvidence?: EvidenceWriter["recordEvidence"],
   withAdmittedAnalysis?: WithAdmittedAnalysis,
   invalidateSnapshotForExternalMutation?: () => void,
+  withAdmittedExternalMutation?: <Value>(
+    path: string,
+    signal: AbortSignal | undefined,
+    operation: () => Promise<Value>,
+    rebindFailure: (value: Value, error: AnalysisError) => AnalysisError,
+  ) => Promise<Result<Value, AnalysisError>>,
 ): void => {
   const objdump = toolContract("inspect_with_objdump");
   const rizin = toolContract("execute_rizin_command");
@@ -61,8 +70,48 @@ export const registerReverseEngineeringTools = (
   server.registerTool(
     rizin.name,
     toolRegistrationOptions(rizin),
-    (input, context: ServerContext) =>
-      runAdmitted(
+    async (input, context: ServerContext) => {
+      const parsed = rizinInputSchema.safeParse(input);
+      if (parsed.success && withAdmittedExternalMutation !== undefined) {
+        const admitted = await withAdmittedExternalMutation(
+          parsed.data.path,
+          context.mcpReq.signal,
+          async () => {
+            invalidateSnapshotForExternalMutation?.();
+            return logToolExecution(logger, rizin.name, () =>
+              service.executeRizinCommand(parsed.data, {
+                signal: context.mcpReq.signal,
+              }),
+            );
+          },
+          (value, cause) => {
+            const observation = value.ok
+              ? value.value
+              : value.error.partialObservation;
+            return new AnalysisOutputError(
+              rizin.name,
+              "Rizin may have changed the bound artifact, but the active analysis session could not be rebound.",
+              {
+                cause,
+                ...(observation === undefined
+                  ? {}
+                  : { partialObservation: observation }),
+              },
+            );
+          },
+        );
+        if (!admitted.ok)
+          return deliverFailure(admitted.error, rizin, delivery, recordEvidence);
+        const result = admitted.value;
+        if (!result.ok)
+          return deliverFailure(result.error, rizin, delivery, recordEvidence);
+        return delivery.toEvidenceToolResult(
+          result.value,
+          rizin,
+          recordEvidence?.(result.value),
+        );
+      }
+      return runAdmitted(
         rizin.name,
         context,
         withAdmittedAnalysis,
@@ -91,7 +140,8 @@ export const registerReverseEngineeringTools = (
             recordEvidence?.(result.value),
           );
         },
-      ),
+      );
+    },
   );
 };
 

@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { realpath } from "node:fs/promises";
+import { isAbsolute, resolve } from "node:path";
 
 import type { BinaryTarget } from "../../domain/binaryTargetTypes.js";
 import {
@@ -246,107 +248,180 @@ export class BinarySession
     resolve: () => Promise<Result<ResolvedSessionOpen, AnalysisError>>,
     options: Pick<BinarySessionOpenOptions, "signal" | "snapshot">,
   ): Promise<Result<BinaryTarget, AnalysisError>> {
-    return this.#serialize(async (admittedThrough) => {
-      if (isAborted(options.signal))
-        return err(new AnalysisCancelledError("open_binary"));
-      const resolved = await resolve();
-      if (!resolved.ok) return resolved;
-      const { target, route, sameTarget } = resolved.value;
-      const { profile } = route;
-      if (isAborted(options.signal))
-        return err(new AnalysisCancelledError("open_binary"));
-      const activeProfile = this.#active?.profile;
-      const sameProfile =
-        activeProfile === null || activeProfile === undefined
-          ? profile === null
-          : profile !== null && analysisProfilesEqual(activeProfile, profile);
-      await this.#drainCalls(admittedThrough);
-      if (isAborted(options.signal))
-        return err(new AnalysisCancelledError("open_binary"));
-      const pendingClosed = await this.#retryPendingCleanup();
-      if (!pendingClosed.ok) return pendingClosed;
-      if (isAborted(options.signal))
-        return err(new AnalysisCancelledError("open_binary"));
-      const retained = sameTarget && sameProfile ? this.#active : undefined;
-      if (retained !== undefined) {
-        const fastPath = await this.#tryRetainedFastPath(
-          retained,
-          target,
-          options,
-        );
-        if (fastPath !== undefined) return fastPath;
-      }
-      const previous = this.#active;
-      this.#active = undefined;
-      if (previous !== undefined) {
-        const closed = await this.#retireClient(
-          previous.client,
-          previous.route.identity.id,
-        );
-        if (!closed.ok) {
-          this.clearSessionRecords();
-          this.#clearRuntimeAvailability();
-          return closed;
-        }
-      }
-      if (isAborted(options.signal))
-        return err(
-          await this.#restoreAfterFailedOpen(
-            previous,
-            new AnalysisCancelledError("open_binary"),
-          ),
-        );
-      const runId = randomUUID();
-      const client = route.createClient(target, { runId });
-      const started = await client.execute("health", {}, options);
-      if (!started.ok) {
-        return err(
-          await this.#failedOpen(
-            client,
-            route.identity.id,
-            previous,
-            started.error,
-          ),
-        );
-      }
-      if (isAborted(options.signal)) {
-        return err(
-          await this.#failedOpen(
-            client,
-            route.identity.id,
-            previous,
-            new AnalysisCancelledError("open_binary"),
-          ),
-        );
-      }
-      this.#active = {
+    return this.#serialize((admittedThrough) =>
+      this.#openWithinTransition(admittedThrough, resolve, options),
+    );
+  }
+
+  async #openWithinTransition(
+    admittedThrough: number,
+    resolve: () => Promise<Result<ResolvedSessionOpen, AnalysisError>>,
+    options: Pick<BinarySessionOpenOptions, "signal" | "snapshot">,
+  ): Promise<Result<BinaryTarget, AnalysisError>> {
+    if (isAborted(options.signal))
+      return err(new AnalysisCancelledError("open_binary"));
+    const resolved = await resolve();
+    if (!resolved.ok) return resolved;
+    const { target, route, sameTarget } = resolved.value;
+    const { profile } = route;
+    if (isAborted(options.signal))
+      return err(new AnalysisCancelledError("open_binary"));
+    const activeProfile = this.#active?.profile;
+    const sameProfile =
+      activeProfile === null || activeProfile === undefined
+        ? profile === null
+        : profile !== null && analysisProfilesEqual(activeProfile, profile);
+    await this.#drainCalls(admittedThrough);
+    if (isAborted(options.signal))
+      return err(new AnalysisCancelledError("open_binary"));
+    const pendingClosed = await this.#retryPendingCleanup();
+    if (!pendingClosed.ok) return pendingClosed;
+    if (isAborted(options.signal))
+      return err(new AnalysisCancelledError("open_binary"));
+    const retained = sameTarget && sameProfile ? this.#active : undefined;
+    if (retained !== undefined) {
+      const fastPath = await this.#tryRetainedFastPath(
+        retained,
         target,
-        client,
-        profile,
-        route,
-        runId,
+        options,
+      );
+      if (fastPath !== undefined) return fastPath;
+    }
+    const previous = this.#active;
+    this.#active = undefined;
+    if (previous !== undefined) {
+      const closed = await this.#retireClient(
+        previous.client,
+        previous.route.identity.id,
+      );
+      if (!closed.ok) {
+        this.clearSessionRecords();
+        this.#clearRuntimeAvailability();
+        return closed;
+      }
+    }
+    if (isAborted(options.signal))
+      return err(
+        await this.#restoreAfterFailedOpen(
+          previous,
+          new AnalysisCancelledError("open_binary"),
+        ),
+      );
+    const runId = randomUUID();
+    const client = route.createClient(target, { runId });
+    const started = await client.execute("health", {}, options);
+    if (!started.ok) {
+      return err(
+        await this.#failedOpen(
+          client,
+          route.identity.id,
+          previous,
+          started.error,
+        ),
+      );
+    }
+    if (isAborted(options.signal)) {
+      return err(
+        await this.#failedOpen(
+          client,
+          route.identity.id,
+          previous,
+          new AnalysisCancelledError("open_binary"),
+        ),
+      );
+    }
+    this.#active = {
+      target,
+      client,
+      profile,
+      route,
+      runId,
+    };
+    this.#clearRuntimeAvailability();
+    this.resetSnapshotInvalidation();
+    if (options.snapshot === undefined) {
+      if (profile === null) this.clearSnapshot();
+      else this.selectSnapshot(target, profile);
+    }
+    if (options.snapshot !== undefined) {
+      const imported = this.importAnalysisSnapshot(options.snapshot);
+      if (!imported.ok) {
+        this.#active = undefined;
+        return err(
+          await this.#failedOpen(
+            client,
+            route.identity.id,
+            previous,
+            imported.error,
+          ),
+        );
+      }
+    }
+    return ok(target);
+  }
+
+  /** Serialize an external local-file mutation and rebind a matching session. */
+  withAdmittedExternalMutation<Value>(
+    path: string,
+    signal: AbortSignal | undefined,
+    operation: () => Promise<Value>,
+    rebindFailure: (value: Value, error: AnalysisError) => AnalysisError,
+  ): Promise<Result<Value, AnalysisError>> {
+    return this.#serialize(async (admittedThrough) => {
+      if (isAborted(signal))
+        return err(new AnalysisCancelledError("execute_rizin_command"));
+      await this.#drainCalls(admittedThrough);
+      if (isAborted(signal))
+        return err(new AnalysisCancelledError("execute_rizin_command"));
+
+      const activeAtDispatch = this.#active;
+      let mutationPath = isAbsolute(path) ? path : resolve(path);
+      try {
+        mutationPath = await realpath(mutationPath);
+      } catch {
+        // The provider workflow will report missing or unreadable input before
+        // dispatch; retain the lexical filesystem path for that outcome.
+      }
+      const rebindTarget =
+        activeAtDispatch?.target.path === mutationPath ||
+        activeAtDispatch?.target.sourcePath === mutationPath;
+      this.invalidateSnapshot();
+      const value = await operation();
+      if (!rebindTarget) return ok(value);
+
+      const retired = await this.#closeActive({});
+      if (!retired.ok) return err(rebindFailure(value, retired.error));
+
+      const target = activeAtDispatch?.target;
+      const reopenOptions: BinarySessionOpenOptions = {
+        targetKind: target?.kind,
+        providerId:
+          activeAtDispatch?.profile?.provider.id ??
+          activeAtDispatch?.route.identity.id,
+        ...(target?.format === "dos-com" || target?.format === "raw-binary"
+          ? { formatHint: target.format }
+          : {}),
+        ...(target !== undefined && "architecture" in target
+          ? { architecture: target.architecture }
+          : {}),
+        ...(target !== undefined && "entryPoint" in target
+          ? { entryPoint: target.entryPoint }
+          : {}),
       };
-      this.#clearRuntimeAvailability();
-      this.resetSnapshotInvalidation();
-      if (options.snapshot === undefined) {
-        if (profile === null) this.clearSnapshot();
-        else this.selectSnapshot(target, profile);
-      }
-      if (options.snapshot !== undefined) {
-        const imported = this.importAnalysisSnapshot(options.snapshot);
-        if (!imported.ok) {
-          this.#active = undefined;
-          return err(
-            await this.#failedOpen(
-              client,
-              route.identity.id,
-              previous,
-              imported.error,
-            ),
-          );
-        }
-      }
-      return ok(target);
+      const reopened = await this.#openWithinTransition(
+        admittedThrough,
+        () =>
+          resolveSessionOpen({
+            router: this.#providerRouter,
+            current: this.#active,
+            path,
+            options: reopenOptions,
+            stagedSnapshotMatches: (target, profile) =>
+              this.matchesSnapshot(target, profile),
+          }),
+        reopenOptions,
+      );
+      return reopened.ok ? ok(value) : err(rebindFailure(value, reopened.error));
     });
   }
 
