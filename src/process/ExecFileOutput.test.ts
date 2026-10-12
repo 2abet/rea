@@ -5,7 +5,11 @@ import { describe, expect, it } from "vitest";
 
 import { createTestTempDirectory } from "../../tests/fixtures/temporaryDirectory.js";
 
-import { execFileOutput, execFileOutputFailure } from "./ExecFileOutput.js";
+import {
+  execFileBytes,
+  execFileOutput,
+  execFileOutputFailure,
+} from "./ExecFileOutput.js";
 
 const waitForFile = async (path: string): Promise<boolean> => {
   for (let attempt = 0; attempt < 500; attempt += 1) {
@@ -38,6 +42,16 @@ describe("execFileOutput", () => {
     });
 
     expect(execFileOutputFailure(failure)?.outputTruncated).toBe(true);
+  });
+
+  it("preserves captured bytes for callers that own the output format", async () => {
+    const result = await execFileBytes(process.execPath, [
+      "-e",
+      "process.stdout.write(Buffer.from([0x00, 0xff, 0x41])); process.stderr.write(Buffer.from([0xfe]));",
+    ]);
+
+    expect(result.stdout).toEqual(Buffer.from([0x00, 0xff, 0x41]));
+    expect(result.stderr).toEqual(Buffer.from([0xfe]));
   });
 
   it("captures output larger than Node's default execFile limit", async () => {
