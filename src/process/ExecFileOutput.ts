@@ -76,6 +76,7 @@ export interface ExecFileOutputFailure {
   readonly signal: string | null;
   readonly killed: boolean;
   readonly outputTruncated: boolean;
+  readonly collectionFailure?: boolean;
 }
 
 /** Read captured output metadata from a failed execFileOutput invocation. */
@@ -89,6 +90,7 @@ export const execFileOutputFailure = (
   const signal = Reflect.get(cause, "signal");
   const killed = Reflect.get(cause, "killed");
   const outputTruncated = Reflect.get(cause, "outputTruncated");
+  const collectionFailure = Reflect.get(cause, "collectionFailure");
   if (typeof stdout !== "string" || typeof stderr !== "string")
     return undefined;
   return {
@@ -99,6 +101,7 @@ export const execFileOutputFailure = (
     killed: killed === true,
     outputTruncated:
       outputTruncated === true || code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER",
+    ...(collectionFailure === true ? { collectionFailure: true } : {}),
   };
 };
 

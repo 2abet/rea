@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { expect, it } from "vitest";
 
-import { ReverseEngineeringService } from "../../src/application/reverse/ReverseEngineeringService.js";
+import { TestReverseEngineeringService as ReverseEngineeringService } from "../support/reverseEngineeringService.js";
 
 it("uses stoppable process mode for caller-selected provider commands", async () => {
   const directory = await mkdtemp(join(tmpdir(), "rea-rizin-stoppable-"));

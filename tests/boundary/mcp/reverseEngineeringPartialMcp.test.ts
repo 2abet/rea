@@ -2,10 +2,12 @@ import pino from "pino";
 import type { McpServer } from "@modelcontextprotocol/server";
 import { expect, it, vi } from "vitest";
 
-import { ReverseEngineeringService } from "../../../src/application/reverse/ReverseEngineeringService.js";
+import { TestReverseEngineeringService as ReverseEngineeringService } from "../../support/reverseEngineeringService.js";
 import { AnalysisInputError } from "../../../src/domain/analysisErrorCore.js";
+import type { AnalysisOperationPort } from "../../../src/application/AnalysisProvider.js";
 import { EvidenceIntegrityError } from "../../../src/domain/evidenceErrors.js";
 import { err, ok } from "../../../src/domain/result.js";
+import type { WithAdmittedAnalysis } from "../../../src/server/analysisAdmission.js";
 import { createToolResultDelivery } from "../../../src/server/toolResult.js";
 import { registerReverseEngineeringTools } from "../../../src/server/registerReverseEngineeringTools.js";
 
@@ -220,4 +222,57 @@ it("does not treat a malformed partial observation as retained Evidence", async 
 
   expect(response.isError).toBe(true);
   expect(recordEvidence).not.toHaveBeenCalled();
+});
+
+it("keeps provider execution and Evidence recording inside analysis admission", async () => {
+  const registrations = new Map<
+    string,
+    (input: unknown, context: unknown) => Promise<unknown>
+  >();
+  const server = {
+    registerTool: (
+      name: string,
+      _options: unknown,
+      handler: (input: unknown, context: unknown) => Promise<unknown>,
+    ) => registrations.set(name, handler),
+  } as unknown as McpServer;
+  const events: string[] = [];
+  const service = new ReverseEngineeringService({
+    run: async () => {
+      events.push("provider");
+      return { stdout: "objdump output", stderr: "" };
+    },
+  });
+  const recordEvidence = vi.fn(() => {
+    events.push("record");
+    return ok("added" as const);
+  });
+  const admission: WithAdmittedAnalysis = async (_name, _signal, operation) => {
+    events.push("admission-start");
+    const result = await operation({} as AnalysisOperationPort);
+    events.push("admission-end");
+    return ok(result);
+  };
+  registerReverseEngineeringTools(
+    server,
+    service,
+    pino({ enabled: false }),
+    createToolResultDelivery(2 * 1024 * 1024),
+    recordEvidence,
+    admission,
+  );
+  const invoke = registrations.get("inspect_with_objdump");
+  if (invoke === undefined) throw new Error("objdump MCP handler was not registered");
+
+  await invoke(
+    { path: "package.json", operation: "file_headers" },
+    { mcpReq: { signal: new AbortController().signal } },
+  );
+
+  expect(events).toEqual([
+    "admission-start",
+    "provider",
+    "record",
+    "admission-end",
+  ]);
 });

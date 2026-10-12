@@ -51,6 +51,7 @@ const REVERSE_TOOL_SOURCES = [
   "src/server/registerRizinDebugTools.ts",
   "tests/boundary/providers/CutterBridge*.test.ts",
   "tests/boundary/providers/GdbSession*.test.ts",
+  "tests/boundary/providers/GdbCommandQueue.test.ts",
   "tests/boundary/providers/RizinDebugSessionCoverage.part*.test.ts",
   "tests/boundary/providers/RizinCommandTimeout.test.ts",
   "tests/boundary/providers/RizinTimeoutEvidence.test.ts",

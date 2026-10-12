@@ -20,6 +20,7 @@ export default defineConfig({
       "tests/boundary/providers/GdbSessionManagers.test.ts",
       "tests/boundary/providers/RizinDebugSessionManagers.test.ts",
       "tests/boundary/providers/GdbSessionManagerCoverage.test.ts",
+      "tests/boundary/providers/GdbCommandQueue.test.ts",
       "tests/boundary/providers/GdbSessionReviewRegressions.test.ts",
       "tests/boundary/providers/RizinDebugSessionReviewRegressions.test.ts",
       "tests/boundary/providers/RizinDebugSessionCoverage.part1.test.ts",

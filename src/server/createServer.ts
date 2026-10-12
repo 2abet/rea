@@ -10,6 +10,9 @@ import { createEvmInterfaceService } from "../composition/evm.js";
 import { registerEvmTools } from "./registerEvmTools.js";
 import { registerRecordedCrashTools } from "./registerRecordedCrashTools.js";
 import { createRecordedCrashService } from "../composition/binaryDiagnostics.js";
+import { createGoBinaryService } from "../composition/go.js";
+import type { GoBinaryService } from "../application/go/GoBinaryService.js";
+import { registerGoTools } from "./registerGoTools.js";
 import type { RecordedCrashService } from "../application/binaryDiagnostics/RecordedCrashService.js";
 import { registerAnalysisViewTool } from "./registerAnalysisViewTool.js";
 import { registerBinaryDiagnosticsTools } from "./registerBinaryDiagnosticsTools.js";
@@ -121,6 +124,7 @@ export interface CreateServerOptions {
   readonly evmInterface?: EvmInterfaceService;
   readonly logger?: Logger;
   readonly binaryLayout?: BinaryLayoutService;
+  readonly goBinary?: GoBinaryService;
   readonly recordedCrash?: RecordedCrashService;
   readonly firmwareAnalysis?: FirmwareAnalysisPort;
   readonly javascriptRecovery?: JavaScriptRecoveryPort;
@@ -236,6 +240,7 @@ export const createServer = (
   const javascriptRecovery =
     options.javascriptRecovery ?? createJavaScriptRecoveryProvider(environment);
   const artifactResources = new ArtifactResourceScope();
+  const reverseEngineering = createReverseEngineeringService(providerEnvironment);
   const firmwareAnalysis = new FirmwareAnalysisService(
     options.firmwareAnalysis ?? createFirmwareAnalysisProvider(environment),
   );
@@ -284,6 +289,7 @@ export const createServer = (
       webModuleTrace.close(),
       javascriptRecovery.close?.() ?? Promise.resolve(),
       artifactResources.close(),
+      reverseEngineering.close(),
       firmwareAnalysis.close(),
       options.browserScenarioCapture?.close?.() ?? Promise.resolve(),
       gdbSessions.closeAll(),
@@ -331,12 +337,13 @@ export const createServer = (
   registerBinaryAnalysisTools(toolContext);
   registerReverseEngineeringTools(
     server,
-    createReverseEngineeringService(providerEnvironment),
+    reverseEngineering,
     toolLogger,
     delivery,
     session === undefined
       ? undefined
       : (evidence) => session.recordEvidence(evidence),
+    analysisAdmission,
   );
   registerCutterTools(
     server,
@@ -409,6 +416,7 @@ export const createServer = (
   if (session !== undefined) {
     registerSessionTools(server, session, toolLogger, {
       ...selectedOptions,
+      artifactResources,
       ...(availability === undefined
         ? {}
         : { availabilityPolicy: availability.policy }),
@@ -491,6 +499,13 @@ const registerConfiguredAnalysisTools = (
   registerPeResourcesTool(
     server,
     createPeResourcesService(),
+    toolLogger,
+    recordEvidence,
+    withAdmittedAnalysis,
+  );
+  registerGoTools(
+    server,
+    options.goBinary ?? createGoBinaryService(),
     toolLogger,
     recordEvidence,
     withAdmittedAnalysis,

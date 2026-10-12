@@ -5,10 +5,19 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { ReverseEngineeringService } from "../../src/application/reverse/ReverseEngineeringService.js";
+import { TestReverseEngineeringService as ReverseEngineeringService } from "../support/reverseEngineeringService.js";
 import { projectAnalysisError } from "../../src/domain/analysisErrorProjection.js";
+import { REVERSE_ENGINEERING_TOOL_CONTRACTS } from "../../src/contracts/reverseEngineeringToolContracts.js";
 
 describe("reverse engineering command services", () => {
+  it("documents the shared combined capture limit for both command tools", () => {
+    for (const contract of REVERSE_ENGINEERING_TOOL_CONTRACTS)
+      expect(contract.description).toContain("shared 16 MiB combined limit");
+    expect(
+      REVERSE_ENGINEERING_TOOL_CONTRACTS[0]?.description,
+    ).toContain("does not follow local debug links by default");
+  });
+
   it("uses compatible local DWARF link flags and disables debuginfod through the environment", async () => {
     const directory = await mkdtemp(join(tmpdir(), "rea-reverse-tools-"));
     const path = join(directory, "fixture.bin");
@@ -35,6 +44,7 @@ describe("reverse engineering command services", () => {
         operation: "dwarf",
         follow_debug_links: true,
       });
+      if (!result.ok) throw result.error;
       expect(result.ok).toBe(true);
       if (!result.ok) return;
       expect(calls).toEqual([
@@ -212,7 +222,10 @@ it("marks signal-terminated provider commands as unknown completion", async () =
       expect(ordinaryExit.value.limitations.join(" ")).not.toContain(
         "terminated by signal",
       );
-      expect(ordinaryExit.value.limitations).toHaveLength(3);
+      expect(ordinaryExit.value.limitations).toContain(
+        "Rizin commands and retained plugins may read files or access network resources outside the selected artifact; those external inputs are not bound to Evidence.",
+      );
+      expect(ordinaryExit.value.limitations).toHaveLength(4);
     }
   } finally {
     await rm(directory, { recursive: true, force: true });
@@ -264,7 +277,10 @@ describe("Rizin command service", () => {
         completion_status: "complete",
       });
       expect(result.value.limitations.join(" ")).not.toContain("terminated by signal");
-      expect(result.value.limitations).toHaveLength(3);
+      expect(result.value.limitations).toContain(
+        "Rizin commands and retained plugins may read files or access network resources outside the selected artifact; those external inputs are not bound to Evidence.",
+      );
+      expect(result.value.limitations).toHaveLength(4);
       expect(result.value.parameters).toMatchObject({
         command: "iI",
         provider_executable: "/tools/rizin",

@@ -32,6 +32,8 @@
     "src/server/registerReverseEngineeringTools.ts:57-78",
     "src/gdb/GdbSessionManager.ts:68-69",
     "src/gdb/GdbSessionManager.ts:71-73",
+    "src/gdb/GdbSessionManager.ts:32-32",
+    "src/gdb/GdbSessionManager.ts:960-980",
     "src/gdb/GdbSessionManager.ts:216-230",
     "src/gdb/GdbSessionManager.ts:390-390",
     "src/gdb/GdbSessionManager.ts:392-392",

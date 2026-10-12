@@ -137,6 +137,7 @@ it.each([
   "src/cutter/CutterBridgeClient.ts",
   "src/objdump/ObjdumpCommand.ts",
   "tests/boundary/providers/GdbSessionManagerCoverage.test.ts",
+  "tests/boundary/providers/GdbCommandQueue.test.ts",
   "tests/boundary/providers/RizinDebugSessionCoverage.part3.test.ts",
   "tests/boundary/providers/RizinCommandTimeout.test.ts",
   "tests/boundary/providers/RizinTimeoutEvidence.test.ts",

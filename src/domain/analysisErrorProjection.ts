@@ -105,9 +105,11 @@ const underlyingErrorCode = (
   if (error instanceof ArtifactOperationError)
     return artifactOperationCode(error);
   if (error instanceof BinaryTargetError)
-    return error.systemCode === undefined
-      ? "target_unavailable"
-      : "access_denied";
+    return error.constraint === "load_selection_rejected"
+      ? "invalid_request"
+      : error.systemCode === undefined
+        ? "target_unavailable"
+        : "access_denied";
   if (error instanceof EvidenceFileError) return evidenceFileCode(error.reason);
   if (error instanceof UnknownRegistryError)
     return unknownRegistryCode(error.reason);
@@ -309,6 +311,13 @@ const artifactStateErrorDetails = (
       operation: error.operation,
       reason: error.reason,
       ...(error.path === undefined ? {} : { path: error.path }),
+      ...(error.published === undefined
+        ? {}
+        : {
+            published: true,
+            bytes: error.published.bytes,
+            published_path: error.published.path,
+          }),
     };
   return undefined;
 };
@@ -432,8 +441,8 @@ const lifecycleErrorDetails = (
   if (error instanceof AnalysisCancelledError)
     return {
       operation: error.operation,
-      cleanup: error.cleanup === undefined ? "complete" : "incomplete",
-      ...(error.cleanup === undefined
+      cleanup: error.cleanupIncomplete ? "incomplete" : "complete",
+      ...(error.cleanup === undefined || !error.cleanupIncomplete
         ? {}
         : {
             cleanup_reason: error.cleanup.reason,
@@ -447,7 +456,7 @@ const lifecycleErrorDetails = (
     return {
       operation: error.operation,
       timeout_ms: error.timeoutMs,
-      ...(error.cleanup === undefined
+      ...(error.cleanup === undefined || !error.cleanupIncomplete
         ? {}
         : {
             cleanup: "incomplete",
