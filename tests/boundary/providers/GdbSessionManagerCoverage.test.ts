@@ -139,19 +139,29 @@ it("returns cancellation when GDB startup is aborted after spawn", async () => {
 it("classifies cancellation while asynchronous GDB ownership preparation is pending", async () => {
   const controller = new AbortController();
   let entered!: () => void;
-  const spawnEntered = new Promise<void>((resolve) => { entered = resolve; });
+  const spawnEntered = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
   const manager = new GdbSessionManager({
     environment: {},
-    spawnProcess: async (options) => new Promise<never>((_resolve, reject) => {
-      entered();
-      options.signal?.addEventListener("abort", () => reject(new Error("spawn preparation aborted")), { once: true });
-    }),
+    spawnProcess: async (options) =>
+      new Promise<never>((_resolve, reject) => {
+        entered();
+        options.signal?.addEventListener(
+          "abort",
+          () => reject(new Error("spawn preparation aborted")),
+          { once: true },
+        );
+      }),
   });
   const starting = manager.start(controller.signal);
   await spawnEntered;
   controller.abort();
   const started = await starting;
-  expect(started).toMatchObject({ ok: false, error: { _tag: "AnalysisCancelledError" } });
+  expect(started).toMatchObject({
+    ok: false,
+    error: { _tag: "AnalysisCancelledError" },
+  });
 });
 
 it("drains active GDB commands and rejects new commands before closeAll cleanup", async () => {
@@ -161,9 +171,12 @@ it("drains active GDB commands and rejects new commands before closeAll cleanup"
     if (command.includes("held command")) {
       heldToken = token;
       heldCommand = command;
-    } else _child.stdout.write(command.includes("list-thread-groups")
-      ? `${token}^done,groups=[]\n`
-      : `${token}^done\n`);
+    } else
+      _child.stdout.write(
+        command.includes("list-thread-groups")
+          ? `${token}^done,groups=[]\n`
+          : `${token}^done\n`,
+      );
   });
   const manager = managerWithFakeSpawner(fake.spawnProcess);
   const started = await manager.start();
@@ -172,7 +185,10 @@ it("drains active GDB commands and rejects new commands before closeAll cleanup"
   const active = manager.execute(started.value.session_id, "held command");
   await expect.poll(() => heldToken).not.toBe("");
   const closing = manager.closeAll();
-  const rejected = await manager.execute(started.value.session_id, "late command");
+  const rejected = await manager.execute(
+    started.value.session_id,
+    "late command",
+  );
   expect(rejected.ok).toBe(false);
   const duplicateClose = await manager.close(started.value.session_id);
   expect(duplicateClose).toMatchObject({
@@ -217,8 +233,13 @@ it("waits for GDB stdout settlement after a no-inferior exit without re-entering
   expect(started.ok).toBe(true);
   if (!started.ok) return;
   const closed = await manager.close(started.value.session_id);
-  expect(closed).toMatchObject({ ok: true, value: { target_state: "none_observed" } });
-  expect(commands.filter((command) => command.includes("list-thread-groups"))).toHaveLength(1);
+  expect(closed).toMatchObject({
+    ok: true,
+    value: { target_state: "none_observed" },
+  });
+  expect(
+    commands.filter((command) => command.includes("list-thread-groups")),
+  ).toHaveLength(1);
   expect(commands).toContain("-gdb-exit");
 });
 
@@ -680,7 +701,8 @@ it.each([
           return Reflect.apply(originalWrite, stdin, arguments_);
         if (failure === "callback") {
           const callback = arguments_[2] as
-            ((error?: Error | null) => void) | undefined;
+            | ((error?: Error | null) => void)
+            | undefined;
           queueMicrotask(() =>
             callback?.(new Error("simulated callback error")),
           );
@@ -930,9 +952,13 @@ it("permanently revokes automatic detach after an abbreviated TTY change and res
   const fake = createFakeSpawner((_child, token, command) => {
     commands.push(command);
     if (command.includes("inferior-tty-show"))
-      fake.children[0]?.stdout.write(`${token}^done,inferior_tty_terminal=${JSON.stringify(tty)}\n`);
+      fake.children[0]?.stdout.write(
+        `${token}^done,inferior_tty_terminal=${JSON.stringify(tty)}\n`,
+      );
     else if (command.includes("list-thread-groups"))
-      fake.children[0]?.stdout.write(`${token}^done,groups=[{id="i1",pid="123"}]\n`);
+      fake.children[0]?.stdout.write(
+        `${token}^done,groups=[{id="i1",pid="123"}]\n`,
+      );
     else fake.children[0]?.stdout.write(`${token}^done\n`);
   });
   const manager = managerWithFakeSpawner(fake.spawnProcess);
@@ -940,11 +966,15 @@ it("permanently revokes automatic detach after an abbreviated TTY change and res
   expect(started.ok).toBe(true);
   if (!started.ok) return;
   await manager.execute(started.value.session_id, "set pagination off");
-  expect(manager.status(started.value.session_id)?.inferior_tty_verified).toBe(true);
+  expect(manager.status(started.value.session_id)?.inferior_tty_verified).toBe(
+    true,
+  );
   await manager.execute(started.value.session_id, "set inferior-t /tmp/other");
   await manager.execute(started.value.session_id, `set inferior-t ${tty}`);
   await manager.execute(started.value.session_id, "start");
-  expect(manager.status(started.value.session_id)?.inferior_tty_verified).toBe(false);
+  expect(manager.status(started.value.session_id)?.inferior_tty_verified).toBe(
+    false,
+  );
   const closed = await manager.close(started.value.session_id);
   expect(closed.ok).toBe(false);
   expect(commands).not.toContain("-target-detach");
@@ -956,9 +986,13 @@ it("revokes detach proof for redirection attached to a run argument", async () =
   const fake = createFakeSpawner((_child, token, command) => {
     commands.push(command);
     if (command.includes("inferior-tty-show"))
-      fake.children[0]?.stdout.write(`${token}^done,inferior_tty_terminal=${JSON.stringify(tty)}\n`);
+      fake.children[0]?.stdout.write(
+        `${token}^done,inferior_tty_terminal=${JSON.stringify(tty)}\n`,
+      );
     else if (command.includes("list-thread-groups"))
-      fake.children[0]?.stdout.write(`${token}^done,groups=[{id="i1",pid="123"}]\n`);
+      fake.children[0]?.stdout.write(
+        `${token}^done,groups=[{id="i1",pid="123"}]\n`,
+      );
     else fake.children[0]?.stdout.write(`${token}^done\n`);
   });
   const manager = managerWithFakeSpawner(fake.spawnProcess);
@@ -968,7 +1002,9 @@ it("revokes detach proof for redirection attached to a run argument", async () =
 
   await manager.execute(started.value.session_id, "start arg>/dev/null");
 
-  expect(manager.status(started.value.session_id)?.inferior_tty_verified).toBe(false);
+  expect(manager.status(started.value.session_id)?.inferior_tty_verified).toBe(
+    false,
+  );
   const closed = await manager.close(started.value.session_id);
   expect(closed.ok).toBe(false);
   expect(commands).not.toContain("-target-detach");
@@ -1548,7 +1584,10 @@ process.stdin.on('data', (chunk) => {
   expect(started.ok).toBe(true);
   if (!started.ok) return;
 
-  const result = await manager.execute(started.value.session_id, "many-records");
+  const result = await manager.execute(
+    started.value.session_id,
+    "many-records",
+  );
 
   expect(result.ok).toBe(true);
   if (result.ok) {
@@ -1676,10 +1715,12 @@ it("drains buffered startup stdout before capturing early-exit Evidence", async 
   expect(started.ok).toBe(false);
   expect(children).toHaveLength(2);
   if (!started.ok)
-    expect(started.error.partialObservation?.raw_result).toMatchObject({
-      process_exit_code: 7,
-      records: ['~"late startup record"'],
-      completion_status: "unknown",
+    expect(started.error.partialObservation).toMatchObject({
+      raw_result: {
+        process_exit_code: 7,
+        records: ['~"late startup record"'],
+        completion_status: "unknown",
+      },
     });
 });
 

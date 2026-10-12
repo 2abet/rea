@@ -10,8 +10,13 @@ let directory: string | undefined;
 const managers: GdbSessionManager[] = [];
 
 afterEach(async () => {
-  await Promise.all(managers.splice(0).map((manager) => manager.closeAll().catch(() => undefined)));
-  if (directory !== undefined) await rm(directory, { recursive: true, force: true });
+  await Promise.all(
+    managers
+      .splice(0)
+      .map((manager) => manager.closeAll().catch(() => undefined)),
+  );
+  if (directory !== undefined)
+    await rm(directory, { recursive: true, force: true });
   directory = undefined;
 });
 
@@ -74,12 +79,19 @@ process.stdin.on("data", async (chunk) => {
 
     const controllers = Array.from({ length: 15 }, () => new AbortController());
     const queued = controllers.map((controller, index) =>
-      manager.execute(started.value.session_id, `queued-${index}`, controller.signal),
+      manager.execute(
+        started.value.session_id,
+        `queued-${index}`,
+        controller.signal,
+      ),
     );
     const safetyRelease = setTimeout(() => {
       void writeFile(releasePath, "safety release");
     }, 250);
-    const overflow = await manager.execute(started.value.session_id, "overflow");
+    const overflow = await manager.execute(
+      started.value.session_id,
+      "overflow",
+    );
     clearTimeout(safetyRelease);
     expect(overflow).toMatchObject({
       ok: false,
@@ -99,7 +111,8 @@ process.stdin.on("data", async (chunk) => {
     expect(cancelled).toHaveLength(15);
     expect(
       cancelled.every(
-        (result) => !result.ok && result.error._tag === "AnalysisCancelledError",
+        (result) =>
+          !result.ok && result.error._tag === "AnalysisCancelledError",
       ),
     ).toBe(true);
     const cancellationSafetyRelease = setTimeout(() => {
@@ -107,7 +120,10 @@ process.stdin.on("data", async (chunk) => {
     }, 250);
     try {
       await expect(
-        manager.execute(started.value.session_id, "cannot-bypass-cancelled-placeholders"),
+        manager.execute(
+          started.value.session_id,
+          "cannot-bypass-cancelled-placeholders",
+        ),
       ).resolves.toMatchObject({
         ok: false,
         error: {
@@ -125,7 +141,9 @@ process.stdin.on("data", async (chunk) => {
       "admitted-after-drain",
     );
     expect(admittedAfterDrain.ok).toBe(true);
-    await expect(manager.execute(started.value.session_id, "after-drain")).resolves.toMatchObject({
+    await expect(
+      manager.execute(started.value.session_id, "after-drain"),
+    ).resolves.toMatchObject({
       ok: true,
       value: { result: { completion_status: "complete" } },
     });

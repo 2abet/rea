@@ -43,8 +43,12 @@ it.skipIf(process.platform === "win32")(
   async () => {
     directory = await mkdtemp(join(tmpdir(), "rea-gdb-environment-snapshot-"));
     const selectedDirectory = join(directory, "selected-bin");
-    await import("node:fs/promises").then(({ mkdir }) => mkdir(selectedDirectory));
-    const selectedPath = [selectedDirectory, process.env.PATH ?? ""].join(delimiter);
+    await import("node:fs/promises").then(({ mkdir }) =>
+      mkdir(selectedDirectory),
+    );
+    const selectedPath = [selectedDirectory, process.env.PATH ?? ""].join(
+      delimiter,
+    );
     const provider = join(selectedDirectory, "gdb");
     const markerPath = join(directory, "selected-provider-started");
     await writeFile(
@@ -68,7 +72,9 @@ process.stdin.on("data", (chunk) => {
     suppliedEnvironment.PATH = join(directory, "mutated-bin");
 
     const started = await manager.start();
-    expect(started.ok, started.ok ? undefined : started.error.message).toBe(true);
+    expect(started.ok, started.ok ? undefined : started.error.message).toBe(
+      true,
+    );
     await expect(readFile(markerPath, "utf8")).resolves.toBe("started");
     if (started.ok) {
       const closed = await manager.close(started.value.session_id);
@@ -170,7 +176,10 @@ process.stdin.on("data", (chunk) => {
 
     expect(started).toMatchObject({
       ok: false,
-      error: { _tag: "AnalysisCapabilityUnavailableError", operation: "start_gdb_session" },
+      error: {
+        _tag: "AnalysisCapabilityUnavailableError",
+        operation: "start_gdb_session",
+      },
     });
     if (!started.ok)
       expect(started.error.partialObservation).toMatchObject({
@@ -235,7 +244,9 @@ process.stdin.on("data", (chunk) => {
         },
       },
     });
-    expect((await readFile(countPath, "utf8")).trim().split("\\n")).toHaveLength(1);
+    expect(
+      (await readFile(countPath, "utf8")).trim().split("\\n"),
+    ).toHaveLength(1);
     const cancelled = new AbortController();
     cancelled.abort();
     const cancelledAtCapacity = await manager.start(cancelled.signal);
@@ -268,8 +279,12 @@ process.stdin.on("data", (chunk) => {
     let spawnCalls = 0;
     let enterSecondSpawn: (() => void) | undefined;
     let releaseSecondSpawn: (() => void) | undefined;
-    const secondSpawnEntered = new Promise<void>((resolve) => { enterSecondSpawn = resolve; });
-    const secondSpawnGate = new Promise<void>((resolve) => { releaseSecondSpawn = resolve; });
+    const secondSpawnEntered = new Promise<void>((resolve) => {
+      enterSecondSpawn = resolve;
+    });
+    const secondSpawnGate = new Promise<void>((resolve) => {
+      releaseSecondSpawn = resolve;
+    });
     const manager = new GdbSessionManager({
       environment: { REA_GDB_COMMAND: provider },
       maxSessions: 2,
@@ -330,7 +345,11 @@ setTimeout(() => process.exit(0), 250);
 
     const starting = manager.start();
     let pidText: string | undefined;
-    for (let attempt = 0; attempt < 100 && pidText === undefined; attempt += 1) {
+    for (
+      let attempt = 0;
+      attempt < 100 && pidText === undefined;
+      attempt += 1
+    ) {
       try {
         pidText = await readFile(pidPath, "utf8");
       } catch {
@@ -459,7 +478,9 @@ setTimeout(() => process.exit(0), 250).unref();
 it.skipIf(process.platform === "win32")(
   "retains timed-out GDB records and cleanup uncertainty when stopping is incomplete",
   async () => {
-    directory = await mkdtemp(join(tmpdir(), "rea-gdb-timeout-cleanup-incomplete-"));
+    directory = await mkdtemp(
+      join(tmpdir(), "rea-gdb-timeout-cleanup-incomplete-"),
+    );
     const provider = join(directory, "fake-gdb-timeout-cleanup.mjs");
     await writeFile(
       provider,
@@ -491,7 +512,10 @@ setTimeout(() => process.exit(0), 250);
     expect(started.ok).toBe(true);
     if (!started.ok) return;
 
-    const result = await manager.execute(started.value.session_id, "shell sleep 5");
+    const result = await manager.execute(
+      started.value.session_id,
+      "shell sleep 5",
+    );
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error).toMatchObject({
@@ -503,7 +527,12 @@ setTimeout(() => process.exit(0), 250);
         partialObservation: {
           predicate_type: "rea.debugger.console-observation",
           raw_result: {
-            records: ['~"partial console record', '"', "@target partial", "&log partial"],
+            records: [
+              '~"partial console record',
+              '"',
+              "@target partial",
+              "&log partial",
+            ],
             completion_status: "unknown",
           },
         },
@@ -668,7 +697,11 @@ process.stdin.on("data", (chunk) => {
         parameters: { command: "shell sleep 600" },
         raw_result: {
           command: "shell sleep 600",
-          records: ['~"partial before cancellation', '"', "@target before cancellation"],
+          records: [
+            '~"partial before cancellation',
+            '"',
+            "@target before cancellation",
+          ],
           completion_status: "unknown",
         },
       });
@@ -706,10 +739,15 @@ setTimeout(() => process.exit(0), 500);
     await chmod(provider, 0o700);
     const manager = new GdbSessionManager({
       environment: { REA_GDB_COMMAND: provider },
-      stopProcess: async () => ({ status: "incomplete", reason: "test cleanup" }),
+      stopProcess: async () => ({
+        status: "incomplete",
+        reason: "test cleanup",
+      }),
     });
     managers.push(manager);
-    const started = await manager.start(undefined, { inferiorTty: "/tmp/selected-tty" });
+    const started = await manager.start(undefined, {
+      inferiorTty: "/tmp/selected-tty",
+    });
     expect(started.ok).toBe(true);
     if (!started.ok) return;
     const changed = await manager.execute(

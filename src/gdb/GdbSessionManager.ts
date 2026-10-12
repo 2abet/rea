@@ -375,7 +375,9 @@ export class GdbSessionManager {
       { captureStdout: false, maxDiagnosticBytes: MAX_DIAGNOSTIC_BYTES },
     );
     let settleStdout!: () => void;
-    const stdoutSettled = new Promise<void>((resolve) => { settleStdout = resolve; });
+    const stdoutSettled = new Promise<void>((resolve) => {
+      settleStdout = resolve;
+    });
     const session: GdbSession = {
       id,
       miVersion,
@@ -1121,7 +1123,9 @@ export class GdbSessionManager {
         command: pending.evidenceCommand,
         mi: "",
         records: [...pending.lines],
-        console: pending.lines.filter((line) => line.startsWith("~")).join("\n"),
+        console: pending.lines
+          .filter((line) => line.startsWith("~"))
+          .join("\n"),
         target: pending.lines.filter((line) => line.startsWith("@")).join("\n"),
         log: pending.lines.filter((line) => line.startsWith("&")).join("\n"),
         output_truncated: pending.outputTruncated,
@@ -1175,9 +1179,7 @@ export class GdbSessionManager {
               },
             }
           : {}),
-        ...(partialObservation === undefined
-          ? {}
-          : { partialObservation }),
+        ...(partialObservation === undefined ? {} : { partialObservation }),
       },
     );
   }
@@ -1273,9 +1275,7 @@ export class GdbSessionManager {
           target: pending.lines
             .filter((line) => line.startsWith("@"))
             .join("\n"),
-          log: pending.lines
-            .filter((line) => line.startsWith("&"))
-            .join("\n"),
+          log: pending.lines.filter((line) => line.startsWith("&")).join("\n"),
           process_exit_observed: true,
           process_exit_code: code,
           process_exit_signal: signalCode,
@@ -1359,7 +1359,10 @@ export class GdbSessionManager {
               ? "rea.debugger.startup-observation"
               : "rea.debugger.console-observation",
           operation,
-          parameters: { session_id: session.id, command: pending.evidenceCommand },
+          parameters: {
+            session_id: session.id,
+            command: pending.evidenceCommand,
+          },
           result: { ...partial, records: [...partial.records] },
           rawResult: { ...partial, records: [...partial.records] },
           subjectUnavailableReason:
@@ -1467,7 +1470,10 @@ export class GdbSessionManager {
         const evidence = createEvidence(undefined, GDB_PROVIDER_IDENTITY, {
           predicateType: "rea.debugger.console-observation",
           operation: "gdb_console",
-          parameters: { session_id: session.id, command: pending.evidenceCommand },
+          parameters: {
+            session_id: session.id,
+            command: pending.evidenceCommand,
+          },
           result: { ...partial, records: [...partial.records] },
           rawResult: { ...partial, records: [...partial.records] },
           subjectUnavailableReason:
@@ -1631,10 +1637,12 @@ const commandMayChangeInferiorOutput = (command: string): boolean => {
   const setting = /^\s*(?:set|with)\s+(\S+)/iu.exec(command)?.[1];
   const maySetInferiorTty =
     setting !== undefined && "inferior-tty".startsWith(setting.toLowerCase());
-  return maySetInferiorTty ||
-  /\binferior-tty\b/iu.test(command) ||
-  /^\s*(?:tty(?:\s|$)|source\b|python(?:\s|$)|define\b)/iu.test(command) ||
-  /^\s*(?:run|r|start|starti)\b[^\n;]*(?:\d?>|>>|<|&>)/iu.test(command);
+  return (
+    maySetInferiorTty ||
+    /\binferior-tty\b/iu.test(command) ||
+    /^\s*(?:tty(?:\s|$)|source\b|python(?:\s|$)|define\b)/iu.test(command) ||
+    /^\s*(?:run|r|start|starti)\b[^\n;]*(?:\d?>|>>|<|&>)/iu.test(command)
+  );
 };
 
 /** Terminate only the directly owned debugger process, never its process group or inferiors. */
