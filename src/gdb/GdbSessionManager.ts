@@ -25,6 +25,7 @@ import {
 const STARTUP_TIMEOUT_MS = 10_000;
 const COMMAND_TIMEOUT_MS = 120_000;
 const MAX_COMMAND_OUTPUT_BYTES = 16 * 1024 * 1024;
+const MAX_COMMAND_OUTPUT_RECORDS = 16_384;
 const MAX_MI_LINE_BYTES = 16 * 1024 * 1024;
 const MAX_RECENT_MI_LINE_BYTES = 64 * 1024;
 const MAX_DIAGNOSTIC_BYTES = 64 * 1024;
@@ -133,6 +134,15 @@ const gdbThreadGroupCount = (mi: string): number | undefined => {
 class GdbCommandProcessExitError extends Error {
   constructor(readonly partial: GdbCommandResult) {
     super("GDB exited before returning the active MI command result");
+  }
+}
+
+class GdbProtocolFailureError extends Error {
+  constructor(
+    message: string,
+    readonly partial: GdbCommandResult,
+  ) {
+    super(message);
   }
 }
 
@@ -410,7 +420,9 @@ export class GdbSessionManager {
       session.exited = true;
       session.exitCode = code;
       session.exitSignal = signalCode;
-      session.startupReject?.(new Error("GDB exited during startup"));
+      void this.#waitForStdoutSettlement(session).then(() =>
+        session.startupReject?.(new Error("GDB exited during startup")),
+      );
       void this.#settleExitedCommands(session, code, signalCode);
     });
     let startupTimer!: ReturnType<typeof setTimeout>;
@@ -1067,7 +1079,10 @@ export class GdbSessionManager {
     for (const line of lines) {
       for (const pending of session.pending.values()) {
         const lineBytes = Buffer.byteLength(line, "utf8") + 1;
-        if (pending.outputBytes + lineBytes <= MAX_COMMAND_OUTPUT_BYTES) {
+        if (
+          pending.outputBytes + lineBytes <= MAX_COMMAND_OUTPUT_BYTES &&
+          pending.lines.length < MAX_COMMAND_OUTPUT_RECORDS
+        ) {
           pending.lines.push(line);
           pending.outputBytes += lineBytes;
         } else pending.outputTruncated = true;
@@ -1102,7 +1117,17 @@ export class GdbSessionManager {
     for (const pending of session.pending.values()) {
       clearTimeout(pending.timer);
       pending.cleanup();
-      pending.reject(new Error(message));
+      const partial: GdbCommandResult = {
+        command: pending.evidenceCommand,
+        mi: "",
+        records: [...pending.lines],
+        console: pending.lines.filter((line) => line.startsWith("~")).join("\n"),
+        target: pending.lines.filter((line) => line.startsWith("@")).join("\n"),
+        log: pending.lines.filter((line) => line.startsWith("&")).join("\n"),
+        output_truncated: pending.outputTruncated,
+        completion_status: "unknown",
+      };
+      pending.reject(new GdbProtocolFailureError(message, partial));
     }
     session.pending.clear();
     session.startupReject?.(new Error(message));
@@ -1113,13 +1138,47 @@ export class GdbSessionManager {
     cause: unknown,
   ): Promise<AnalysisCapabilityUnavailableError> {
     const stopped = await this.#stopDebuggerOnly(session);
+    const partial =
+      cause instanceof GdbProtocolFailureError ? cause.partial : undefined;
+    const partialObservation =
+      partial === undefined
+        ? undefined
+        : createEvidence(undefined, GDB_PROVIDER_IDENTITY, {
+            predicateType: "rea.debugger.console-observation",
+            operation: "gdb_console",
+            parameters: {
+              session_id: session.id,
+              command: partial.command,
+            },
+            result: { ...partial, records: [...partial.records] },
+            rawResult: { ...partial, records: [...partial.records] },
+            subjectUnavailableReason:
+              "The active GDB inferior identity is not established by the debugger session identifier.",
+            limitations: [
+              "The GDB MI protocol failed; retained records are partial and command completion is unknown.",
+              "The unrestricted GDB console can access local shell, filesystem, network, and target controls.",
+            ],
+          });
     return new AnalysisCapabilityUnavailableError(
       "gdb",
       "gdb_console",
       stopped.status === "incomplete"
         ? `${session.protocolError} The owned process could not be confirmed stopped: ${stopped.reason}`
         : session.protocolError!,
-      { cause },
+      {
+        cause,
+        ...(stopped.status === "incomplete"
+          ? {
+              cleanup: {
+                reason: stopped.reason,
+                resources: [session.id],
+              },
+            }
+          : {}),
+        ...(partialObservation === undefined
+          ? {}
+          : { partialObservation }),
+      },
     );
   }
 
@@ -1575,7 +1634,7 @@ const commandMayChangeInferiorOutput = (command: string): boolean => {
   return maySetInferiorTty ||
   /\binferior-tty\b/iu.test(command) ||
   /^\s*(?:tty(?:\s|$)|source\b|python(?:\s|$)|define\b)/iu.test(command) ||
-  /^\s*(?:run|r|start|starti)\b[^\n;]*(?:^|\s)(?:\d?>|>>|<|&>)/iu.test(command);
+  /^\s*(?:run|r|start|starti)\b[^\n;]*(?:\d?>|>>|<|&>)/iu.test(command);
 };
 
 /** Terminate only the directly owned debugger process, never its process group or inferiors. */

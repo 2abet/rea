@@ -57,7 +57,7 @@ it.skipIf(process.platform === "win32")(
     const commandPath = join(directory, "command-started");
     await writeFile(
       provider,
-      `#!/usr/bin/env node
+      `#!${process.execPath}
 process.stdout.write("(gdb)\\n");
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", async (chunk) => {
@@ -128,7 +128,7 @@ it.skipIf(process.platform === "win32")(
     const tty = `${directory}/inferior-"terminal-Ω"`;
     await writeFile(
       provider,
-      `#!/usr/bin/env node
+      `#!${process.execPath}
 process.stdout.write("(gdb)\\n");
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", (chunk) => {

@@ -84,7 +84,7 @@ it.skipIf(process.platform === "win32")(
     const provider = join(directory, "fake-gdb-exits-during-config.mjs");
     await writeFile(
       provider,
-      `#!/usr/bin/env node
+      `#!${process.execPath}
 process.stdout.write("(gdb)\\n");
 process.stderr.write("GDB startup stderr diagnostic\\n");
 process.stdin.setEncoding("utf8");
@@ -143,7 +143,7 @@ it.skipIf(process.platform === "win32")(
     let detachChecked = false;
     await writeFile(
       provider,
-      `#!/usr/bin/env node
+      `#!${process.execPath}
 process.stdout.write("(gdb)\\n");
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", (chunk) => {
@@ -196,7 +196,7 @@ it.skipIf(process.platform === "win32")(
     const countPath = join(directory, "spawn-count");
     await writeFile(
       provider,
-      `#!/usr/bin/env node
+      `#!${process.execPath}
 import { appendFile } from "node:fs/promises";
 await appendFile(${JSON.stringify(countPath)}, "spawn\\n");
 process.stdout.write("(gdb)\\n");
@@ -253,7 +253,7 @@ it.skipIf(process.platform === "win32")(
     const provider = join(directory, "fake-gdb.mjs");
     await writeFile(
       provider,
-      `#!/usr/bin/env node
+      `#!${process.execPath}
 process.stdout.write("(gdb)\\n");
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", (chunk) => {
@@ -314,7 +314,7 @@ it.skipIf(process.platform === "win32")(
     const pidPath = join(directory, "pid");
     await writeFile(
       provider,
-      `#!/usr/bin/env node
+      `#!${process.execPath}
 import { writeFile } from "node:fs/promises";
 await writeFile(${JSON.stringify(pidPath)}, String(process.pid));
 process.stdin.resume();
@@ -369,7 +369,7 @@ it.skipIf(process.platform === "win32")(
     const provider = join(directory, "fake-gdb-history-truncated.mjs");
     await writeFile(
       provider,
-      `#!/usr/bin/env node
+      `#!${process.execPath}
 process.stdout.write("(gdb)\\n" + Array.from({ length: 300 }, (_, index) =>
   "=thread-group-added,id=\\"i" + index + "\\"\\n").join(""));
 process.stdin.setEncoding("utf8");
@@ -403,7 +403,7 @@ it.skipIf(process.platform === "win32")(
     const provider = join(directory, "fake-gdb-command-timeout.mjs");
     await writeFile(
       provider,
-      `#!/usr/bin/env node
+      `#!${process.execPath}
 process.stdout.write("(gdb)\\n");
 await import("node:fs/promises").then((fs) => fs.writeFile(${JSON.stringify(join(directory ?? "", "pid"))}, String(process.pid)));
 let input = "";
@@ -463,7 +463,7 @@ it.skipIf(process.platform === "win32")(
     const provider = join(directory, "fake-gdb-timeout-cleanup.mjs");
     await writeFile(
       provider,
-      `#!/usr/bin/env node
+      `#!${process.execPath}
 process.stdout.write("(gdb)\\n");
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", (chunk) => {
@@ -520,7 +520,7 @@ it.skipIf(process.platform === "win32")(
     const overlapPath = join(directory, "overlap");
     await writeFile(
       provider,
-      `#!/usr/bin/env node
+      `#!${process.execPath}
 process.stdout.write("(gdb)\\n");
 let input = "";
 let firstActive = false;
@@ -575,7 +575,7 @@ it.skipIf(process.platform === "win32")(
     const provider = join(directory, "fake-gdb-exit-truncated.mjs");
     await writeFile(
       provider,
-      `#!/usr/bin/env node
+      `#!${process.execPath}
 process.stdout.write("(gdb)\\n");
 let input = "";
 process.stdin.setEncoding("utf8");
@@ -626,7 +626,7 @@ it.skipIf(process.platform === "win32")(
     const provider = join(directory, "fake-gdb-command-cancel.mjs");
     await writeFile(
       provider,
-      `#!/usr/bin/env node
+      `#!${process.execPath}
 process.stdout.write("(gdb)\\n");
 let input = "";
 process.stdin.setEncoding("utf8");
@@ -685,7 +685,7 @@ it.skipIf(process.platform === "win32")(
     const detachPath = join(directory, "detached");
     await writeFile(
       provider,
-      `#!/usr/bin/env node
+      `#!${process.execPath}
 let tty = "/tmp/selected-tty";
 process.stdout.write("(gdb)\\n");
 process.stdin.setEncoding("utf8");
@@ -732,7 +732,7 @@ it.skipIf(process.platform === "win32")(
     const provider = join(directory, "fake-gdb-diagnostic-limit.mjs");
     await writeFile(
       provider,
-      `#!/usr/bin/env node
+      `#!${process.execPath}
 process.stderr.write("x".repeat(100000));
 process.stdout.write("(gdb)\\n");
 let input = "";
@@ -771,7 +771,7 @@ it.skipIf(process.platform === "win32")(
     const provider = join(directory, "fake-gdb-stdin-error.mjs");
     await writeFile(
       provider,
-      `#!/usr/bin/env node
+      `#!${process.execPath}
 process.stdout.write("(gdb)\\n");
 let input = "";
 process.stdin.setEncoding("utf8");
@@ -817,7 +817,7 @@ it.skipIf(process.platform === "win32")(
     const provider = join(directory, "fake-gdb-command-exit-scope.mjs");
     await writeFile(
       provider,
-      `#!/usr/bin/env node
+      `#!${process.execPath}
 process.stdout.write("(gdb)\\n");
 let input = "";
 process.stdin.setEncoding("utf8");
@@ -925,7 +925,7 @@ it.skipIf(process.platform === "win32")(
     const provider = join(directory, "fake-gdb-cancel-cleanup-failure.mjs");
     await writeFile(
       provider,
-      `#!/usr/bin/env node
+      `#!${process.execPath}
 process.stdout.write("(gdb)\\n");
 let input = "";
 process.stdin.setEncoding("utf8");

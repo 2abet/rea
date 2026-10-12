@@ -28,7 +28,7 @@ describe.skipIf(process.platform === "win32")(
       const provider = join(directory, "fake-gdb.mjs");
       await writeFile(
         provider,
-        `#!/usr/bin/env node
+        `#!${process.execPath}
 process.stdout.write("(gdb)\\n");
 let input = "";
 process.stdin.setEncoding("utf8");
@@ -40,7 +40,9 @@ process.stdin.on("data", (chunk) => {
     const line = input.slice(0, boundary);
     input = input.slice(boundary + 1);
     const match = /^(\\d+)/.exec(line);
-    if (match) process.stdout.write(match[1] + "^done\\n");
+    if (match && line.includes("-list-thread-groups"))
+      process.stdout.write(match[1] + "^done,groups=[]\\n");
+    else if (match) process.stdout.write(match[1] + "^done\\n");
   }
 });
 `,
@@ -73,7 +75,7 @@ process.stdin.on("data", (chunk) => {
       const provider = join(directory, "fake-gdb-reject.mjs");
       await writeFile(
         provider,
-        `#!/usr/bin/env node
+        `#!${process.execPath}
 process.stdout.write("(gdb)\\n");
 let input = "";
 process.stdin.setEncoding("utf8");

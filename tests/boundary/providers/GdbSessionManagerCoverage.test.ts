@@ -409,7 +409,7 @@ const managerWithFakeSpawner = (
 const createProvider = async (body: string): Promise<string> => {
   directory ??= await mkdtemp(join(tmpdir(), "rea-gdb-coverage-"));
   const provider = join(directory, `fake-gdb-${managers.length}.mjs`);
-  await writeFile(provider, `#!/usr/bin/env node\n${body}`);
+  await writeFile(provider, `#!${process.execPath}\n${body}`);
   await chmod(provider, 0o700);
   return provider;
 };
@@ -944,6 +944,30 @@ it("permanently revokes automatic detach after an abbreviated TTY change and res
   await manager.execute(started.value.session_id, "set inferior-t /tmp/other");
   await manager.execute(started.value.session_id, `set inferior-t ${tty}`);
   await manager.execute(started.value.session_id, "start");
+  expect(manager.status(started.value.session_id)?.inferior_tty_verified).toBe(false);
+  const closed = await manager.close(started.value.session_id);
+  expect(closed.ok).toBe(false);
+  expect(commands).not.toContain("-target-detach");
+});
+
+it("revokes detach proof for redirection attached to a run argument", async () => {
+  const tty = "/dev/pts/42";
+  const commands: string[] = [];
+  const fake = createFakeSpawner((_child, token, command) => {
+    commands.push(command);
+    if (command.includes("inferior-tty-show"))
+      fake.children[0]?.stdout.write(`${token}^done,inferior_tty_terminal=${JSON.stringify(tty)}\n`);
+    else if (command.includes("list-thread-groups"))
+      fake.children[0]?.stdout.write(`${token}^done,groups=[{id="i1",pid="123"}]\n`);
+    else fake.children[0]?.stdout.write(`${token}^done\n`);
+  });
+  const manager = managerWithFakeSpawner(fake.spawnProcess);
+  const started = await manager.start(undefined, { inferiorTty: tty });
+  expect(started.ok).toBe(true);
+  if (!started.ok) return;
+
+  await manager.execute(started.value.session_id, "start arg>/dev/null");
+
   expect(manager.status(started.value.session_id)?.inferior_tty_verified).toBe(false);
   const closed = await manager.close(started.value.session_id);
   expect(closed.ok).toBe(false);
@@ -1501,6 +1525,38 @@ process.stdin.on('data', (chunk) => {
     expect(failed.error._tag).toBe("AnalysisCapabilityUnavailableError");
 });
 
+it("caps the number of MI records retained for a single command", async () => {
+  const recordCount = 16_385;
+  const manager = await managerFor(`
+process.stdout.write('(gdb)\\n');
+let input = '';
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', (chunk) => {
+  input += chunk;
+  for (;;) {
+    const end = input.indexOf('\\n');
+    if (end < 0) break;
+    const line = input.slice(0, end); input = input.slice(end + 1);
+    const match = /^(\\d+)(.*)/.exec(line);
+    if (!match) continue;
+    if (match[2].includes('auto-load off')) process.stdout.write(match[1] + '^done\\n');
+    else process.stdout.write(Array.from({ length: ${recordCount} }, () => '~"x"').join('\\n') + '\\n' + match[1] + '^done\\n');
+  }
+});
+`);
+  const started = await manager.start();
+  expect(started.ok).toBe(true);
+  if (!started.ok) return;
+
+  const result = await manager.execute(started.value.session_id, "many-records");
+
+  expect(result.ok).toBe(true);
+  if (result.ok) {
+    expect(result.value.result.records).toHaveLength(16_384);
+    expect(result.value.result.output_truncated).toBe(true);
+  }
+});
+
 it("completes an MI record split after a chunk without a newline", async () => {
   const fake = createFakeSpawner((child, token, command) => {
     if (command.includes("auto-load off")) {
@@ -1548,6 +1604,7 @@ it("preserves the protocol failure when an incomplete stop adds uncertainty", as
       _encoding: BufferEncoding,
       callback: (error?: Error | null) => void,
     ): boolean => {
+      fake.children[0]?.stdout.write('~"protocol output before failure"\n');
       callback(new Error("simulated protocol write failure"));
       return false;
     },
@@ -1563,6 +1620,17 @@ it("preserves the protocol failure when an incomplete stop adds uncertainty", as
     expect(failed.error.message).toContain(
       "simulated protocol stop uncertainty",
     );
+    expect(failed.error.cleanup).toEqual({
+      reason: "simulated protocol stop uncertainty",
+      resources: [started.value.session_id],
+    });
+    expect(failed.error.partialObservation).toMatchObject({
+      predicate_type: "rea.debugger.console-observation",
+      raw_result: {
+        records: ['~"protocol output before failure"'],
+        completion_status: "unknown",
+      },
+    });
   }
   expect(manager.status(started.value.session_id)?.state).toBe("closed");
   const subsequent = await manager.execute(
@@ -1573,6 +1641,46 @@ it("preserves the protocol failure when an incomplete stop adds uncertainty", as
     ok: false,
     error: { _tag: "AnalysisInputError" },
   });
+});
+
+it("drains buffered startup stdout before capturing early-exit Evidence", async () => {
+  const children: FakeGdbProcess[] = [];
+  const manager = new GdbSessionManager({
+    environment: {},
+    startupTimeoutMs: 500,
+    spawnProcess: async (options) => {
+      const child = new FakeGdbProcess();
+      children.push(child);
+      setImmediate(() => {
+        child.exitLeader(7);
+        setImmediate(() => {
+          child.stdout.write('~"late startup record"\n');
+          child.closeInheritedOutput();
+        });
+      });
+      return {
+        process: child,
+        ownership: {
+          runId: options.runId,
+          leaderPid: child.pid,
+          processGroupId: child.pid,
+          expectedParentPid: process.pid,
+        },
+      };
+    },
+  });
+  managers.push(manager);
+
+  const started = await manager.start();
+
+  expect(started.ok).toBe(false);
+  expect(children).toHaveLength(2);
+  if (!started.ok)
+    expect(started.error.partialObservation?.raw_result).toMatchObject({
+      process_exit_code: 7,
+      records: ['~"late startup record"'],
+      completion_status: "unknown",
+    });
 });
 
 it("reports command timeout when an incomplete stop cannot confirm process exit", async () => {

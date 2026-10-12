@@ -24,7 +24,7 @@ it.skipIf(process.platform === "win32")(
     const releasePath = join(directory, "release-command");
     await writeFile(
       provider,
-      `#!/usr/bin/env node
+      `#!${process.execPath}
 import { access, writeFile } from "node:fs/promises";
 process.stdout.write("(gdb)\\n");
 let input = "";
