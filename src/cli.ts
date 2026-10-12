@@ -44,7 +44,7 @@ import type { CliInstance } from "./cli/types.js";
 import {
   streamCliCommandResults,
   type CliResultOutput,
-} from "./cli/streamedJsonOutput.js";
+} from "./cli/cliResultOutput.js";
 import { registerReverseEngineeringCommands } from "./cli/reverseEngineeringCommands.js";
 import { registerCutterCommands } from "./cli/cutterCommands.js";
 
