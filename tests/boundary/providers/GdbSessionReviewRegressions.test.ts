@@ -136,6 +136,59 @@ process.stdin.on("data", (chunk) => {
 );
 
 it.skipIf(process.platform === "win32")(
+  "verifies inferior state after an automatic-loading rejection before cleanup",
+  async () => {
+    directory = await mkdtemp(join(tmpdir(), "rea-gdb-autoload-reject-"));
+    const provider = join(directory, "fake-gdb-autoload-reject.mjs");
+    let detachChecked = false;
+    await writeFile(
+      provider,
+      `#!/usr/bin/env node
+process.stdout.write("(gdb)\\n");
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => {
+  for (const line of chunk.split("\\n")) {
+    const match = /^(\\d+)/.exec(line); if (!match) continue;
+    if (line.includes("auto-load off")) process.stdout.write("~\\"automatic loading rejected\\n\\"\\n" + match[1] + "^error,msg=\\"unsupported\\"\\n");
+    else if (line.includes("list-thread-groups")) process.stdout.write(match[1] + "^done,groups=[]\\n");
+  }
+});
+`,
+    );
+    await chmod(provider, 0o700);
+    const manager = new GdbSessionManager({
+      environment: { REA_GDB_COMMAND: provider },
+      stopProcess: async (session) => {
+        detachChecked = true;
+        await session.detachInferior?.();
+        return { status: "stopped" };
+      },
+    });
+    managers.push(manager);
+
+    const started = await manager.start();
+
+    expect(started).toMatchObject({
+      ok: false,
+      error: { _tag: "AnalysisCapabilityUnavailableError", operation: "start_gdb_session" },
+    });
+    if (!started.ok)
+      expect(started.error.partialObservation).toMatchObject({
+        predicate_type: "rea.debugger.startup-observation",
+        raw_result: {
+          records: expect.arrayContaining([
+            '~"automatic loading rejected',
+            '"',
+            '1^error,msg="unsupported"',
+          ]),
+          completion_status: "unknown",
+        },
+      });
+    expect(detachChecked).toBe(true);
+  },
+);
+
+it.skipIf(process.platform === "win32")(
   "bounds persistent GDB sessions before spawning another process",
   async () => {
     directory = await mkdtemp(join(tmpdir(), "rea-gdb-session-limit-"));
@@ -585,6 +638,7 @@ process.stdin.on("data", (chunk) => {
     const line = input.slice(0, boundary); input = input.slice(boundary + 1);
     const match = /^(\\d+)/.exec(line);
     if (match && line.includes("auto-load off")) process.stdout.write(match[1] + "^done\\n");
+    else if (match) process.stdout.write("~\\"partial before cancellation\\n\\"\\n@target before cancellation\\n");
   }
 });
 `,
@@ -607,8 +661,67 @@ process.stdin.on("data", (chunk) => {
     );
 
     expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.error._tag).toBe("AnalysisCancelledError");
+    if (!result.ok) {
+      expect(result.error._tag).toBe("AnalysisCancelledError");
+      expect(result.error.partialObservation).toMatchObject({
+        predicate_type: "rea.debugger.console-observation",
+        parameters: { command: "shell sleep 600" },
+        raw_result: {
+          command: "shell sleep 600",
+          records: ['~"partial before cancellation', '"', "@target before cancellation"],
+          completion_status: "unknown",
+        },
+      });
+    }
     expect(manager.status(started.value.session_id)?.state).toBe("closed");
+  },
+);
+
+it.skipIf(process.platform === "win32")(
+  "re-reads the configured inferior TTY before detaching after a console alias change",
+  async () => {
+    directory = await mkdtemp(join(tmpdir(), "rea-gdb-tty-readback-"));
+    const provider = join(directory, "fake-gdb-tty-readback.mjs");
+    const detachPath = join(directory, "detached");
+    await writeFile(
+      provider,
+      `#!/usr/bin/env node
+let tty = "/tmp/selected-tty";
+process.stdout.write("(gdb)\\n");
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => {
+  for (const line of chunk.split("\\n")) {
+    const match = /^(\\d+)/.exec(line); if (!match) continue;
+    if (line.includes("auto-load off")) process.stdout.write(match[1] + "^done\\n");
+    else if (line.includes("inferior-tty-set")) process.stdout.write(match[1] + "^done\\n");
+    else if (line.includes("inferior-tty-show")) process.stdout.write(match[1] + "^done,inferior_tty_terminal=\\\"" + tty + "\\\"\\n");
+    else if (line.includes("list-thread-groups")) process.stdout.write(match[1] + "^done,groups=[{id=\\\"i1\\\"}]\\n");
+    else if (line.includes("interpreter-exec")) { tty = "/tmp/changed-by-abbreviated-alias"; process.stdout.write(match[1] + "^done\\n"); }
+    else if (line.includes("target-detach")) { import("node:fs/promises").then((fs) => fs.writeFile(${JSON.stringify(detachPath)}, "detached")); process.stdout.write(match[1] + "^done\\n"); }
+  }
+});
+setTimeout(() => process.exit(0), 500);
+`,
+    );
+    await chmod(provider, 0o700);
+    const manager = new GdbSessionManager({
+      environment: { REA_GDB_COMMAND: provider },
+      stopProcess: async () => ({ status: "incomplete", reason: "test cleanup" }),
+    });
+    managers.push(manager);
+    const started = await manager.start(undefined, { inferiorTty: "/tmp/selected-tty" });
+    expect(started.ok).toBe(true);
+    if (!started.ok) return;
+    const changed = await manager.execute(
+      started.value.session_id,
+      "inferior-t /tmp/changed-by-abbreviated-alias",
+    );
+    expect(changed.ok).toBe(true);
+
+    const closed = await manager.close(started.value.session_id);
+
+    expect(closed.ok).toBe(false);
+    await expect(readFile(detachPath, "utf8")).rejects.toThrow();
   },
 );
 

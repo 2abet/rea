@@ -162,17 +162,25 @@ export const registerReverseEngineeringCommands = (
   });
   cli.command(CLI_COMMANDS.debugWithGdb, {
     description:
-      "Run one unrestricted GDB console command in an ephemeral MI session",
+      "Run one unrestricted GDB console command in an ephemeral MI session; provide an inferior TTY so a live target can be safely detached",
     args: z.object({
       command: z.string().min(1).describe("One unrestricted GDB console command."),
     }),
-    run: ({ args }) =>
+    options: z.object({
+      inferiorTty: z
+        .string()
+        .min(1)
+        .describe("Caller-selected durable TTY for output from a live GDB inferior."),
+    }),
+    run: ({ args, options }) =>
       withCommandCancellation((signal) =>
         logCliCommand(logger, CLI_COMMANDS.debugWithGdb, async () => {
           const manager = createGdbManager(environment);
           let sessionId: string | undefined;
           try {
-            const started = await manager.start(signal);
+            const started = await manager.start(signal, {
+              inferiorTty: options.inferiorTty,
+            });
             if (!started.ok) return projectAnalysisError(started.error);
             sessionId = started.value.session_id;
             const executed = await manager.execute(sessionId, args.command, signal);
