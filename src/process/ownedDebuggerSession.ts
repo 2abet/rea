@@ -111,7 +111,11 @@ export const stopOwnedDebuggerProcess = async (
   return { status: "stopped" };
 };
 
-/** Stop every owned session and retain failed sessions for possible recovery. */
+/**
+ * Stop every owned session and retain failed sessions for possible recovery.
+ * Callers must block replacement admission and drain in-flight starts until
+ * this settles; incomplete cleanup leaves the old owner in the map for retry.
+ */
 export const closeOwnedDebuggerSessions = async <
   Session extends { id: string },
 >(
@@ -120,7 +124,8 @@ export const closeOwnedDebuggerSessions = async <
   debuggerName: string,
 ): Promise<void> => {
   const results = await Promise.allSettled(
-    [...sessions.values()].map(async (session) => ({
+    [...sessions.entries()].map(async ([key, session]) => ({
+      key,
       session,
       result: await stop(session),
     })),
@@ -135,9 +140,9 @@ export const closeOwnedDebuggerSessions = async <
       );
       continue;
     }
-    const { session, result } = settled.value;
+    const { key, session, result } = settled.value;
     if (result.status === "incomplete") failures.push(new Error(result.reason));
-    else sessions.delete(session.id);
+    else if (sessions.get(key) === session) sessions.delete(key);
   }
   if (failures.length > 0)
     throw new AggregateError(

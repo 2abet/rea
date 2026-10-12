@@ -590,6 +590,28 @@ it("removes stopped sessions and retains incomplete sessions when closing all", 
   expect([...sessions.keys()]).toEqual(["incomplete"]);
 });
 
+it("does not remove a replacement session installed under the same key while stopping", async () => {
+  const original = { id: "shared-key", generation: "old" };
+  const replacement = { id: "shared-key", generation: "new" };
+  const sessions = new Map([["shared-key", original]]);
+  let finishStop!: (result: { readonly status: "stopped" }) => void;
+  const stopping = new Promise<{ readonly status: "stopped" }>((resolve) => {
+    finishStop = resolve;
+  });
+
+  const closing = closeOwnedDebuggerSessions(
+    sessions,
+    async () => stopping,
+    "GDB",
+  );
+  await Promise.resolve();
+  sessions.set("shared-key", replacement);
+  finishStop({ status: "stopped" });
+  await closing;
+
+  expect(sessions.get("shared-key")).toBe(replacement);
+});
+
 it("closes an empty owned-session collection", async () => {
   const sessions = new Map<string, { id: string }>();
   await expect(
