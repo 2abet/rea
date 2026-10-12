@@ -260,7 +260,8 @@ export const createServer = (
   const javascriptRecovery =
     options.javascriptRecovery ?? createJavaScriptRecoveryProvider(environment);
   const artifactResources = new ArtifactResourceScope();
-  const reverseEngineering = createReverseEngineeringService(providerEnvironment);
+  const reverseEngineering =
+    createReverseEngineeringService(providerEnvironment);
   const firmwareAnalysis = new FirmwareAnalysisService(
     options.firmwareAnalysis ?? createFirmwareAnalysisProvider(environment),
   );
@@ -280,9 +281,9 @@ export const createServer = (
     delivery,
     selectCompactInputSchemaPresentation(environment),
   );
-  const gdbSessions = new GdbSessionManager(
-    { environment: providerEnvironment },
-  );
+  const gdbSessions = new GdbSessionManager({
+    environment: providerEnvironment,
+  });
   const android =
     options.androidAnalysis ?? createAndroidAnalysisProvider(environment);
   const flutter =

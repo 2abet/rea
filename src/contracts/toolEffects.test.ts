@@ -13,8 +13,10 @@ const EXECUTION_WORDING =
   /\b(?:run|runs|running|launch|launches|launching|execute|executes|executing|execution|start|starts|install|installs|uninstall|uninstalls)\b/iu;
 
 const EXECUTION_WORDING_EXCEPTIONS: Readonly<Record<string, string>> = {
-  inspect_with_objdump: "runs a caller-selected inspection tool, not target code",
-  start_gdb_session: "starts a debugger session; execution is attributed to gdb_console",
+  inspect_with_objdump:
+    "runs a caller-selected inspection tool, not target code",
+  start_gdb_session:
+    "starts a debugger session; execution is attributed to gdb_console",
   start_frida_session:
     "spawned targets remain suspended until resume_frida_session",
   inspect_native_load_image: "states that it does not execute the target",
@@ -168,8 +170,12 @@ describe("tool effects", () => {
 
   it("marks automatic GDB detach as destructive target execution", () => {
     const effects = TOOL_EFFECTS["close_gdb_session"];
-    if (effects === undefined) throw new Error("close_gdb_session is unaudited");
-    expect(effects).toMatchObject({ mutatesTarget: true, executesForeignCode: true });
+    if (effects === undefined)
+      throw new Error("close_gdb_session is unaudited");
+    expect(effects).toMatchObject({
+      mutatesTarget: true,
+      executesForeignCode: true,
+    });
     expect(annotationsFromEffects(effects).destructiveHint).toBe(true);
   });
 
