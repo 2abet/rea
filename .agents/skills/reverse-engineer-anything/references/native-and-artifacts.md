@@ -1,5 +1,16 @@
 # Native, managed, and packaged artifacts
 
+## Go build metadata
+
+Use `inspect_go_binary` for an explicit local ELF, PE or thin Mach-O when the
+question concerns the embedded compiler version, module/dependency versions,
+local replacements or build settings. No `open_binary`, Go installation or
+target execution is required. The CLI equivalent is `inspect-go-binary PATH`.
+Preserve artifact SHA-256, original file ranges, framed module bytes and every
+unparsed module-text line. A missing record is an unknown, not proof of a
+non-Go binary; observed metadata does not authenticate its claims. Function,
+source and type recovery remain a separate native-analysis question.
+
 ## Recorded Linux crashes
 
 Use `inspect_recorded_crash` with an explicit Linux x86-64 ELF core path to
@@ -50,10 +61,19 @@ runs and may change files or use the network. Hardened-runtime targets need the
 `get-task-allow` entitlement.
 
 Use `binary_session` with no arguments to check the open target, selected
-provider, and alignment. Its default `result.tool_availability` includes the
-complete tool inventory with availability reasons and remediation. When choosing
-a tool, use its entry in that result; `tools/list` retains the complete catalog
-when the target or provider state changes.
+provider, and alignment. Its default `result.tool_availability` carries a
+complete inventory grouped by shared facts. Expand each group's `names` and
+inherit the inventory-level client requirements unless a group overrides them;
+availability, reasons, remediation, modes, and flags remain inline. The
+`effects` and `annotations` arrays name true flags from fixed vocabularies, so an
+omitted known flag is false. `tools/list` remains the canonical source for full
+tool schemas when target or provider state changes.
+
+Provider capability groups carry provider identity and ordered limitations.
+Prepend each set's `shared_limitations` to a group's `limitations` to recover the
+operation's full ordered list. Candidate capabilities describe possible
+providers. Top-level session capabilities describe the current route, and
+`analysis_provider_binding` identifies the selected provider.
 
 ## DOS MZ with Ghidra
 
