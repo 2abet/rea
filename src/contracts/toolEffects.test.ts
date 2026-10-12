@@ -17,7 +17,6 @@ const EXECUTION_WORDING_EXCEPTIONS: Readonly<Record<string, string>> = {
   execute_rizin_command: "runs the Rizin analyzer and command, not foreign code",
   start_gdb_session: "starts a debugger session; execution is attributed to gdb_console",
   inspect_native_load_image: "states that it does not execute the target",
-  inspect_with_objdump: "runs a static inspection tool, not target code",
   resolve_native_call_targets: "states that it does not execute code",
   inspect_pe_resources: "states that it does not execute the image",
   inspect_go_binary: "reads embedded metadata without executing the target",

@@ -9,6 +9,9 @@ import { expect, it } from "vitest";
 import { z } from "zod";
 
 import { toolContract } from "../../../src/contracts/toolContracts.js";
+import { AnalysisTimeoutError } from "../../../src/domain/analysisErrorCore.js";
+import { createEvidence } from "../../../src/domain/evidence.js";
+import { err, ok } from "../../../src/domain/result.js";
 import { GdbSessionManager } from "../../../src/gdb/GdbSessionManager.js";
 import { silentLogger } from "../../../src/logger.js";
 import { registerGdbTools } from "../../../src/server/registerGdbTools.js";
@@ -116,3 +119,157 @@ process.stdin.on("data", async (chunk) => {
     }
   },
 );
+
+it("records partial GDB Evidence from an MCP command error", async () => {
+  const evidence = createEvidence(undefined, {
+    id: "gnu.gdb",
+    name: "GNU GDB",
+    version: null,
+  }, {
+    predicateType: "rea.debugger.console-observation",
+    operation: "gdb_console",
+    parameters: { session_id: "00000000-0000-4000-8000-000000000001", command: "info registers" },
+    result: {
+      command: "info registers",
+      mi: "",
+      records: ["~partial"],
+      console: "~partial",
+      target: "",
+      log: "",
+      process_exit_observed: true,
+      process_exit_code: 7,
+      process_exit_signal: null,
+      output_truncated: false,
+      completion_status: "unknown",
+    },
+    rawResult: {
+      command: "info registers",
+      mi: "",
+      records: ["~partial"],
+      console: "~partial",
+      target: "",
+      log: "",
+      process_exit_observed: true,
+      process_exit_code: 7,
+      process_exit_signal: null,
+      output_truncated: false,
+      completion_status: "unknown",
+    },
+    subjectUnavailableReason: "The debugger session does not identify an inferior.",
+  });
+  expect(toolContract("gdb_console").outputSchema.parse(evidence)).toMatchObject({
+    normalized_result: {
+      process_exit_observed: true,
+      process_exit_code: 7,
+      process_exit_signal: null,
+    },
+  });
+  const manager = {
+    start: async () => ok({ session_id: "00000000-0000-4000-8000-000000000001", mi_version: "mi3" as const }),
+    execute: async () => err(new AnalysisTimeoutError("gdb_console", 10, {
+      partialObservation: evidence,
+      cleanup: { reason: "MI output was unsynchronized", resources: [evidence.parameters.session_id as string] },
+    })),
+    status: () => undefined,
+    close: async () => ok({ target_state: "unknown" as const }),
+  } as unknown as GdbSessionManager;
+  const recorded: string[] = [];
+  const server = new McpServer({ name: "gdb-partial-evidence", version: "1" });
+  registerGdbTools(
+    server,
+    manager,
+    silentLogger,
+    createToolResultDelivery(undefined),
+    (value) => { recorded.push(value.evidence_id); return ok("added"); },
+  );
+  const client = new Client({ name: "gdb-partial-evidence", version: "1" });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  try {
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+    const response = await client.callTool({
+      name: "gdb_console",
+      arguments: {
+        session_id: "00000000-0000-4000-8000-000000000001",
+        command: "info registers",
+      },
+    });
+    expect(recorded).toEqual([evidence.evidence_id]);
+    expect(response.isError).toBe(true);
+    expect(response.structuredContent).toMatchObject({
+      error: { details: { partial_observation: { evidence_id: evidence.evidence_id } } },
+    });
+  } finally {
+    await Promise.allSettled([client.close(), server.close()]);
+  }
+});
+
+it("records partial GDB startup Evidence from an MCP start error", async () => {
+  const evidence = createEvidence(undefined, {
+    id: "gnu.gdb",
+    name: "GNU GDB",
+    version: null,
+  }, {
+    predicateType: "rea.debugger.startup-observation",
+    operation: "start_gdb_session",
+    parameters: { command: "GDB startup" },
+    result: {
+      command: "GDB startup",
+      mi: "",
+      records: ["~startup output"],
+      console: "~startup output",
+      target: "",
+      log: "",
+      process_exit_observed: true,
+      process_exit_code: 7,
+      process_exit_signal: null,
+      output_truncated: false,
+      completion_status: "unknown",
+    },
+    rawResult: {
+      command: "GDB startup",
+      mi: "",
+      records: ["~startup output"],
+      console: "~startup output",
+      target: "",
+      log: "",
+      process_exit_observed: true,
+      process_exit_code: 7,
+      process_exit_signal: null,
+      output_truncated: false,
+      completion_status: "unknown",
+    },
+    subjectUnavailableReason: "No debugger session became ready before GDB exited.",
+  });
+  const manager = {
+    start: async () => err(new AnalysisTimeoutError("start_gdb_session", 10, {
+      partialObservation: evidence,
+    })),
+    execute: async () => ok(undefined),
+    status: () => undefined,
+    close: async () => ok({ target_state: "unknown" as const }),
+  } as unknown as GdbSessionManager;
+  const recorded: string[] = [];
+  const server = new McpServer({ name: "gdb-startup-partial-evidence", version: "1" });
+  registerGdbTools(
+    server,
+    manager,
+    silentLogger,
+    createToolResultDelivery(undefined),
+    (value) => { recorded.push(value.evidence_id); return ok("added"); },
+  );
+  const client = new Client({ name: "gdb-startup-partial-evidence", version: "1" });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  try {
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+    const response = await client.callTool({ name: "start_gdb_session", arguments: {} });
+    expect(recorded).toEqual([evidence.evidence_id]);
+    expect(response.isError).toBe(true);
+    expect(response.structuredContent).toMatchObject({
+      error: { details: { partial_observation: { evidence_id: evidence.evidence_id } } },
+    });
+  } finally {
+    await Promise.allSettled([client.close(), server.close()]);
+  }
+});

@@ -118,12 +118,6 @@ function expectKnownAuthorityHints(tools: readonly ToolSchemas[]): void {
       idempotentHint: false,
       openWorldHint: true,
     },
-    execute_rizin_command: {
-      readOnlyHint: false,
-      destructiveHint: true,
-      idempotentHint: false,
-      openWorldHint: true,
-    },
     export_web_scripts: {
       readOnlyHint: false,
       destructiveHint: false,

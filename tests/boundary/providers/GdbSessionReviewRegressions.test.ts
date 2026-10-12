@@ -13,7 +13,16 @@ const managers: Array<{ closeAll(): Promise<void> }> = [];
 const expectOwnedProcessExited = async (pidText: string): Promise<void> => {
   const pid = Number(pidText);
   expect(Number.isInteger(pid)).toBe(true);
-  expect(() => process.kill(pid, 0)).toThrow();
+  await expect
+    .poll(() => {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    })
+    .toBe(false);
 };
 
 it("keeps persistent GDB sessions unavailable on Windows", async () => {
@@ -47,7 +56,7 @@ process.stdin.setEncoding("utf8");
 process.stdin.on("data", (chunk) => {
   for (const line of chunk.split("\\n")) {
     const match = /^(\\d+)/.exec(line);
-    if (match) process.stdout.write(match[1] + "^done\\n");
+    if (match) process.stdout.write(match[1] + (line.includes("list-thread-groups") ? "^done,groups=[]\\n" : "^done\\n"));
   }
 });
 `,
@@ -256,6 +265,7 @@ it.skipIf(process.platform === "win32")(
 import { writeFile } from "node:fs/promises";
 await writeFile(${JSON.stringify(pidPath)}, String(process.pid));
 process.stdin.resume();
+setTimeout(() => process.exit(0), 250);
 `,
     );
     await chmod(provider, 0o700);
@@ -356,6 +366,7 @@ process.stdin.on("data", (chunk) => {
     else if (match) process.stdout.write("~\\"partial output\\n\\"\\n");
   }
 });
+setTimeout(() => process.exit(0), 250).unref();
 `,
     );
     await chmod(provider, 0o700);
@@ -373,13 +384,17 @@ process.stdin.on("data", (chunk) => {
       "shell sleep 5",
     );
 
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.value.result).toMatchObject({
-        completion_status: "unknown",
-        records: ['~"partial output', '"'],
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error._tag).toBe("AnalysisCapabilityUnavailableError");
+      expect(result.error.partialObservation).toMatchObject({
+        operation: "gdb_console",
+        normalized_result: {
+          completion_status: "unknown",
+          records: ['~"partial output', '"'],
+        },
       });
-      expect(result.value.evidence.limitations.join(" ")).toContain("partial");
+      expect(result.error.cleanupIncomplete).toBe(true);
     }
     await expectOwnedProcessExited(
       await readFile(join(directory, "pid"), "utf8"),
@@ -406,16 +421,17 @@ process.stdin.on("data", (chunk) => {
     else process.stdout.write("~\\"partial console record\\n\\"\\n@target partial\\n&log partial\\n");
   }
 });
+setTimeout(() => process.exit(0), 250);
 `,
     );
     await chmod(provider, 0o700);
     const manager = new GdbSessionManager({
       environment: { REA_GDB_COMMAND: provider },
       commandTimeoutMs: 40,
-      stopProcess: async (session) => {
-        session.launched.process.kill("SIGTERM");
-        return { status: "incomplete", reason: "simulated incomplete stop" };
-      },
+      stopProcess: async () => ({
+        status: "incomplete",
+        reason: "simulated incomplete stop",
+      }),
     });
     managers.push(manager);
     const started = await manager.start();
@@ -810,18 +826,16 @@ process.stdin.on("data", (chunk) => {
     if (line.includes("auto-load off")) process.stdout.write(match[1] + "^done\\n");
   }
 });
+setTimeout(() => process.exit(0), 250);
 `,
     );
     await chmod(provider, 0o700);
     const manager = new GdbSessionManager({
       environment: { REA_GDB_COMMAND: provider },
-      stopProcess: async (session) => {
-        session.launched.process.kill("SIGTERM");
-        return {
-          status: "incomplete",
-          reason: "simulated debugger cleanup failure",
-        };
-      },
+      stopProcess: async () => ({
+        status: "incomplete",
+        reason: "simulated debugger cleanup failure",
+      }),
     });
     managers.push(manager);
     const started = await manager.start();
@@ -840,8 +854,8 @@ process.stdin.on("data", (chunk) => {
 
     expect(cancelled.ok).toBe(false);
     if (!cancelled.ok) {
-      expect(cancelled.error._tag).toBe("AnalysisCapabilityUnavailableError");
-      expect(cancelled.error.message).toContain(
+      expect(cancelled.error._tag).toBe("AnalysisCancelledError");
+      expect(cancelled.error.cleanup?.reason).toContain(
         "simulated debugger cleanup failure",
       );
     }

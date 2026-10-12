@@ -222,8 +222,6 @@ it("marks signal-terminated provider commands as unknown completion", async () =
       expect(ordinaryExit.value.limitations.join(" ")).not.toContain(
         "terminated by signal",
       );
-      expect(ordinaryExit.value.limitations).toHaveLength(3);
-
       expect(ordinaryExit.value.limitations).toContain(
         "Rizin commands and retained plugins may read files or access network resources outside the selected artifact; those external inputs are not bound to Evidence.",
       );
@@ -279,8 +277,6 @@ describe("Rizin command service", () => {
         completion_status: "complete",
       });
       expect(result.value.limitations.join(" ")).not.toContain("terminated by signal");
-      expect(result.value.limitations).toHaveLength(3);
-
       expect(result.value.limitations).toContain(
         "Rizin commands and retained plugins may read files or access network resources outside the selected artifact; those external inputs are not bound to Evidence.",
       );

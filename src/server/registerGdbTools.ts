@@ -4,6 +4,7 @@ import type { Logger } from "pino";
 import type { GdbSessionManager } from "../gdb/GdbSessionManager.js";
 import type { EvidenceWriter } from "../application/investigation/InvestigationRecordPort.js";
 import { toolContract } from "../contracts/toolContracts.js";
+import { evidenceSchema } from "../domain/evidence.js";
 import { err } from "../domain/result.js";
 import { AnalysisInputError } from "../domain/analysisErrorCore.js";
 import { logToolExecution } from "./toolLogging.js";
@@ -29,9 +30,20 @@ export const registerGdbTools = (
       const result = await logToolExecution(logger, start.name, () =>
         manager.start(context.mcpReq.signal),
       );
-      return result.ok
-        ? delivery.toCallToolResult({ ok: true, value: result.value }, start)
-        : delivery.toCallToolResult(result, start);
+      if (result.ok)
+        return delivery.toCallToolResult({ ok: true, value: result.value }, start);
+      const partial = result.error.partialObservation;
+      const parsed = evidenceSchema.safeParse(partial);
+      if (parsed.success) {
+        const recorded = recordEvidence?.(parsed.data);
+        if (recorded !== undefined)
+          return delivery.toRecordedPartialErrorToolResult(
+            result.error,
+            parsed.data.evidence_id,
+            recorded,
+          );
+      }
+      return delivery.toCallToolResult(result, start);
     },
   );
   server.registerTool(
@@ -41,7 +53,20 @@ export const registerGdbTools = (
       const result = await logToolExecution(logger, consoleContract.name, () =>
         manager.execute(input.session_id, input.command, context.mcpReq.signal),
       );
-      if (!result.ok) return delivery.toCallToolResult(result, consoleContract);
+      if (!result.ok) {
+        const partial = result.error.partialObservation;
+        const parsed = evidenceSchema.safeParse(partial);
+        if (parsed.success) {
+          const recorded = recordEvidence?.(parsed.data);
+          if (recorded !== undefined)
+            return delivery.toRecordedPartialErrorToolResult(
+              result.error,
+              parsed.data.evidence_id,
+              recorded,
+            );
+        }
+        return delivery.toCallToolResult(result, consoleContract);
+      }
       const recorded = recordEvidence?.(result.value.evidence);
       return delivery.toEvidenceToolResult(
         result.value.evidence,

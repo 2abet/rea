@@ -1,15 +1,6 @@
 import type { ReverseEngineeringServiceRuntimeOptions } from "../application/reverse/ReverseEngineeringService.js";
-import { ReverseEngineeringService } from "../application/reverse/ReverseEngineeringService.js";
-import { objdumpCommand, OBJDUMP_PROVIDER_IDENTITY } from "../objdump/ObjdumpCommand.js";
-import { rizinCommand, RIZIN_PROVIDER_IDENTITY } from "../rizin/RizinCommand.js";
 import type { ReverseEngineeringCommandPort } from "../application/reverse/ReverseEngineeringCommandPort.js";
-
-export const createReverseEngineeringCommandPort = (
-  environment: Readonly<NodeJS.ProcessEnv>,
-): ReverseEngineeringCommandPort => ({
-  objdump: (input) => ({
-    executable: environment.REA_OBJDUMP_COMMAND ?? "objdump",
-
+import { ReverseEngineeringService } from "../application/reverse/ReverseEngineeringService.js";
 import {
   objdumpCommand,
   OBJDUMP_PROVIDER_IDENTITY,
@@ -18,7 +9,6 @@ import {
   rizinCommand,
   RIZIN_PROVIDER_IDENTITY,
 } from "../rizin/RizinCommand.js";
-import type { ReverseEngineeringCommandPort } from "../application/reverse/ReverseEngineeringCommandPort.js";
 import { resolveWindowsProviderExecutable } from "./resolveWindowsProviderExecutable.js";
 
 export const createReverseEngineeringCommandPort = (
@@ -36,8 +26,6 @@ export const createReverseEngineeringCommandPort = (
     environmentOverrides: { DEBUGINFOD_URLS: "" },
   }),
   rizin: (input) => ({
-    executable: environment.REA_RIZIN_COMMAND ?? "rizin",
-
     executable: providerExecutable(
       environment.REA_RIZIN_COMMAND ?? "rizin",
       environment,

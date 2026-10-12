@@ -236,10 +236,6 @@ export const createServer = (
     options.javascriptRecovery ?? createJavaScriptRecoveryProvider(environment);
   const artifactResources = new ArtifactResourceScope();
   const reverseEngineering = createReverseEngineeringService(providerEnvironment);
-
-  const reverseEngineering = createReverseEngineeringService(
-    options.providerEnvironment ?? environment,
-  );
   const firmwareAnalysis = new FirmwareAnalysisService(
     options.firmwareAnalysis ?? createFirmwareAnalysisProvider(environment),
   );

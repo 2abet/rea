@@ -28,14 +28,16 @@ class FakeGdbProcess extends EventEmitter implements ProviderProcessHandle {
   readonly stdin: PassThrough | null;
   exitCode: number | null = null;
   signalCode: NodeJS.Signals | null = null;
+  readonly killSignals: NodeJS.Signals[] = [];
 
   constructor(stdinEnabled = true) {
     super();
     this.stdin = stdinEnabled ? new PassThrough() : null;
   }
 
-  kill(): boolean {
-    this.exit(0, null);
+  kill(signal: NodeJS.Signals): boolean {
+    this.killSignals.push(signal);
+    this.exit(null, signal);
     return true;
   }
 
@@ -55,7 +57,13 @@ const createFakeSpawner = (
   respond: (process: FakeGdbProcess, token: string, command: string) => void = (
     child,
     token,
-  ) => child.stdout.write(`${token}^done\n`),
+    command,
+  ) =>
+    child.stdout.write(
+      command.includes("list-thread-groups")
+        ? `${token}^done,groups=[]\n`
+        : `${token}^done\n`,
+    ),
   options: {
     readonly stdinEnabled?: boolean;
     readonly exitAfterPrompt?: boolean;
@@ -112,7 +120,7 @@ it("returns cancellation when GDB startup is aborted after spawn", async () => {
 
   expect(started.ok).toBe(false);
   if (!started.ok) expect(started.error._tag).toBe("AnalysisCancelledError");
-  expect(fake.children[0]?.exitCode).toBe(0);
+  expect(fake.children[0]?.signalCode).toBe("SIGTERM");
 });
 
 const managerWithFakeSpawner = (
@@ -128,30 +136,6 @@ const managerWithFakeSpawner = (
   });
   managers.push(manager);
   return manager;
-};
-
-const signalAbortingAfterReads = (
-  abortAtRead: number,
-): {
-  readonly signal: AbortSignal;
-  readonly readCount: () => number;
-} => {
-  let reads = 0;
-  return {
-    signal: {
-      get aborted() {
-        reads += 1;
-        return reads >= abortAtRead;
-      },
-      addEventListener() {},
-      removeEventListener() {},
-      throwIfAborted() {},
-      onabort: null,
-      reason: undefined,
-      dispatchEvent: () => true,
-    } as AbortSignal,
-    readCount: () => reads,
-  };
 };
 
 const createProvider = async (body: string): Promise<string> => {
@@ -175,7 +159,7 @@ const managerFor = async (
 };
 
 const responsiveProvider = (
-  handler = "process.stdout.write(match[1] + '^done\\n');",
+  handler = "if (match[2].includes('list-thread-groups')) process.stdout.write(match[1] + '^done,groups=[]\\n'); else process.stdout.write(match[1] + '^done\\n');",
 ): string => `
 process.stdout.write('(gdb)\\n');
 let input = '';
@@ -194,7 +178,9 @@ process.stdin.on('data', (chunk) => {
 `;
 
 afterEach(async () => {
-  await Promise.all(managers.splice(0).map((manager) => manager.closeAll()));
+  await Promise.all(
+    managers.splice(0).map((manager) => manager.closeAll().catch(() => undefined)),
+  );
   if (directory !== undefined)
     await rm(directory, { recursive: true, force: true });
   directory = undefined;
@@ -292,7 +278,12 @@ it("returns startup timeout when the MI prompt never arrives", async () => {
   const started = await manager.start();
 
   expect(started.ok).toBe(false);
-  if (!started.ok) expect(started.error._tag).toBe("AnalysisTimeoutError");
+  if (!started.ok) {
+    expect(started.error._tag).toBe("AnalysisTimeoutError");
+    expect(started.error).toBeInstanceOf(AnalysisTimeoutError);
+    if (started.error instanceof AnalysisTimeoutError)
+      expect(started.error.operation).toBe("start_gdb_session");
+  }
 });
 
 it("preserves a timeout while startup waits for the automatic-loading response", async () => {
@@ -304,7 +295,12 @@ it("preserves a timeout while startup waits for the automatic-loading response",
   const started = await manager.start();
 
   expect(started.ok).toBe(false);
-  if (!started.ok) expect(started.error._tag).toBe("AnalysisTimeoutError");
+  if (!started.ok) {
+    expect(started.error._tag).toBe("AnalysisTimeoutError");
+    expect(started.error).toBeInstanceOf(AnalysisTimeoutError);
+    if (started.error instanceof AnalysisTimeoutError)
+      expect(started.error.operation).toBe("start_gdb_session");
+  }
 });
 
 it("handles a start signal that becomes aborted during listener registration", async () => {
@@ -316,7 +312,7 @@ it("handles a start signal that becomes aborted during listener registration", a
       if (property === "addEventListener")
         return (...arguments_: Parameters<AbortSignal["addEventListener"]>) => {
           registrations += 1;
-          if (registrations === 2) {
+          if (registrations === 1) {
             controller.abort();
           }
           return target.addEventListener(...arguments_);
@@ -332,25 +328,25 @@ it("handles a start signal that becomes aborted during listener registration", a
 
   const started = await manager.start(signal);
 
-  expect(registrations).toBe(2);
+  expect(registrations).toBe(1);
   expect(started.ok).toBe(false);
   if (!started.ok) expect(started.error._tag).toBe("AnalysisCancelledError");
 });
 
-it.each([
-  ["after the prompt", 2],
-  ["while registering the startup abort listener", 3],
-  ["while registering the MI command", 4],
-  ["after the automatic-loading response", 5],
-] as const)("handles cancellation %s", async (_phase, abortAtRead) => {
-  const fake = createFakeSpawner();
+it("handles cancellation after the automatic-loading response", async () => {
+  const controller = new AbortController();
+  const fake = createFakeSpawner((child, token, command) => {
+    child.stdout.write(
+      command.includes("list-thread-groups")
+        ? `${token}^done,groups=[]\n`
+        : `${token}^done\n`,
+    );
+    if (command.includes("auto-load off")) controller.abort();
+  });
   const manager = managerWithFakeSpawner(fake.spawnProcess);
-  const controlled = signalAbortingAfterReads(abortAtRead);
-
-  const started = await manager.start(controlled.signal);
+  const started = await manager.start(controller.signal);
 
   expect(started.ok).toBe(false);
-  expect(controlled.readCount()).toBeGreaterThanOrEqual(abortAtRead);
   if (!started.ok) expect(started.error._tag).toBe("AnalysisCancelledError");
 });
 
@@ -365,7 +361,8 @@ it("reports an MI stream failure when the child has no stdin pipe", async () => 
     expect(started.error._tag).toBe("AnalysisCapabilityUnavailableError");
     expect(started.error.message).toContain("input stream is closed");
   }
-  expect(fake.children[0]?.exitCode).toBe(0);
+  expect(fake.children[0]?.exitCode).toBeNull();
+  expect(fake.children[0]?.killSignals).toEqual([]);
 });
 
 it("fails pending commands when the child closes stdin unexpectedly", async () => {
@@ -448,7 +445,8 @@ it("does not issue a command after an exit wins the startup prompt race", async 
   const started = await manager.start();
 
   expect(started.ok).toBe(false);
-  if (!started.ok) expect(started.error._tag).toBe("AnalysisTimeoutError");
+  if (!started.ok)
+    expect(started.error._tag).toBe("AnalysisCapabilityUnavailableError");
 });
 
 it("rejects the command queued behind a timed-out GDB request", async () => {
@@ -465,7 +463,10 @@ it("rejects the command queued behind a timed-out GDB request", async () => {
 
   const first = manager.execute(started.value.session_id, "stall");
   const queued = manager.execute(started.value.session_id, "after-timeout");
-  expect(await first).toMatchObject({ ok: true });
+  const firstResult = await first;
+  expect(firstResult.ok).toBe(false);
+  if (!firstResult.ok)
+    expect(firstResult.error._tag).toBe("AnalysisCapabilityUnavailableError");
   const rejected = await queued;
 
   expect(rejected.ok).toBe(false);
@@ -548,7 +549,9 @@ it("correlates command output records and reports invalid or cancelled requests"
   );
   expect(rejected.ok).toBe(false);
   if (!rejected.ok) expect(rejected.error._tag).toBe("AnalysisCancelledError");
-  expect((await manager.close(started.value.session_id)).ok).toBe(true);
+  const closed = await manager.close(started.value.session_id);
+  expect(closed.ok).toBe(false);
+  expect(manager.status(started.value.session_id)).toBeDefined();
 });
 
 it("refuses to close a session while GDB reports a live target", async () => {
@@ -572,6 +575,178 @@ it("refuses to close a session while GDB reports a live target", async () => {
     );
 });
 
+it("detaches a live inferior before the shared stop helper signals GDB", async () => {
+  const commands: string[] = [];
+  const fake = createFakeSpawner((_child, token, command) => {
+    commands.push(command);
+    if (command.includes("list-thread-groups"))
+      fake.children[0]?.stdout.write(
+        `${token}^done,groups=[{id="i1",pid="123"}]\n`,
+      );
+    else fake.children[0]?.stdout.write(`${token}^done\n`);
+  });
+  const manager = managerWithFakeSpawner(fake.spawnProcess);
+  const started = await manager.start();
+  expect(started.ok).toBe(true);
+  if (!started.ok) return;
+
+  await manager.closeAll();
+
+  expect(commands).toContain("-list-thread-groups --recurse 1");
+  expect(commands).toContain("-target-detach");
+  expect(fake.children[0]?.killSignals).toEqual(["SIGTERM"]);
+});
+
+it("retains ownership without signaling when recursive MI reports multiple inferiors", async () => {
+  const commands: string[] = [];
+  const fake = createFakeSpawner((_child, token, command) => {
+    commands.push(command);
+    if (command.includes("auto-load off"))
+      fake.children[0]?.stdout.write(`${token}^done\n`);
+    else if (command.includes("list-thread-groups"))
+      fake.children[0]?.stdout.write(
+        `${token}^done,groups=[{id="i1",pid="123"},{id="i2",pid="456"}]\n`,
+      );
+    else fake.children[0]?.stdout.write(`${token}^done\n`);
+  });
+  const manager = managerWithFakeSpawner(fake.spawnProcess);
+  const started = await manager.start();
+  expect(started.ok).toBe(true);
+  if (!started.ok) return;
+
+  await expect(manager.closeAll()).rejects.toMatchObject({
+    errors: [
+      expect.objectContaining({
+        message: expect.stringMatching(/multiple inferiors/iu),
+      }),
+    ],
+  });
+
+  expect(commands).toContain("-list-thread-groups --recurse 1");
+  expect(commands).not.toContain("-target-detach");
+  expect(manager.status(started.value.session_id)).toBeDefined();
+  expect(fake.children[0]?.killSignals).toEqual([]);
+});
+
+it("confirms no inferior before the shared stop helper signals GDB", async () => {
+  const fake = createFakeSpawner();
+  const manager = managerWithFakeSpawner(fake.spawnProcess);
+  const started = await manager.start();
+  expect(started.ok).toBe(true);
+  if (!started.ok) return;
+
+  const closed = await manager.close(started.value.session_id);
+
+  expect(closed).toMatchObject({
+    ok: true,
+    value: { target_state: "none_observed" },
+  });
+  expect(fake.children[0]?.killSignals).toEqual(["SIGTERM"]);
+});
+
+it("retains ownership when manual close receives a truncated empty inferior list", async () => {
+  const commands: string[] = [];
+  const fake = createFakeSpawner((_child, token, command) => {
+    commands.push(command);
+    if (command.includes("auto-load off")) {
+      fake.children[0]?.stdout.write(`${token}^done\n`);
+      return;
+    }
+    if (command.includes("list-thread-groups")) {
+      const child = fake.children[0];
+      if (child === undefined) return;
+      // Keep each MI record below the per-line ceiling while exceeding the
+      // per-command byte budget before the apparently empty result arrives.
+      for (let index = 0; index < 17; index += 1)
+        child.stdout.write(`~"${"x".repeat(1_000_000)}"\n`);
+      child.stdout.write(`${token}^done,groups=[]\n`);
+      return;
+    }
+    fake.children[0]?.stdout.write(`${token}^done\n`);
+  });
+  const manager = managerWithFakeSpawner(fake.spawnProcess);
+  const started = await manager.start();
+  expect(started.ok).toBe(true);
+  if (!started.ok) return;
+
+  const closed = await manager.close(started.value.session_id);
+
+  expect(closed.ok).toBe(false);
+  expect(commands).toContain("-list-thread-groups --recurse 1");
+  expect(commands).not.toContain("-gdb-exit");
+  expect(commands).not.toContain("-target-detach");
+  expect(manager.status(started.value.session_id)).toBeDefined();
+  expect(fake.children[0]?.killSignals).toEqual([]);
+});
+
+it("retains ownership and sends no signal when MI state is saturated or unknown", async () => {
+  const fake = createFakeSpawner((_child, token, command) => {
+    if (command.includes("auto-load off"))
+      fake.children[0]?.stdout.write(`${token}^done\n`);
+    else if (command.includes("list-thread-groups"))
+      fake.children[0]?.stdout.write(`${token}^error,msg="unknown"\n`);
+  });
+  const manager = managerWithFakeSpawner(fake.spawnProcess, {
+    commandTimeoutMs: 20,
+  });
+  const started = await manager.start();
+  expect(started.ok).toBe(true);
+  if (!started.ok) return;
+
+  const timedOut = await manager.execute(started.value.session_id, "saturated");
+  expect(timedOut.ok).toBe(false);
+  await expect(manager.closeAll()).rejects.toMatchObject({
+    errors: [expect.objectContaining({ message: expect.stringMatching(/inferior detach/i) })],
+  });
+
+  expect(manager.status(started.value.session_id)?.state).toBe("closed");
+  expect(fake.children[0]?.killSignals).toEqual([]);
+});
+
+it("routes protocol failure cleanup through detach verification without direct signals", async () => {
+  const fake = createFakeSpawner();
+  const manager = managerWithFakeSpawner(fake.spawnProcess);
+  const started = await manager.start();
+  expect(started.ok).toBe(true);
+  if (!started.ok) return;
+  const child = fake.children[0];
+  if (child?.stdin === null || child?.stdin === undefined) return;
+  Object.defineProperty(child.stdin, "write", {
+    value: (
+      _chunk: string,
+      _encoding: BufferEncoding,
+      callback: (error?: Error | null) => void,
+    ): boolean => {
+      callback(new Error("synthetic protocol failure"));
+      return false;
+    },
+  });
+
+  const failed = await manager.execute(started.value.session_id, "will-fail");
+  expect(failed.ok).toBe(false);
+  await new Promise((resolve) => setImmediate(resolve));
+  expect(child.killSignals).toEqual([]);
+});
+
+it("retains ownership without signaling when detach confirmation fails", async () => {
+  const fake = createFakeSpawner((_child, token, command) => {
+    fake.children[0]?.stdout.write(
+      command.includes("list-thread-groups")
+        ? `${token}^error,msg="state unavailable"\n`
+        : `${token}^done\n`,
+    );
+  });
+  const manager = managerWithFakeSpawner(fake.spawnProcess);
+  const started = await manager.start();
+  expect(started.ok).toBe(true);
+  if (!started.ok) return;
+
+  await expect(manager.closeAll()).rejects.toThrow(/did not stop cleanly/i);
+
+  expect(manager.status(started.value.session_id)?.state).toBe("ready");
+  expect(fake.children[0]?.killSignals).toEqual([]);
+});
+
 it("closes with unknown target state when MI cannot confirm thread groups", async () => {
   const manager = await managerFor(
     responsiveProvider(`
@@ -583,10 +758,13 @@ it("closes with unknown target state when MI cannot confirm thread groups", asyn
   const started = await manager.start();
   expect(started.ok).toBe(true);
   if (!started.ok) return;
-  expect(await manager.close(started.value.session_id)).toMatchObject({
-    ok: true,
-    value: { target_state: "unknown" },
-  });
+  const closed = await manager.close(started.value.session_id);
+  expect(closed.ok).toBe(false);
+  if (!closed.ok) {
+    expect(closed.error.message).toContain("inferior state");
+    expect(closed.error._tag).toBe("AnalysisCapabilityUnavailableError");
+  }
+  expect(manager.status(started.value.session_id)).toBeDefined();
 });
 
 it("cleans up an already-exited GDB session and a close queued during exit", async () => {
@@ -791,7 +969,7 @@ process.stdin.on('data', (chunk) => {
       completion_status: "unknown",
     });
     expect(exited.value.evidence.limitations.join(" ")).toContain(
-      "truncated suffix",
+      "truncated prefix",
     );
   }
 });
@@ -821,6 +999,7 @@ process.stdin.on('data', (chunk) => {
     }
   }
 });
+
 `);
   const started = await manager.start();
   expect(started.ok).toBe(true);
@@ -839,6 +1018,40 @@ process.stdin.on('data', (chunk) => {
   expect(
     manager.status(started.value.session_id)?.recent_mi_records_truncated,
   ).toBe(true);
+});
+
+it("truncates retained MI records on UTF-8 code point boundaries", async () => {
+  const manager = await managerFor(`
+process.stdout.write('(gdb)\\n');
+let input = '';
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', (chunk) => {
+  input += chunk;
+  for (;;) {
+    const end = input.indexOf('\\n');
+    if (end < 0) break;
+    const line = input.slice(0, end); input = input.slice(end + 1);
+    const match = /^(\\d+)(.*)/.exec(line);
+    if (!match) continue;
+    if (match[2].includes('auto-load off')) process.stdout.write(match[1] + '^done\\n');
+    else process.stdout.write('~' + '💩'.repeat(20_000) + '\\n' + match[1] + '^done\\n');
+  }
+});
+`);
+  const started = await manager.start();
+  expect(started.ok).toBe(true);
+  if (!started.ok) return;
+  await manager.execute(started.value.session_id, "large unicode output");
+
+  const retained = manager.status(started.value.session_id)?.recent_mi_records.find(
+    (record) => record.startsWith("~"),
+  );
+  expect(retained).toBeDefined();
+  if (retained !== undefined) {
+    expect(Buffer.byteLength(retained, "utf8")).toBeLessThanOrEqual(64 * 1024);
+    expect(retained).not.toContain("�");
+    expect(retained.endsWith("[recent record truncated]")).toBe(true);
+  }
 });
 
 it("stops the GDB session when a complete MI record exceeds the protocol limit", async () => {

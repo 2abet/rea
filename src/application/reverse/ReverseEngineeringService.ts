@@ -8,6 +8,7 @@ import {
   AnalysisCancelledError,
   AnalysisCapabilityUnavailableError,
   AnalysisInputError,
+  AnalysisResourceConstraintError,
   AnalysisTimeoutError,
 } from "../../domain/analysisErrorCore.js";
 import type {
@@ -39,6 +40,8 @@ export type ReverseEngineeringOperation =
 
 const DEFAULT_TIMEOUT_MS = 120_000;
 const MAX_COMBINED_OUTPUT_BYTES = 16 * 1024 * 1024;
+// Eight concurrent captures bound retained provider output to 128 MiB.
+const MAX_CONCURRENT_REVERSE_ENGINEERING_OPERATIONS = 8;
 
 export interface ReverseEngineeringServiceOptions {
   readonly environment?: Readonly<NodeJS.ProcessEnv>;
@@ -178,9 +181,29 @@ export class ReverseEngineeringService {
     parameters: Readonly<Record<string, JsonValue>>,
     signal?: AbortSignal,
   ): Promise<Result<Evidence, AnalysisError>> {
+    if (signal?.aborted)
+      return Promise.resolve(err(new AnalysisCancelledError(operation)));
     if (this.#closing)
       return Promise.resolve(
         err(new AnalysisOutputError(operation, "Reverse-engineering service is closed.")),
+      );
+    if (
+      this.#activeOperations.size >=
+      MAX_CONCURRENT_REVERSE_ENGINEERING_OPERATIONS
+    )
+      return Promise.resolve(
+        err(
+          new AnalysisResourceConstraintError(
+            operation,
+            "transport",
+            "Concurrent reverse-engineering operation capacity reached.",
+            {
+              max_concurrent_operations:
+                MAX_CONCURRENT_REVERSE_ENGINEERING_OPERATIONS,
+              active_operations: this.#activeOperations.size,
+            },
+          ),
+        ),
       );
     const controller = new AbortController();
     const relayAbort = (): void => controller.abort(signal?.reason);
@@ -360,8 +383,6 @@ export class ReverseEngineeringService {
             cleanup: cause.cleanup,
             cleanupOnly: true,
           },
-
-          { cause, capturedOutput, cleanup: cause.cleanup },
         );
       if (
         failure === undefined &&

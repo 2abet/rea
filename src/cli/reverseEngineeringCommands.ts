@@ -23,23 +23,6 @@ const executeWithCleanup = async (
   try {
     result = await execute();
   } catch (cause) {
-    try {
-      await service.close();
-    } catch (cleanupCause) {
-      throw new AggregateError(
-        [cause, cleanupCause],
-        "Reverse-engineering operation and cleanup both failed.",
-      );
-    }
-
-const executeWithCleanup = async <Value>(
-  service: ReverseEngineeringService,
-  execute: () => Promise<Result<Value, AnalysisError>>,
-): Promise<Result<Value, AnalysisError>> => {
-  let result: Result<Value, AnalysisError>;
-  try {
-    result = await execute();
-  } catch (cause) {
     await service.close().catch(() => undefined);
     throw cause;
   }
@@ -103,20 +86,6 @@ const asCleanupError = (cause: unknown): AnalysisError =>
         "Provider process cleanup failed.",
         { cause },
       );
-
-    if (result.ok)
-      return err(
-        cause instanceof AnalysisError
-          ? cause
-          : new AnalysisOutputError(
-              "reverse_engineering_cleanup",
-              "Provider process cleanup failed.",
-              { cause },
-            ),
-      );
-  }
-  return result;
-};
 
 /** Add one-shot reverse-engineering commands using the shared service layer. */
 export const registerReverseEngineeringCommands = (
