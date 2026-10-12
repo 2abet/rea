@@ -79,29 +79,6 @@ it.each([
 });
 
 it("retries retained GDB cleanup when CLI session startup fails", async () => {
-  const commands = new Map<
-    string,
-    {
-      run(input: {
-        args: { command: string };
-        options: { inferiorTty: string };
-      }): Promise<unknown>;
-    }
-  >();
-  const cli = {
-    command: (
-      name: string,
-      definition: {
-        run(input: {
-          args: { command: string };
-          options: { inferiorTty: string };
-        }): Promise<unknown>;
-      },
-    ) => {
-      commands.set(name, definition);
-      return cli;
-    },
-  } as unknown as CliInstance;
   const closeAll = vi.fn(async () => undefined);
   const manager = {
     start: vi.fn(async () =>
@@ -110,17 +87,9 @@ it("retries retained GDB cleanup when CLI session startup fails", async () => {
     closeAll,
   } as unknown as GdbSessionManager;
   const originalExitCode = process.exitCode;
-  registerReverseEngineeringCommands(
-    cli,
-    pino({ enabled: false }),
-    {},
-    () => manager,
-  );
+  const command = registerGdbCommand(() => manager);
 
   try {
-    const command = commands.get(CLI_COMMANDS.debugWithGdb);
-    if (command === undefined)
-      throw new Error("GDB CLI command was not registered");
     const result = await command.run({
       args: { command: "info files" },
       options: { inferiorTty: "/dev/pts/42" },
@@ -137,29 +106,6 @@ it("retries retained GDB cleanup when CLI session startup fails", async () => {
 });
 
 it("marks the CLI failed when retained GDB cleanup remains incomplete", async () => {
-  const commands = new Map<
-    string,
-    {
-      run(input: {
-        args: { command: string };
-        options: { inferiorTty: string };
-      }): Promise<unknown>;
-    }
-  >();
-  const cli = {
-    command: (
-      name: string,
-      definition: {
-        run(input: {
-          args: { command: string };
-          options: { inferiorTty: string };
-        }): Promise<unknown>;
-      },
-    ) => {
-      commands.set(name, definition);
-      return cli;
-    },
-  } as unknown as CliInstance;
   const manager = {
     start: vi.fn(async () =>
       err(new AnalysisOutputError("start_gdb_session", "startup failed")),
@@ -169,17 +115,9 @@ it("marks the CLI failed when retained GDB cleanup remains incomplete", async ()
     }),
   } as unknown as GdbSessionManager;
   const originalExitCode = process.exitCode;
-  registerReverseEngineeringCommands(
-    cli,
-    pino({ enabled: false }),
-    {},
-    () => manager,
-  );
+  const command = registerGdbCommand(() => manager);
 
   try {
-    const command = commands.get(CLI_COMMANDS.debugWithGdb);
-    if (command === undefined)
-      throw new Error("GDB CLI command was not registered");
     const result = await command.run({
       args: { command: "info files" },
       options: { inferiorTty: "/dev/pts/42" },

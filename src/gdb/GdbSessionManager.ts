@@ -1119,22 +1119,26 @@ export class GdbSessionManager {
     for (const pending of session.pending.values()) {
       clearTimeout(pending.timer);
       pending.cleanup();
-      const partial: GdbCommandResult = {
-        command: pending.evidenceCommand,
-        mi: "",
-        records: [...pending.lines],
-        console: pending.lines
-          .filter((line) => line.startsWith("~"))
-          .join("\n"),
-        target: pending.lines.filter((line) => line.startsWith("@")).join("\n"),
-        log: pending.lines.filter((line) => line.startsWith("&")).join("\n"),
-        output_truncated: pending.outputTruncated,
-        completion_status: "unknown",
-      };
-      pending.reject(new GdbProtocolFailureError(message, partial));
+      pending.reject(
+        new GdbProtocolFailureError(message, this.#partialResult(pending)),
+      );
     }
     session.pending.clear();
     session.startupReject?.(new Error(message));
+  }
+
+  #partialResult(pending: PendingCommand): GdbCommandResult {
+    const records = [...pending.lines];
+    return {
+      command: pending.evidenceCommand,
+      mi: "",
+      records,
+      console: records.filter((line) => line.startsWith("~")).join("\n"),
+      target: records.filter((line) => line.startsWith("@")).join("\n"),
+      log: records.filter((line) => line.startsWith("&")).join("\n"),
+      output_truncated: pending.outputTruncated,
+      completion_status: "unknown",
+    };
   }
 
   async #stopAfterProtocolFailure(
@@ -1334,20 +1338,7 @@ export class GdbSessionManager {
         session.protocolError =
           "A GDB MI command timed out; untagged stream output can no longer be safely correlated with later commands.";
         pending.cleanup();
-        const partial: GdbCommandResult = {
-          command: pending.evidenceCommand,
-          mi: "",
-          records: [...pending.lines],
-          console: pending.lines
-            .filter((line) => line.startsWith("~"))
-            .join("\n"),
-          target: pending.lines
-            .filter((line) => line.startsWith("@"))
-            .join("\n"),
-          log: pending.lines.filter((line) => line.startsWith("&")).join("\n"),
-          output_truncated: pending.outputTruncated,
-          completion_status: "unknown",
-        };
+        const partial = this.#partialResult(pending);
         const timeout = new AnalysisTimeoutError(
           operation,
           this.#commandTimeoutMs,
@@ -1453,20 +1444,7 @@ export class GdbSessionManager {
       session.pending.set(token, pending);
       abortListener = (): void => {
         clearTimeout(pending.timer);
-        const partial: GdbCommandResult = {
-          command: pending.evidenceCommand,
-          mi: "",
-          records: [...pending.lines],
-          console: pending.lines
-            .filter((line) => line.startsWith("~"))
-            .join("\n"),
-          target: pending.lines
-            .filter((line) => line.startsWith("@"))
-            .join("\n"),
-          log: pending.lines.filter((line) => line.startsWith("&")).join("\n"),
-          output_truncated: pending.outputTruncated,
-          completion_status: "unknown",
-        };
+        const partial = this.#partialResult(pending);
         const evidence = createEvidence(undefined, GDB_PROVIDER_IDENTITY, {
           predicateType: "rea.debugger.console-observation",
           operation: "gdb_console",

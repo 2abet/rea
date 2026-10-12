@@ -427,6 +427,29 @@ const managerWithFakeSpawner = (
   return manager;
 };
 
+const startWithVerifiedInferiorTty = async (
+  tty: string,
+): Promise<{
+  readonly manager: GdbSessionManager;
+  readonly sessionId: string;
+  readonly commands: string[];
+}> => {
+  const commands: string[] = [];
+  const fake = createFakeSpawner((_child, token, command) => {
+    commands.push(command);
+    const response = command.includes("inferior-tty-show")
+      ? `^done,inferior_tty_terminal=${JSON.stringify(tty)}`
+      : command.includes("list-thread-groups")
+        ? '^done,groups=[{id="i1",pid="123"}]'
+        : "^done";
+    fake.children[0]?.stdout.write(`${token}${response}\n`);
+  });
+  const manager = managerWithFakeSpawner(fake.spawnProcess);
+  const started = await manager.start(undefined, { inferiorTty: tty });
+  if (!started.ok) throw new Error("GDB did not start with its selected TTY");
+  return { manager, sessionId: started.value.session_id, commands };
+};
+
 const createProvider = async (body: string): Promise<string> => {
   directory ??= await mkdtemp(join(tmpdir(), "rea-gdb-coverage-"));
   const provider = join(directory, `fake-gdb-${managers.length}.mjs`);
@@ -948,64 +971,28 @@ it("revokes the verified sink after an abbreviated with inferior-tty run command
 
 it("permanently revokes automatic detach after an abbreviated TTY change and restore", async () => {
   const tty = "/dev/pts/42";
-  const commands: string[] = [];
-  const fake = createFakeSpawner((_child, token, command) => {
-    commands.push(command);
-    if (command.includes("inferior-tty-show"))
-      fake.children[0]?.stdout.write(
-        `${token}^done,inferior_tty_terminal=${JSON.stringify(tty)}\n`,
-      );
-    else if (command.includes("list-thread-groups"))
-      fake.children[0]?.stdout.write(
-        `${token}^done,groups=[{id="i1",pid="123"}]\n`,
-      );
-    else fake.children[0]?.stdout.write(`${token}^done\n`);
-  });
-  const manager = managerWithFakeSpawner(fake.spawnProcess);
-  const started = await manager.start(undefined, { inferiorTty: tty });
-  expect(started.ok).toBe(true);
-  if (!started.ok) return;
-  await manager.execute(started.value.session_id, "set pagination off");
-  expect(manager.status(started.value.session_id)?.inferior_tty_verified).toBe(
-    true,
-  );
-  await manager.execute(started.value.session_id, "set inferior-t /tmp/other");
-  await manager.execute(started.value.session_id, `set inferior-t ${tty}`);
-  await manager.execute(started.value.session_id, "start");
-  expect(manager.status(started.value.session_id)?.inferior_tty_verified).toBe(
-    false,
-  );
-  const closed = await manager.close(started.value.session_id);
+  const { manager, sessionId, commands } =
+    await startWithVerifiedInferiorTty(tty);
+  await manager.execute(sessionId, "set pagination off");
+  expect(manager.status(sessionId)?.inferior_tty_verified).toBe(true);
+  await manager.execute(sessionId, "set inferior-t /tmp/other");
+  await manager.execute(sessionId, `set inferior-t ${tty}`);
+  await manager.execute(sessionId, "start");
+  expect(manager.status(sessionId)?.inferior_tty_verified).toBe(false);
+  const closed = await manager.close(sessionId);
   expect(closed.ok).toBe(false);
   expect(commands).not.toContain("-target-detach");
 });
 
 it("revokes detach proof for redirection attached to a run argument", async () => {
   const tty = "/dev/pts/42";
-  const commands: string[] = [];
-  const fake = createFakeSpawner((_child, token, command) => {
-    commands.push(command);
-    if (command.includes("inferior-tty-show"))
-      fake.children[0]?.stdout.write(
-        `${token}^done,inferior_tty_terminal=${JSON.stringify(tty)}\n`,
-      );
-    else if (command.includes("list-thread-groups"))
-      fake.children[0]?.stdout.write(
-        `${token}^done,groups=[{id="i1",pid="123"}]\n`,
-      );
-    else fake.children[0]?.stdout.write(`${token}^done\n`);
-  });
-  const manager = managerWithFakeSpawner(fake.spawnProcess);
-  const started = await manager.start(undefined, { inferiorTty: tty });
-  expect(started.ok).toBe(true);
-  if (!started.ok) return;
+  const { manager, sessionId, commands } =
+    await startWithVerifiedInferiorTty(tty);
 
-  await manager.execute(started.value.session_id, "start arg>/dev/null");
+  await manager.execute(sessionId, "start arg>/dev/null");
 
-  expect(manager.status(started.value.session_id)?.inferior_tty_verified).toBe(
-    false,
-  );
-  const closed = await manager.close(started.value.session_id);
+  expect(manager.status(sessionId)?.inferior_tty_verified).toBe(false);
+  const closed = await manager.close(sessionId);
   expect(closed.ok).toBe(false);
   expect(commands).not.toContain("-target-detach");
 });
