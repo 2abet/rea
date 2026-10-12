@@ -90,7 +90,7 @@ export class ReverseEngineeringService {
   constructor(
     options: ReverseEngineeringServiceOptions,
   ) {
-    this.#environment = options.environment ?? process.env;
+    this.#environment = { ...(options.environment ?? process.env) };
     this.#commands = options.commands;
     this.#run =
       options.run ??
@@ -290,7 +290,6 @@ export class ReverseEngineeringService {
     try {
       const output = await this.#run(command, args, {
         env: {
-          ...process.env,
           ...this.#environment,
           ...profile.environmentOverrides,
         },

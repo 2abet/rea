@@ -329,6 +329,15 @@ export const createServer = (
     session === undefined
       ? undefined
       : () => session.invalidateSnapshotForExternalMutation(),
+    session === undefined
+      ? undefined
+      : (path, signal, operation, rebindFailure) =>
+          session.withAdmittedExternalMutation(
+            path,
+            signal,
+            operation,
+            rebindFailure,
+          ),
   );
   const previousOnclose = server.server.onclose;
   server.server.onclose = () => {
