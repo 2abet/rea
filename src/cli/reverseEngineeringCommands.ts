@@ -100,8 +100,9 @@ export const registerReverseEngineeringCommands = (
     environment: Readonly<NodeJS.ProcessEnv>,
   ) => GdbSessionManager = (providerEnvironment) =>
     new GdbSessionManager({ environment: providerEnvironment }),
+  createService: typeof createReverseEngineeringService = createReverseEngineeringService,
 ): void => {
-  const service = createReverseEngineeringService(environment);
+  const service = createService(environment);
   cli.command(CLI_COMMANDS.inspectWithObjdump, {
     description:
       "Inspect a local artifact with GNU objdump and retain its raw output as Evidence",
