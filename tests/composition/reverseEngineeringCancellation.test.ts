@@ -77,6 +77,14 @@ setInterval(() => {}, 1000);
       if (!result.ok) {
         expect(result.error._tag).toBe("AnalysisCancelledError");
         expect(result.error.cleanup).toBeUndefined();
+        expect(result.error.capturedOutput).toMatchObject({
+          stdout: "provider output before cancellation",
+          stderr: "",
+          truncated: false,
+          exit_code: null,
+          signal: "SIGKILL",
+        });
+        expect(result.error.cause).toBeInstanceOf(Error);
         expect(result.error.partialObservation).toMatchObject({
           raw_result: {
             stdout: "provider output before cancellation",

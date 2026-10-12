@@ -6,6 +6,11 @@ import { expect, it, vi } from "vitest";
 
 import { ReverseEngineeringService } from "../../src/application/reverse/ReverseEngineeringService.js";
 import { objdumpCommand } from "../../src/objdump/ObjdumpCommand.js";
+import {
+  OwnedCommandFailure,
+  runOwnedCommand,
+} from "../../src/process/OwnedCommand.js";
+import type { ProviderProcessSnapshot } from "../../src/process/ProviderProcess.js";
 
 const createArtifact = async (): Promise<{
   directory: string;
@@ -209,6 +214,7 @@ it.each([
   ["ETIMEDOUT", "AnalysisTimeoutError"],
   ["EACCES", "AnalysisAccessDeniedError"],
   ["EPERM", "AnalysisAccessDeniedError"],
+  ["ABORT_ERR", "AnalysisCancelledError"],
   ["unknown", "AnalysisCapabilityUnavailableError"],
 ])(
   "maps provider failure %s to its tagged analysis error",
@@ -226,7 +232,24 @@ it.each([
         path,
         operation: "file_headers",
       });
-      expect(result).toMatchObject({ ok: false, error: { _tag: tag } });
+      expect(result).toMatchObject({
+        ok: false,
+        error: {
+          _tag: tag,
+          operation: "inspect_with_objdump",
+          cause: { message: "provider failure" },
+          ...(code === "ETIMEDOUT" ? { timeoutMs: 120_000 } : {}),
+          ...(code === "EACCES" || code === "EPERM"
+            ? { path: "objdump", systemCode: code }
+            : {}),
+          ...(code === "unknown"
+            ? {
+                providerId: "objdump",
+                reason: "Unable to run configured command (unknown error)",
+              }
+            : {}),
+        },
+      });
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
@@ -282,6 +305,86 @@ it("records a changed artifact and unknown post-run digest separately", async ()
   }
 });
 
+it.each(["EACCES", "EPERM"] as const)(
+  "retains captured output on a permission-denied provider result (%s)",
+  async (code) => {
+  const { directory, path } = await createArtifact();
+  const service = new ReverseEngineeringService({
+    run: async () => {
+      throw Object.assign(new Error("provider permission denied"), {
+        stdout: "partial provider output",
+        stderr: "permission diagnostic",
+        code,
+        signal: null,
+        killed: false,
+      });
+    },
+  });
+
+  try {
+    const result = await service.inspectWithObjdump({
+      path,
+      operation: "file_headers",
+    });
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        _tag: "AnalysisAccessDeniedError",
+        capturedOutput: {
+          stdout: "partial provider output",
+          stderr: "permission diagnostic",
+        },
+        partialObservation: {
+          raw_result: { stdout: "partial provider output" },
+        },
+      },
+    });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+  },
+);
+
+it("cancels after captured output when a provider reports a non-numeric status", async () => {
+  const { directory, path } = await createArtifact();
+  const controller = new AbortController();
+  let digests = 0;
+  const service = new ReverseEngineeringService({
+    digest: async () => {
+      digests += 1;
+      if (digests === 2) controller.abort();
+      return digests === 1 ? "a".repeat(64) : "b".repeat(64);
+    },
+    run: async () => {
+      throw Object.assign(new Error("provider status unavailable"), {
+        stdout: "captured output",
+        stderr: "",
+        code: "provider-status-unknown",
+        signal: null,
+        killed: false,
+      });
+    },
+  });
+
+  try {
+    const result = await service.inspectWithObjdump(
+      { path, operation: "file_headers" },
+      { signal: controller.signal },
+    );
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        _tag: "AnalysisCancelledError",
+        partialObservation: {
+          raw_result: { exit_code: null, completion_status: "unknown" },
+        },
+      },
+    });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 it("maps an unavailable Rizin command to the Rizin capability error", async () => {
   const { directory, path } = await createArtifact();
   const service = new ReverseEngineeringService({
@@ -297,6 +400,381 @@ it("maps an unavailable Rizin command to the Rizin capability error", async () =
       error: {
         _tag: "AnalysisCapabilityUnavailableError",
         providerId: "rizin",
+        operation: "execute_rizin_command",
+        reason: "Unable to run configured command (ENOENT)",
+        cause: { message: "not found" },
+      },
+    });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+it("classifies a captured ENOENT as provider unavailability", async () => {
+  const { directory, path } = await createArtifact();
+  const cause = Object.assign(new Error("launch failed"), {
+    stdout: "",
+    stderr: "",
+    code: "ENOENT",
+    signal: null,
+    killed: false,
+  });
+  const service = new ReverseEngineeringService({ run: async () => { throw cause; } });
+
+  try {
+    const result = await service.inspectWithObjdump({ path, operation: "file_headers" });
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        _tag: "AnalysisCapabilityUnavailableError",
+        providerId: "objdump",
+        reason: "Unable to run configured command (ENOENT)",
+        cause: { message: "launch failed" },
+      },
+    });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+const providerSnapshot = (
+  overrides: Partial<ProviderProcessSnapshot> = {},
+): ProviderProcessSnapshot => ({
+  stdout: {
+    text: "captured owned output",
+    bytes: 21,
+    observedBytes: 21,
+  },
+  stderr: { text: "diagnostic", bytes: 10, observedBytes: 10 },
+  exitCode: 0,
+  signal: null,
+  ...overrides,
+});
+
+it.each([
+  ["normal exit", providerSnapshot(), "complete", 0, false],
+  [
+    "non-zero exit",
+    providerSnapshot({ exitCode: 7, diagnosticTruncated: true }),
+    "complete",
+    7,
+    true,
+  ],
+  [
+    "signal termination",
+    providerSnapshot({
+      exitCode: null,
+      signal: "SIGSEGV",
+      diagnosticTruncated: true,
+    }),
+    "unknown",
+    null,
+    true,
+  ],
+  [
+    "signal termination with a numeric exit snapshot",
+    providerSnapshot({ exitCode: 7, signal: "SIGSEGV" }),
+    "unknown",
+    null,
+    false,
+  ],
+  [
+    "signal termination without truncation",
+    providerSnapshot({ exitCode: null, signal: "SIGTERM" }),
+    "unknown",
+    null,
+    false,
+  ],
+  ["unknown exit status", providerSnapshot({ exitCode: null }), "unknown", null, false],
+] as const)(
+  "maps an owned command %s into provider Evidence",
+  async (_name, snapshot, completion, exitCode, outputTruncated) => {
+    const { directory, path } = await createArtifact();
+    const runOwned = vi.fn(async () => snapshot);
+    const service = new ReverseEngineeringService({
+      runOwned,
+      environment: { REA_RIZIN_COMMAND: "rizin-test" },
+    });
+
+    try {
+      const result = await service.executeRizinCommand({ path, command: "iI" });
+      expect(runOwned).toHaveBeenCalledOnce();
+      expect(runOwned).toHaveBeenCalledWith(
+        expect.objectContaining({
+          command: "rizin-test",
+          arguments: expect.arrayContaining(["-q", "-c", "iI"]),
+          expectedCommand: null,
+          env: expect.objectContaining({ REA_RIZIN_COMMAND: "rizin-test" }),
+          hostEnvironment: {},
+        }),
+        {
+          timeoutMs: 120_000,
+          diagnosticBytes: 16 * 1024 * 1024,
+          acceptNonZeroExit: true,
+        },
+        {},
+      );
+      expect(result).toMatchObject({
+        ok: true,
+        value: {
+          raw_result: {
+            stdout: "captured owned output",
+            completion_status: completion,
+            exit_code: exitCode,
+            output_truncated: outputTruncated,
+          },
+        },
+      });
+      if (!result.ok) throw new Error("Expected provider Evidence");
+      expect(result.value.parameters).toMatchObject({
+        command: "iI",
+        provider_executable: "rizin-test",
+        command_arguments: expect.arrayContaining(["-q", "-c", "iI"]),
+      });
+      expect(result.value.locations).toContainEqual({
+        kind: "artifact-path",
+        path,
+      });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+);
+
+it.each([
+  ["cancelled", "AnalysisCancelledError", "ABORT_ERR"],
+  ["timeout", "AnalysisTimeoutError", "ETIMEDOUT"],
+  ["output-limit", "evidence", "ERR_CHILD_PROCESS_STDIO_MAXBUFFER"],
+  ["process", "evidence", 7],
+] as const)(
+  "maps an owned command %s failure while retaining its snapshot",
+  async (reason, expected, mappedCode) => {
+    const { directory, path } = await createArtifact();
+    const snapshot = providerSnapshot({
+      ...(reason === "process" ? { exitCode: 7 } : {}),
+      ...(reason === "output-limit"
+        ? {}
+        : reason === "cancelled"
+          ? {}
+          : { diagnosticTruncated: true }),
+    });
+    const service = new ReverseEngineeringService({
+      runOwned: async () => {
+        throw new OwnedCommandFailure(
+          reason,
+          "owned command failed",
+          snapshot,
+          reason === "timeout" ? "cleanup pending" : null,
+          undefined,
+          reason === "timeout" ? ["run-id", "pid:7"] : [],
+        );
+      },
+    });
+
+    try {
+      const result = await service.executeRizinCommand({ path, command: "iI" });
+      if (expected === "evidence") {
+        expect(result).toMatchObject({
+          ok: true,
+          value: {
+            raw_result: {
+              stdout: "captured owned output",
+              exit_code: mappedCode === 7 ? 7 : null,
+              completion_status:
+                reason === "output-limit" ? "unknown" : "complete",
+              output_truncated: true,
+            },
+          },
+        });
+      } else {
+        expect(result).toMatchObject({
+          ok: false,
+          error: {
+            _tag: expected,
+            partialObservation: {
+              raw_result: {
+                stdout: "captured owned output",
+                exit_code: null,
+                completion_status: "unknown",
+                output_truncated: reason !== "cancelled",
+              },
+            },
+            ...(reason === "timeout"
+              ? {
+                  cleanup: {
+                    reason: "cleanup pending",
+                    resources: ["run-id", "pid:7"],
+                  },
+                }
+              : {}),
+          },
+        });
+        if (result.ok) throw new Error("Expected a tagged command failure");
+      }
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+);
+
+it("maps an uncaptured owned launcher error to provider unavailability", async () => {
+  const { directory, path } = await createArtifact();
+  const service = new ReverseEngineeringService({
+    runOwned: async () => {
+      throw Object.assign(new Error("missing provider"), { code: "ENOENT" });
+    },
+  });
+
+  try {
+    const result = await service.executeRizinCommand({ path, command: "iI" });
+    expect(result).toMatchObject({
+      ok: false,
+      error: { _tag: "AnalysisCapabilityUnavailableError", providerId: "rizin" },
+    });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+it("forwards a caller abort signal to the owned command supervisor", async () => {
+  const { directory, path } = await createArtifact();
+  const controller = new AbortController();
+  const runOwned = vi.fn<typeof runOwnedCommand>(async () => providerSnapshot());
+  const service = new ReverseEngineeringService({ runOwned });
+
+  try {
+    const result = await service.executeRizinCommand(
+      { path, command: "iI" },
+      { signal: controller.signal },
+    );
+    expect(result.ok).toBe(true);
+    expect(runOwned.mock.calls[0]?.[2]).toEqual({ signal: controller.signal });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+it("does not classify a completed provider call as cancelled for a live signal", async () => {
+  const { directory, path } = await createArtifact();
+  const controller = new AbortController();
+  const service = new ReverseEngineeringService({
+    run: async () => ({ stdout: "completed output", stderr: "" }),
+  });
+
+  try {
+    const result = await service.executeRizinCommand(
+      { path, command: "iI" },
+      { signal: controller.signal },
+    );
+    expect(result).toMatchObject({
+      ok: true,
+      value: { raw_result: { stdout: "completed output", completion_status: "complete" } },
+    });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+it("preserves a provider timeout when cancellation arrives during the final digest", async () => {
+  const { directory, path } = await createArtifact();
+  const controller = new AbortController();
+  let digests = 0;
+  const service = new ReverseEngineeringService({
+    digest: async () => {
+      digests += 1;
+      if (digests === 2) controller.abort();
+      return "a".repeat(64);
+    },
+    run: async () => {
+      throw Object.assign(new Error("provider timed out"), {
+        stdout: "partial timeout output",
+        stderr: "timeout diagnostic",
+        code: "ETIMEDOUT",
+        signal: null,
+        killed: true,
+      });
+    },
+  });
+
+  try {
+    const result = await service.executeRizinCommand(
+      { path, command: "iI" },
+      { signal: controller.signal },
+    );
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        _tag: "AnalysisTimeoutError",
+        capturedOutput: {
+          stdout: "partial timeout output",
+          stderr: "timeout diagnostic",
+        },
+        partialObservation: {
+          raw_result: {
+            stdout: "partial timeout output",
+            completion_status: "unknown",
+          },
+        },
+      },
+    });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+it("classifies an owned launcher failure without a process snapshot", async () => {
+  const { directory, path } = await createArtifact();
+  const service = new ReverseEngineeringService({
+    runOwned: async () => {
+      throw new OwnedCommandFailure("process", "no process snapshot");
+    },
+  });
+
+  try {
+    const result = await service.executeRizinCommand({ path, command: "iI" });
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        _tag: "AnalysisCapabilityUnavailableError",
+        providerId: "rizin",
+        partialObservation: undefined,
+        reason: "Unable to run configured command (ERR_PROVIDER_LAUNCH)",
+        cause: {
+          message: "Owned provider command did not produce a complete result.",
+          stdout: "",
+          stderr: "",
+          cause: { reason: "process", message: "no process snapshot" },
+        },
+        capturedOutput: undefined,
+      },
+    });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+it("retains an owned process failure snapshot with an unknown exit code", async () => {
+  const { directory, path } = await createArtifact();
+  const service = new ReverseEngineeringService({
+    runOwned: async () => {
+      throw new OwnedCommandFailure(
+        "process",
+        "process ended before reporting an exit code",
+        providerSnapshot({ exitCode: null }),
+      );
+    },
+  });
+
+  try {
+    const result = await service.executeRizinCommand({ path, command: "iI" });
+    expect(result).toMatchObject({
+      ok: true,
+      value: {
+        raw_result: {
+          stdout: "captured owned output",
+          exit_code: null,
+          completion_status: "unknown",
+        },
       },
     });
   } finally {

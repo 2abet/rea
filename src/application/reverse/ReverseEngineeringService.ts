@@ -11,8 +11,8 @@ import {
   AnalysisTimeoutError,
 } from "../../domain/analysisErrorCore.js";
 import type {
+  AnalysisCleanupObservation,
   AnalysisError,
-  AnalysisErrorOptions,
 } from "../../domain/analysisErrorBase.js";
 import { createEvidence, type Evidence } from "../../domain/evidence.js";
 import type { JsonValue } from "../../domain/jsonValue.js";
@@ -48,11 +48,14 @@ export class ReverseEngineeringService {
     options: {
       readonly environment?: Readonly<NodeJS.ProcessEnv>;
       readonly run?: typeof execFileOutput;
+      readonly runOwned?: typeof runOwnedCommand;
       readonly digest?: typeof digestFile;
     } = {},
   ) {
     this.#environment = options.environment ?? process.env;
-    this.#run = options.run ?? runOwnedCommandOutput;
+    this.#run =
+      options.run ??
+      runOwnedCommandOutput(options.runOwned ?? runOwnedCommand);
     this.#digest = options.digest ?? digestFile;
   }
 
@@ -152,7 +155,11 @@ export class ReverseEngineeringService {
       const capture = execFileOutputFailure(cause);
       const code =
         capture?.code ?? (cause as NodeJS.ErrnoException).code ?? undefined;
-      if (capture === undefined || code === "ENOENT") {
+      if (
+        capture === undefined ||
+        code === "ENOENT" ||
+        code === "ERR_PROVIDER_LAUNCH"
+      ) {
         if (signal?.aborted || code === "ABORT_ERR")
           return err(new AnalysisCancelledError(operation, { cause }));
         if (code === "ETIMEDOUT")
@@ -203,15 +210,10 @@ export class ReverseEngineeringService {
           cause,
           capturedOutput,
         });
-      if (
-        code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" ||
-        capture.signal !== null ||
-        failure !== undefined
-      ) {
+      if (capture.signal !== null || typeof capture.code !== "number") {
         exitCode = null;
         completionStatus = "unknown";
       }
-      if (capture.signal !== null) completionStatus = "unknown";
     }
     let digestAfter: string | null = null;
     try {
@@ -298,14 +300,47 @@ export class ReverseEngineeringService {
   }
 }
 
-const runOwnedCommandOutput: typeof execFileOutput = async (
+interface OwnedOutputFailureOptions {
+  readonly stdout: string;
+  readonly stderr: string;
+  readonly code: number | string | null;
+  readonly signal: string | null;
+  readonly outputTruncated: boolean;
+  readonly cleanup?: AnalysisCleanupObservation;
+  readonly cause?: unknown;
+}
+
+class OwnedOutputFailure extends Error {
+  readonly stdout: string;
+  readonly stderr: string;
+  readonly code: number | string | null;
+  readonly signal: string | null;
+  readonly outputTruncated: boolean;
+  readonly cleanup: AnalysisCleanupObservation | undefined;
+
+  constructor(options: OwnedOutputFailureOptions) {
+    super("Owned provider command did not produce a complete result.", {
+      cause: options.cause,
+    });
+    this.stdout = options.stdout;
+    this.stderr = options.stderr;
+    this.code = options.code;
+    this.signal = options.signal;
+    this.outputTruncated = options.outputTruncated;
+    this.cleanup = options.cleanup;
+  }
+}
+
+const runOwnedCommandOutput = (
+  runOwned: typeof runOwnedCommand,
+): typeof execFileOutput => async (
   command,
   args,
   options = {},
 ) => {
-  const spawnEnv = { ...(options.env ?? process.env) };
+  const spawnEnv = { ...options.env };
   try {
-    const snapshot = await runOwnedCommand(
+    const snapshot = await runOwned(
       {
         command,
         arguments: [...args],
@@ -315,31 +350,29 @@ const runOwnedCommandOutput: typeof execFileOutput = async (
         hostEnvironment: {},
       },
       {
-        timeoutMs: options.timeout ?? DEFAULT_TIMEOUT_MS,
-        diagnosticBytes:
-          options.maxBuffer ?? MAX_OUTPUT_BYTES_PER_STREAM * 2,
+        timeoutMs: DEFAULT_TIMEOUT_MS,
+        diagnosticBytes: MAX_OUTPUT_BYTES_PER_STREAM,
         acceptNonZeroExit: true,
       },
       {
         ...(options.signal === undefined ? {} : { signal: options.signal }),
       },
     );
+    // Stryker disable next-line ConditionalExpression,EqualityOperator -- null and undefined both mean no signal; wrapping a successful snapshot with those values is observationally equivalent after normalization.
     if (snapshot.signal !== null && snapshot.signal !== undefined)
-      throw Object.assign(new Error("Provider command terminated by signal"), {
+      throw new OwnedOutputFailure({
         stdout: snapshot.stdout.text,
         stderr: snapshot.stderr.text,
         code: snapshot.exitCode ?? null,
         signal: snapshot.signal,
-        killed: false,
         outputTruncated: snapshot.diagnosticTruncated === true,
       });
     if (snapshot.exitCode !== 0)
-      throw Object.assign(new Error("Provider command exited unsuccessfully"), {
+      throw new OwnedOutputFailure({
         stdout: snapshot.stdout.text,
         stderr: snapshot.stderr.text,
         code: snapshot.exitCode ?? null,
         signal: null,
-        killed: false,
         outputTruncated: snapshot.diagnosticTruncated === true,
       });
     return { stdout: snapshot.stdout.text, stderr: snapshot.stderr.text };
@@ -353,36 +386,34 @@ const runOwnedCommandOutput: typeof execFileOutput = async (
           ? "ETIMEDOUT"
           : cause.reason === "output-limit"
             ? "ERR_CHILD_PROCESS_STDIO_MAXBUFFER"
-            : (snapshot?.exitCode ?? null);
-    throw Object.assign(new Error(cause.message, { cause }), {
+          : snapshot === null
+            ? "ERR_PROVIDER_LAUNCH"
+            : (snapshot.exitCode ?? null);
+    throw new OwnedOutputFailure({
       stdout: snapshot?.stdout.text ?? "",
       stderr: snapshot?.stderr.text ?? "",
       code,
       signal: snapshot?.signal ?? null,
-      killed: cause.reason === "cancelled" || cause.reason === "timeout",
-      outputTruncated:
-        cause.reason === "output-limit" ||
-        snapshot?.diagnosticTruncated === true,
-      cleanupFailure: cause.cleanupFailure,
-      resources: cause.resources,
+      outputTruncated: snapshot?.diagnosticTruncated === true,
+      ...(cause.cleanupFailure === null
+        ? {}
+        : {
+            cleanup: {
+              reason: cause.cleanupFailure,
+              resources: cause.resources,
+            },
+          }),
+      cause,
     });
   }
 };
 
 const ownedCleanupOptions = (
   cause: unknown,
-): Pick<AnalysisErrorOptions, "cleanup"> => {
-  if (!(cause instanceof Error)) return {};
-  const cleanupFailure = Reflect.get(cause, "cleanupFailure");
-  const resources = Reflect.get(cause, "resources");
-  if (
-    typeof cleanupFailure !== "string" ||
-    !Array.isArray(resources) ||
-    !resources.every((resource): resource is string => typeof resource === "string")
-  )
-    return {};
-  return { cleanup: { reason: cleanupFailure, resources } };
-};
+): { readonly cleanup?: AnalysisCleanupObservation } =>
+  cause instanceof OwnedOutputFailure && cause.cleanup !== undefined
+    ? { cleanup: cause.cleanup }
+    : {};
 
 const digestFile = async (
   path: string,

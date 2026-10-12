@@ -75,6 +75,11 @@ describe("reverse engineering command services", () => {
         operation: "file_headers",
       });
       expect(result.ok).toBe(false);
+      if (!result.ok)
+        expect(result.error.cause).toMatchObject({
+          code: "EINVAL",
+          message: "Artifact digest requires a regular file",
+        });
       expect(invoked).toBe(false);
     } finally {
       await rm(directory, { recursive: true, force: true });
@@ -391,6 +396,12 @@ it("preserves provider facts when cancellation interrupts the post-run digest", 
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error._tag).toBe("AnalysisCancelledError");
+      expect(result.error.capturedOutput).toMatchObject({
+        stdout: "provider completed",
+        stderr: "",
+        exit_code: 0,
+        signal: null,
+      });
       expect(result.error.partialObservation).toMatchObject({
         raw_result: {
           stdout: "provider completed",
