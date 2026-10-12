@@ -336,10 +336,7 @@ export class CutterBridgeClient {
       : "unverified_platform_acl";
     const windowsPrivateReader = this.#windowsPrivateReader;
     if (!posix) {
-      if (
-        this.#platform !== "win32" ||
-        windowsPrivateReader === undefined
-      )
+      if (this.#platform !== "win32" || windowsPrivateReader === undefined)
         return {
           descriptors: [],
           security,

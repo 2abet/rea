@@ -28,7 +28,7 @@ describe.skipIf(process.platform === "win32")(
       const provider = join(directory, "fake-gdb.mjs");
       await writeFile(
         provider,
-        `#!/usr/bin/env node
+        `#!${process.execPath}
 process.stdout.write("(gdb)\\n");
 let input = "";
 process.stdin.setEncoding("utf8");
@@ -75,7 +75,7 @@ process.stdin.on("data", (chunk) => {
       const provider = join(directory, "fake-gdb-reject.mjs");
       await writeFile(
         provider,
-        `#!/usr/bin/env node
+        `#!${process.execPath}
 process.stdout.write("(gdb)\\n");
 let input = "";
 process.stdin.setEncoding("utf8");

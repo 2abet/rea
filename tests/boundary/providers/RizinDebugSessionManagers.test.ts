@@ -5,7 +5,10 @@ import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { RizinDebugSessionManager } from "../../../src/rizin/RizinDebugSessionManager.js";
-import { createRizinTestManager, rizinTestInferiorTty } from "./RizinTestInferiorTty.js";
+import {
+  createRizinTestManager,
+  rizinTestInferiorTty,
+} from "./RizinTestInferiorTty.js";
 
 describe.skipIf(process.platform === "win32")(
   "persistent Rizin debugger session manager",
@@ -129,7 +132,10 @@ process.stdin.on("data", (chunk) => {
       );
       managers.push(manager);
 
-      const started = await manager.start({ path: "/tmp/fixture.bin", inferior_tty: await rizinTestInferiorTty() });
+      const started = await manager.start({
+        path: "/tmp/fixture.bin",
+        inferior_tty: await rizinTestInferiorTty(),
+      });
       expect(started.ok).toBe(true);
       if (!started.ok) return;
       const timedOut = await manager.execute(started.value.session_id, "slow");
@@ -172,7 +178,10 @@ process.stdin.resume();
       );
       await chmod(provider, 0o700);
 
-      const started = await manager.start({ path: "/tmp/fixture.bin", inferior_tty: await rizinTestInferiorTty() });
+      const started = await manager.start({
+        path: "/tmp/fixture.bin",
+        inferior_tty: await rizinTestInferiorTty(),
+      });
       expect(started.ok).toBe(true);
       if (!started.ok) return;
       await new Promise((resolveDelay) => setTimeout(resolveDelay, 100));

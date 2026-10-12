@@ -32,7 +32,10 @@ export const RIZIN_DEBUG_TOOL_CONTRACTS = [
       backend: z.string().nullable(),
     }),
     examples: [
-      { title: "Start Rizin debugger", input: { path: "/tmp/program", inferior_tty: "/dev/pts/7" } },
+      {
+        title: "Start Rizin debugger",
+        input: { path: "/tmp/program", inferior_tty: "/dev/pts/7" },
+      },
     ],
   },
   {

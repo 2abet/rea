@@ -14,7 +14,10 @@ describe("Rizin command timeout semantics", () => {
   });
 
   it("retains partial frames separated by newlines in the timeout error", () => {
-    const error = createRizinCommandTimeoutError(["first frame", "second frame"]);
+    const error = createRizinCommandTimeoutError([
+      "first frame",
+      "second frame",
+    ]);
 
     expect(error).toBeInstanceOf(RizinCommandTimeoutError);
     expect(error.partialOutput).toBe("first frame\nsecond frame");

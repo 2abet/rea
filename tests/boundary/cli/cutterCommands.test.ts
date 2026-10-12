@@ -29,7 +29,9 @@ const cutterCommand = async (
   return Reflect.apply(run, undefined, [{ args, options: { json: false } }]);
 };
 
-const listen = async (server: ReturnType<typeof createServer>): Promise<number> => {
+const listen = async (
+  server: ReturnType<typeof createServer>,
+): Promise<number> => {
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
   if (address === null || typeof address === "string")
@@ -53,10 +55,9 @@ describe("Cutter CLI commands", () => {
   it("lists sessions from the selected bridge directory", async () => {
     directory = await mkdtemp(join(tmpdir(), "rea-cutter-cli-test-"));
 
-    const result = await serveCli(
-      ["list-cutter-sessions", "--json"],
-      { REA_CUTTER_BRIDGE_DIR: directory },
-    );
+    const result = await serveCli(["list-cutter-sessions", "--json"], {
+      REA_CUTTER_BRIDGE_DIR: directory,
+    });
 
     expect(result.exitCode).toBe(0);
     expect(JSON.parse(result.stdout)).toMatchObject({

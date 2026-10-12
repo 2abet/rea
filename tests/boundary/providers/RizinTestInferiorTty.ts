@@ -15,7 +15,10 @@ export const rizinTestInferiorTty = (): Promise<string> => {
       encoding: "utf8",
     });
     let output = "";
-    const timer = setTimeout(() => reject(new Error("test TTY path timeout")), 2_000);
+    const timer = setTimeout(
+      () => reject(new Error("test TTY path timeout")),
+      2_000,
+    );
     terminal.onData((chunk) => {
       output += chunk;
       const match = /\/dev\/pts\/\d+/u.exec(output);

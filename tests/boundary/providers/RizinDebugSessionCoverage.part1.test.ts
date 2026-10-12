@@ -1,6 +1,9 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { RizinDebugSessionManager } from "../../../src/rizin/RizinDebugSessionManager.js";
-import { createRizinTestManager, rizinTestInferiorTty } from "./RizinTestInferiorTty.js";
+import {
+  createRizinTestManager,
+  rizinTestInferiorTty,
+} from "./RizinTestInferiorTty.js";
 import { rizinCommand } from "../../../src/rizin/RizinCommand.js";
 import { spawnOwnedProviderProcess } from "../../../src/process/ProviderProcess.js";
 import {
@@ -31,26 +34,44 @@ it.skipIf(process.platform === "win32")(
   "rejects unsupported, pre-cancelled, and failed startup requests",
   async () => {
     const windows = createRizinTestManager({}, { platform: "win32" });
-    expect((await windows.start({ path: "/tmp/a", inferior_tty: await rizinTestInferiorTty() })).ok).toBe(false);
+    expect(
+      (
+        await windows.start({
+          path: "/tmp/a",
+          inferior_tty: await rizinTestInferiorTty(),
+        })
+      ).ok,
+    ).toBe(false);
     const aborted = new AbortController();
     aborted.abort();
-    expect((await windows.start({ path: "/tmp/a", inferior_tty: await rizinTestInferiorTty() }, aborted.signal)).ok).toBe(
-      false,
-    );
+    expect(
+      (
+        await windows.start(
+          { path: "/tmp/a", inferior_tty: await rizinTestInferiorTty() },
+          aborted.signal,
+        )
+      ).ok,
+    ).toBe(false);
 
     const failed = await makeProvider("process.exit(9);");
     const manager = createRizinTestManager({
       REA_RIZIN_COMMAND: failed,
     });
     track(manager);
-    const result = await manager.start({ path: "/tmp/a", inferior_tty: await rizinTestInferiorTty() });
+    const result = await manager.start({
+      path: "/tmp/a",
+      inferior_tty: await rizinTestInferiorTty(),
+    });
     expect(result.ok).toBe(false);
 
     const missing = createRizinTestManager({
       REA_RIZIN_COMMAND: missingProviderPath(),
     });
     track(missing);
-    const spawnFailure = await missing.start({ path: "/tmp/a", inferior_tty: await rizinTestInferiorTty() });
+    const spawnFailure = await missing.start({
+      path: "/tmp/a",
+      inferior_tty: await rizinTestInferiorTty(),
+    });
     expect(spawnFailure.ok).toBe(false);
   },
 );
@@ -63,7 +84,10 @@ it.skipIf(process.platform === "win32")(
       REA_RIZIN_COMMAND: provider,
     });
     track(manager);
-    const result = await manager.start({ path: "/tmp/early-exit", inferior_tty: await rizinTestInferiorTty() });
+    const result = await manager.start({
+      path: "/tmp/early-exit",
+      inferior_tty: await rizinTestInferiorTty(),
+    });
     expect(result.ok).toBe(false);
   },
 );
@@ -89,7 +113,10 @@ it.skipIf(process.platform === "win32")(
     track(manager);
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     try {
-      const starting = manager.start({ path: "/tmp/no-startup-frame", inferior_tty: await rizinTestInferiorTty() });
+      const starting = manager.start({
+        path: "/tmp/no-startup-frame",
+        inferior_tty: await rizinTestInferiorTty(),
+      });
       await spawned;
       await vi.advanceTimersByTimeAsync(30_001);
       const result = await starting;
@@ -115,7 +142,10 @@ it.skipIf(process.platform === "win32")(
       },
     );
     const result = await manager.start(
-      { path: "/tmp/cancel-before-spawn", inferior_tty: await rizinTestInferiorTty() },
+      {
+        path: "/tmp/cancel-before-spawn",
+        inferior_tty: await rizinTestInferiorTty(),
+      },
       abortOnCheck(2),
     );
     expect(result.ok).toBe(false);
@@ -186,8 +216,13 @@ it.skipIf(process.platform === "win32")(
     const started = await Promise.all(starts);
     expect(started.every((result) => result.ok)).toBe(true);
     await closing;
-    expect(manager.status(started[0]!.ok ? started[0]!.value.session_id : "missing")).toBeUndefined();
-    expect((await manager.start({ path: "/tmp/after-close-all", inferior_tty: tty })).ok).toBe(false);
+    expect(
+      manager.status(started[0]!.ok ? started[0]!.value.session_id : "missing"),
+    ).toBeUndefined();
+    expect(
+      (await manager.start({ path: "/tmp/after-close-all", inferior_tty: tty }))
+        .ok,
+    ).toBe(false);
     expect((await manager.close("missing")).ok).toBe(false);
   },
 );
@@ -203,7 +238,10 @@ it.skipIf(process.platform === "win32")(
     });
     track(manager);
 
-    const result = await manager.start({ path: "/tmp/oversized-startup", inferior_tty: await rizinTestInferiorTty() });
+    const result = await manager.start({
+      path: "/tmp/oversized-startup",
+      inferior_tty: await rizinTestInferiorTty(),
+    });
 
     expect(result.ok).toBe(false);
   },
@@ -219,18 +257,24 @@ it.skipIf(process.platform === "win32")(
     const provider = await makeProvider(
       'setTimeout(() => process.stdout.write("\\0"), 500); process.stdin.resume();',
     );
-    const manager = createRizinTestManager({
-      REA_RIZIN_COMMAND: provider,
-    }, {
-      spawnProcess: async (options) => {
-        const launched = await spawnOwnedProviderProcess(options);
-        resolveSpawned();
-        return launched;
+    const manager = createRizinTestManager(
+      {
+        REA_RIZIN_COMMAND: provider,
       },
-    });
+      {
+        spawnProcess: async (options) => {
+          const launched = await spawnOwnedProviderProcess(options);
+          resolveSpawned();
+          return launched;
+        },
+      },
+    );
     track(manager);
     const abort = new AbortController();
-    const starting = manager.start({ path: "/tmp/cancel-start", inferior_tty: await rizinTestInferiorTty() }, abort.signal);
+    const starting = manager.start(
+      { path: "/tmp/cancel-start", inferior_tty: await rizinTestInferiorTty() },
+      abort.signal,
+    );
     await spawned;
     abort.abort();
     expect((await starting).ok).toBe(false);
@@ -260,7 +304,10 @@ it.skipIf(process.platform === "win32")(
     );
     track(manager);
     const abort = new AbortController();
-    const starting = manager.start({ path: "/tmp/cancel-start", inferior_tty: await rizinTestInferiorTty() }, abort.signal);
+    const starting = manager.start(
+      { path: "/tmp/cancel-start", inferior_tty: await rizinTestInferiorTty() },
+      abort.signal,
+    );
     await spawned;
     abort.abort();
     const result = await starting;

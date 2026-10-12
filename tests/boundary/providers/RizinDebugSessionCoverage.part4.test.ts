@@ -1,13 +1,17 @@
 import { afterEach, expect, it } from "vitest";
 import { RizinDebugSessionManager } from "../../../src/rizin/RizinDebugSessionManager.js";
-import { createRizinTestManager, rizinTestInferiorTty } from "./RizinTestInferiorTty.js";
+import {
+  createRizinTestManager,
+  rizinTestInferiorTty,
+} from "./RizinTestInferiorTty.js";
 import {
   createRizinCoverageHarness,
   createInjectedProcess,
   incompleteStop,
 } from "./RizinDebugSessionCoverage.fixtures.js";
 
-const { cleanup, makeProvider, start, track } = createRizinCoverageHarness();
+const { cleanup, makeProvider, start, startInjected, track } =
+  createRizinCoverageHarness();
 afterEach(cleanup);
 
 it.skipIf(process.platform === "win32")(
@@ -25,16 +29,10 @@ it.skipIf(process.platform === "win32")(
           });
       },
     });
-    const manager = createRizinTestManager(
-      { REA_RIZIN_COMMAND: "injected-rizin" },
-      {
-        spawnProcess: injected.spawnProcess,
-        frameTimeoutMs: 1000,
-        stopProcess: async () => ({ status: "stopped" }),
-      },
-    );
-    track(manager);
-    const started = await manager.start({ path: "/tmp/injected", inferior_tty: await rizinTestInferiorTty() });
+    const { manager, started } = await startInjected(injected.spawnProcess, {
+      frameTimeoutMs: 1000,
+      stopProcess: async () => ({ status: "stopped" }),
+    });
     expect(started.ok).toBe(true);
     if (!started.ok) return;
     const result = await manager.execute(started.value.session_id, "large");
@@ -47,12 +45,7 @@ it.skipIf(process.platform === "win32")(
   "closes an injected session on an oversized unsolicited frame",
   async () => {
     const injected = createInjectedProcess();
-    const manager = createRizinTestManager(
-      { REA_RIZIN_COMMAND: "injected-rizin" },
-      { spawnProcess: injected.spawnProcess },
-    );
-    track(manager);
-    const started = await manager.start({ path: "/tmp/injected", inferior_tty: await rizinTestInferiorTty() });
+    const { manager, started } = await startInjected(injected.spawnProcess);
     expect(started.ok).toBe(true);
     if (!started.ok) return;
     injected.control.output(Buffer.alloc(16 * 1024 * 1024 + 1, 0x61));

@@ -5,7 +5,10 @@ import { join } from "node:path";
 import { PassThrough, Writable } from "node:stream";
 
 import { RizinDebugSessionManager } from "../../../src/rizin/RizinDebugSessionManager.js";
-import { createRizinTestManager, rizinTestInferiorTty } from "./RizinTestInferiorTty.js";
+import {
+  createRizinTestManager,
+  rizinTestInferiorTty,
+} from "./RizinTestInferiorTty.js";
 import { stopOwnedDebuggerProcess } from "../../../src/process/ownedDebuggerSession.js";
 import type {
   ProviderProcessHandle,
@@ -20,7 +23,9 @@ interface InjectedProcessControl {
 }
 
 type InjectedSpawnProcess = NonNullable<
-  NonNullable<ConstructorParameters<typeof RizinDebugSessionManager>[1]>["spawnProcess"]
+  NonNullable<
+    ConstructorParameters<typeof RizinDebugSessionManager>[1]
+  >["spawnProcess"]
 >;
 
 export const incompleteStop: typeof stopOwnedDebuggerProcess = async (
@@ -70,10 +75,7 @@ export const createInjectedProcess = (
       | "throws"
       | "throws-opaque"
       | "write-error";
-    readonly onWrite?: (
-      text: string,
-      control: InjectedProcessControl,
-    ) => void;
+    readonly onWrite?: (text: string, control: InjectedProcessControl) => void;
     readonly startup?: (control: InjectedProcessControl) => void;
     readonly beforeSpawnReturns?: () => void;
     readonly spawnError?: unknown;
@@ -189,18 +191,45 @@ export const createRizinCoverageHarness = () => {
       options,
     );
     track(manager);
-    const result = await manager.start({ path: "/tmp/coverage-target", inferior_tty: await rizinTestInferiorTty() });
+    const result = await manager.start({
+      path: "/tmp/coverage-target",
+      inferior_tty: await rizinTestInferiorTty(),
+    });
     if (!result.ok) throw result.error;
     return { manager, sessionId: result.value.session_id };
   };
+  const startInjected = async (
+    spawnProcess: InjectedSpawnProcess,
+    options: ConstructorParameters<typeof RizinDebugSessionManager>[1] = {},
+  ) => {
+    const manager = createRizinTestManager(
+      { REA_RIZIN_COMMAND: "injected-rizin" },
+      { ...options, spawnProcess },
+    );
+    track(manager);
+    const started = await manager.start({
+      path: "/tmp/injected",
+      inferior_tty: await rizinTestInferiorTty(),
+    });
+    return { manager, started };
+  };
   const cleanup = async (): Promise<void> => {
     await Promise.all(
-      managers.splice(0).map((manager) => manager.closeAll().catch(() => undefined)),
+      managers
+        .splice(0)
+        .map((manager) => manager.closeAll().catch(() => undefined)),
     );
     if (directory !== undefined)
       await rm(directory, { recursive: true, force: true });
     directory = undefined;
   };
   const missingProviderPath = (): string => join(directory!, "does-not-exist");
-  return { cleanup, makeProvider, missingProviderPath, start, track };
+  return {
+    cleanup,
+    makeProvider,
+    missingProviderPath,
+    start,
+    startInjected,
+    track,
+  };
 };

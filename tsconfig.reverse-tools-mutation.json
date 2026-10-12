@@ -1,6 +1,7 @@
 {
   "extends": "./tsconfig.json",
   "include": [
+    "src/frida/frida-bindings.d.ts",
     "src/application/reverse/ReverseEngineeringService.ts",
     "src/cli/reverseEngineeringCommands.ts",
     "src/cutter/CutterBridgeClient.ts",

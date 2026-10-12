@@ -1,56 +1,62 @@
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
-import { expect, it, onTestFinished } from "vitest";
+import type { Client } from "@modelcontextprotocol/client";
+import { expect, it } from "vitest";
 
-import { createServer } from "../../../src/server/createServer.js";
-import { createTestBinarySession } from "../../fixtures/binarySession.js";
+import { createProviderEnvironmentMcpHarness } from "../../support/reverseDebuggerMcpTestHelpers.js";
+
+const writeProvider = async (path: string, output: string): Promise<void> => {
+  await writeFile(
+    path,
+    `#!${process.execPath}\nprocess.stdout.write('${output}');\n`,
+  );
+  await chmod(path, 0o755);
+};
+
+const connectProviderClient = (options: {
+  readonly directory: string;
+  readonly clientName: string;
+  readonly configuredProvider: string;
+  readonly providerEnvironment?: { REA_RIZIN_COMMAND: string };
+}) =>
+  createProviderEnvironmentMcpHarness({
+    directory: options.directory,
+    clientName: options.clientName,
+    serverOptions: {
+      environment: { REA_RIZIN_COMMAND: options.configuredProvider },
+      ...(options.providerEnvironment === undefined
+        ? {}
+        : { providerEnvironment: options.providerEnvironment }),
+    },
+  });
+
+const executeRizinCommand = async (
+  client: Client,
+  artifact: string,
+): Promise<Awaited<ReturnType<Client["callTool"]>>> => {
+  const response = await client.callTool({
+    name: "execute_rizin_command",
+    arguments: { path: artifact, command: "iI" },
+  });
+  expect(response.isError).not.toBe(true);
+  return response;
+};
 
 it("uses the captured server environment to resolve reverse-engineering providers", async () => {
   const directory = await mkdtemp(join(tmpdir(), "rea-provider-environment-"));
   const provider = join(directory, "selected-rizin");
   const artifact = join(directory, "fixture.bin");
   await writeFile(artifact, "fixture");
-  await writeFile(
-    provider,
-    "#!/usr/bin/env node\nprocess.stdout.write('captured-environment-provider');\n",
-  );
-  await chmod(provider, 0o755);
+  await writeProvider(provider, "captured-environment-provider");
 
-  const session = createTestBinarySession(() => {
-    throw new Error("No binary analysis provider should start");
+  const { client } = await connectProviderClient({
+    directory,
+    clientName: "reverse-provider-environment",
+    configuredProvider: provider,
   });
-  const server = createServer(
-    { kind: "session", session },
-    {
-      environment: {
-        REA_RIZIN_COMMAND: provider,
-      },
-    },
-  );
-  const client = new Client({
-    name: "reverse-provider-environment",
-    version: "1",
-  });
-  onTestFinished(async () => {
-    await client.close();
-    await server.close();
-    await session.close();
-    await rm(directory, { recursive: true, force: true });
-  });
-
-  const [clientTransport, serverTransport] =
-    InMemoryTransport.createLinkedPair();
-  await server.connect(serverTransport);
-  await client.connect(clientTransport);
-  const response = await client.callTool({
-    name: "execute_rizin_command",
-    arguments: { path: artifact, command: "iI" },
-  });
-
-  expect(response.isError).not.toBe(true);
+  const response = await executeRizinCommand(client, artifact);
   expect(JSON.stringify(response.structuredContent)).toContain(
     "captured-environment-provider",
   );
@@ -66,42 +72,16 @@ it("prefers an explicit provider environment over the captured server environmen
     [configured, "captured"],
     [override, "explicit-override"],
   ] as const) {
-    await writeFile(
-      path,
-      `#!/usr/bin/env node\nprocess.stdout.write('${output}');\n`,
-    );
-    await chmod(path, 0o755);
+    await writeProvider(path, output);
   }
-  const session = createTestBinarySession(() => {
-    throw new Error("No binary analysis provider should start");
+  const { client } = await connectProviderClient({
+    directory,
+    clientName: "reverse-provider-override",
+    configuredProvider: configured,
+    providerEnvironment: { REA_RIZIN_COMMAND: override },
   });
-  const server = createServer(
-    { kind: "session", session },
-    {
-      environment: { REA_RIZIN_COMMAND: configured },
-      providerEnvironment: { REA_RIZIN_COMMAND: override },
-    },
-  );
-  const client = new Client({
-    name: "reverse-provider-override",
-    version: "1",
-  });
-  onTestFinished(async () => {
-    await client.close();
-    await server.close();
-    await session.close();
-    await rm(directory, { recursive: true, force: true });
-  });
-  const [clientTransport, serverTransport] =
-    InMemoryTransport.createLinkedPair();
-  await server.connect(serverTransport);
-  await client.connect(clientTransport);
 
-  const response = await client.callTool({
-    name: "execute_rizin_command",
-    arguments: { path: artifact, command: "iI" },
-  });
-  expect(response.isError).not.toBe(true);
+  const response = await executeRizinCommand(client, artifact);
   expect(JSON.stringify(response.structuredContent)).toContain(
     "explicit-override",
   );
@@ -120,44 +100,18 @@ it("snapshots an explicit provider environment when the server is created", asyn
     [configured, "captured"],
     [override, "explicit-snapshot"],
   ] as const) {
-    await writeFile(
-      path,
-      `#!/usr/bin/env node\nprocess.stdout.write('${output}');\n`,
-    );
-    await chmod(path, 0o755);
+    await writeProvider(path, output);
   }
   const providerEnvironment = { REA_RIZIN_COMMAND: override };
-  const session = createTestBinarySession(() => {
-    throw new Error("No binary analysis provider should start");
+  const { client } = await connectProviderClient({
+    directory,
+    clientName: "reverse-provider-snapshot",
+    configuredProvider: configured,
+    providerEnvironment,
   });
-  const server = createServer(
-    { kind: "session", session },
-    {
-      environment: { REA_RIZIN_COMMAND: configured },
-      providerEnvironment,
-    },
-  );
   providerEnvironment.REA_RIZIN_COMMAND = configured;
-  const client = new Client({
-    name: "reverse-provider-snapshot",
-    version: "1",
-  });
-  onTestFinished(async () => {
-    await client.close();
-    await server.close();
-    await session.close();
-    await rm(directory, { recursive: true, force: true });
-  });
-  const [clientTransport, serverTransport] =
-    InMemoryTransport.createLinkedPair();
-  await server.connect(serverTransport);
-  await client.connect(clientTransport);
 
-  const response = await client.callTool({
-    name: "execute_rizin_command",
-    arguments: { path: artifact, command: "iI" },
-  });
-  expect(response.isError).not.toBe(true);
+  const response = await executeRizinCommand(client, artifact);
   expect(JSON.stringify(response.structuredContent)).toContain(
     "explicit-snapshot",
   );

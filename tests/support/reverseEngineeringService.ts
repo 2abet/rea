@@ -14,7 +14,8 @@ export class TestReverseEngineeringService extends ReverseEngineeringService {
     super({
       ...options,
       environment,
-      commands: options.commands ?? createReverseEngineeringCommandPort(environment),
+      commands:
+        options.commands ?? createReverseEngineeringCommandPort(environment),
     });
   }
 }

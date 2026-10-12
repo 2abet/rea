@@ -1,51 +1,24 @@
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
 import { McpServer } from "@modelcontextprotocol/server";
-import { Ajv2020 } from "ajv/dist/2020.js";
 import { expect, it } from "vitest";
 import { z } from "zod";
 
-import { toolContract } from "../../../src/contracts/toolContracts.js";
 import { RizinDebugSessionManager } from "../../../src/rizin/RizinDebugSessionManager.js";
-import { createRizinTestManager, rizinTestInferiorTty } from "../providers/RizinTestInferiorTty.js";
+import {
+  createRizinTestManager,
+  rizinTestInferiorTty,
+} from "../providers/RizinTestInferiorTty.js";
 import { silentLogger } from "../../../src/logger.js";
 import { registerRizinDebugTools } from "../../../src/server/registerRizinDebugTools.js";
 import { createToolResultDelivery } from "../../../src/server/toolResult.js";
-
-const waitForFile = async (path: string): Promise<void> => {
-  await expect
-    .poll(() => readFile(path, "utf8").catch(() => ""))
-    .toBe("started");
-};
-
-const validateStatusResponse = async (
-  client: Client,
-  name: "rizin_debug_session_status",
-  sessionId: string,
-): Promise<Record<string, unknown>> => {
-  const listed = (await client.listTools()).tools.find(
-    (tool) => tool.name === name,
-  );
-  if (listed?.outputSchema === undefined)
-    throw new Error(`Missing advertised ${name} output schema`);
-  const response = await client.callTool({
-    name,
-    arguments: { session_id: sessionId },
-  });
-  expect(response.isError).not.toBe(true);
-  const contract = toolContract(name);
-  const parsed = contract.outputSchema.parse(response.structuredContent);
-  expect(
-    new Ajv2020({ strict: false, validateFormats: false }).validate(
-      z.record(z.string(), z.unknown()).parse(listed.outputSchema),
-      parsed,
-    ),
-  ).toBe(true);
-  return z.record(z.string(), z.unknown()).parse(parsed);
-};
+import {
+  validateDebuggerStatusResponse,
+  waitForStartedFile,
+} from "../../support/reverseDebuggerMcpTestHelpers.js";
 
 it.skipIf(process.platform === "win32")(
   "propagates MCP cancellation into a running Rizin debugger command",
@@ -101,10 +74,10 @@ process.stdin.on("data", async (chunk) => {
         },
         { signal: controller.signal },
       );
-      await waitForFile(commandPath);
+      await waitForStartedFile(commandPath);
       controller.abort();
       await expect(command).rejects.toThrow(/abort/iu);
-      const status = await validateStatusResponse(
+      const status = await validateDebuggerStatusResponse(
         client,
         "rizin_debug_session_status",
         sessionId,

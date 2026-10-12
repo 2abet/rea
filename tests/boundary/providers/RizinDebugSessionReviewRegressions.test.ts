@@ -5,10 +5,32 @@ import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
 
 import { RizinDebugSessionManager } from "../../../src/rizin/RizinDebugSessionManager.js";
-import { createRizinTestManager, rizinTestInferiorTty } from "./RizinTestInferiorTty.js";
+import {
+  createRizinTestManager,
+  rizinTestInferiorTty,
+} from "./RizinTestInferiorTty.js";
 
 let directory: string | undefined;
 const managers: Array<{ closeAll(): Promise<void> }> = [];
+
+const startRizinWithProvider = async (
+  provider: string,
+): Promise<{
+  manager: RizinDebugSessionManager;
+  sessionId: string | undefined;
+}> => {
+  const manager = createRizinTestManager({ REA_RIZIN_COMMAND: provider });
+  managers.push(manager);
+  const started = await manager.start({
+    path: "/tmp/fixture.bin",
+    inferior_tty: await rizinTestInferiorTty(),
+  });
+  expect(started.ok).toBe(true);
+  return {
+    manager,
+    sessionId: started.ok ? started.value.session_id : undefined,
+  };
+};
 
 const expectOwnedProcessExited = async (pidText: string): Promise<void> => {
   const pid = Number(pidText);
@@ -31,13 +53,61 @@ it("keeps persistent Rizin sessions unavailable on Windows", async () => {
   const rizin = await createRizinTestManager(
     { REA_RIZIN_COMMAND: "/missing/rizin" },
     { platform: "win32" },
-  ).start({ path: "/tmp/fixture.bin", inferior_tty: await rizinTestInferiorTty() });
+  ).start({
+    path: "/tmp/fixture.bin",
+    inferior_tty: await rizinTestInferiorTty(),
+  });
   expect(rizin.ok).toBe(false);
   if (!rizin.ok) {
     expect(rizin.error._tag).toBe("AnalysisCapabilityUnavailableError");
     expect(rizin.error.message).toContain("Linux /proc descriptor readback");
   }
 });
+
+it.skipIf(process.platform === "win32")(
+  "preserves command parameters in Rizin observation evidence",
+  async () => {
+    directory = await mkdtemp(join(tmpdir(), "rea-rizin-command-evidence-"));
+    const provider = join(directory, "fake-rizin-command-evidence.mjs");
+    const inferiorTty = await rizinTestInferiorTty();
+    await writeFile(
+      provider,
+      `#!/usr/bin/env node
+process.stdout.write("\\0");
+let input = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => {
+  input += chunk;
+  for (;;) {
+    const boundary = input.indexOf("\\n"); if (boundary < 0) break;
+    const line = input.slice(0, boundary); input = input.slice(boundary + 1);
+    if (!line.startsWith("!echo ")) process.stdout.write("command output\\0");
+    else process.stdout.write(line.slice(6) + "\\0");
+  }
+});
+`,
+    );
+    await chmod(provider, 0o700);
+    const manager = createRizinTestManager({ REA_RIZIN_COMMAND: provider });
+    managers.push(manager);
+    const started = await manager.start({
+      path: "/tmp/fixture.bin",
+      inferior_tty: inferiorTty,
+    });
+    expect(started.ok).toBe(true);
+    if (!started.ok) return;
+
+    const executed = await manager.execute(started.value.session_id, "dr");
+
+    expect(executed.ok).toBe(true);
+    if (executed.ok)
+      expect(executed.value.evidence.parameters).toEqual({
+        session_id: started.value.session_id,
+        command: "dr",
+        inferior_tty: inferiorTty,
+      });
+  },
+);
 
 it.skipIf(process.platform === "win32")(
   "keeps queued Rizin commands serialized when a waiting request is cancelled",
@@ -69,23 +139,14 @@ process.stdin.on("data", (chunk) => {
 `,
     );
     await chmod(provider, 0o700);
-    const manager = createRizinTestManager({
-      REA_RIZIN_COMMAND: provider,
-    });
-    managers.push(manager);
-    const started = await manager.start({ path: "/tmp/fixture.bin", inferior_tty: await rizinTestInferiorTty() });
-    expect(started.ok).toBe(true);
-    if (!started.ok) return;
-    const first = manager.execute(started.value.session_id, "first");
+    const { manager, sessionId } = await startRizinWithProvider(provider);
+    if (sessionId === undefined) return;
+    const first = manager.execute(sessionId, "first");
     const controller = new AbortController();
-    const second = manager.execute(
-      started.value.session_id,
-      "second",
-      controller.signal,
-    );
+    const second = manager.execute(sessionId, "second", controller.signal);
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 20));
     controller.abort();
-    const third = manager.execute(started.value.session_id, "third");
+    const third = manager.execute(sessionId, "third");
     expect((await second).ok).toBe(false);
     expect((await first).ok).toBe(true);
     expect((await third).ok).toBe(true);
@@ -119,15 +180,10 @@ process.stdin.on("data", (chunk) => {
 `,
     );
     await chmod(provider, 0o700);
-    const manager = createRizinTestManager({
-      REA_RIZIN_COMMAND: provider,
-    });
-    managers.push(manager);
-    const started = await manager.start({ path: "/tmp/fixture.bin", inferior_tty: await rizinTestInferiorTty() });
-    expect(started.ok).toBe(true);
-    if (!started.ok) return;
+    const { manager, sessionId } = await startRizinWithProvider(provider);
+    if (sessionId === undefined) return;
 
-    const result = await manager.execute(started.value.session_id, "px");
+    const result = await manager.execute(sessionId, "px");
 
     expect(result.ok, result.ok ? "" : result.error.message).toBe(true);
     if (result.ok) {
@@ -138,8 +194,13 @@ process.stdin.on("data", (chunk) => {
         output_truncated: true,
         completion_status: "unknown",
       });
+      expect(result.value.evidence.parameters).toMatchObject({
+        session_id: sessionId,
+        command: "px",
+        inferior_tty: expect.any(String),
+      });
     }
-    expect(manager.status(started.value.session_id)?.state).toBe("closed");
+    expect(manager.status(sessionId)?.state).toBe("closed");
   },
 );
 
@@ -159,21 +220,19 @@ process.stdin.on("data", (chunk) => {
   for (;;) {
     const boundary = input.indexOf("\\n"); if (boundary < 0) break;
     const line = input.slice(0, boundary); input = input.slice(boundary + 1);
-    if (!line.startsWith("!echo ")) process.stdout.write("x".repeat(10 * 1024 * 1024) + "\\0" + "y".repeat(10 * 1024 * 1024) + "\\0");
+    if (line.startsWith("!echo ")) process.stdout.write(line.slice(6) + "\\0");
+    else if (line === "olj") process.stdout.write(JSON.stringify([{ fd: 12, raised: true, uri: "ptrace://" + process.ppid }]) + "\\0");
+    else if (line === "px") process.stdout.write("x".repeat(10 * 1024 * 1024) + "\\0" + "y".repeat(10 * 1024 * 1024) + "\\0");
+    else process.stdout.write("\\0");
   }
 });
 `,
     );
     await chmod(provider, 0o700);
-    const manager = createRizinTestManager({
-      REA_RIZIN_COMMAND: provider,
-    });
-    managers.push(manager);
-    const started = await manager.start({ path: "/tmp/fixture.bin", inferior_tty: await rizinTestInferiorTty() });
-    expect(started.ok).toBe(true);
-    if (!started.ok) return;
+    const { manager, sessionId } = await startRizinWithProvider(provider);
+    if (sessionId === undefined) return;
 
-    const result = await manager.execute(started.value.session_id, "px");
+    const result = await manager.execute(sessionId, "px");
 
     expect(result.ok, result.ok ? "" : result.error.message).toBe(true);
     if (result.ok) {
@@ -185,7 +244,7 @@ process.stdin.on("data", (chunk) => {
         completion_status: "unknown",
       });
     }
-    expect(manager.status(started.value.session_id)?.state).toBe("closed");
+    expect(manager.status(sessionId)?.state).toBe("closed");
   },
 );
 
@@ -209,7 +268,10 @@ process.stdin.on("data", () => process.stdout.write("retained\\0"));
       { frameTimeoutMs: 40 },
     );
     managers.push(manager);
-    const started = await manager.start({ path: "/tmp/fixture.bin", inferior_tty: await rizinTestInferiorTty() });
+    const started = await manager.start({
+      path: "/tmp/fixture.bin",
+      inferior_tty: await rizinTestInferiorTty(),
+    });
     expect(started.ok).toBe(true);
     if (!started.ok) return;
 
@@ -258,7 +320,10 @@ process.stdin.on("data", (chunk) => {
       { frameTimeoutMs: 5_000 },
     );
     managers.push(manager);
-    const started = await manager.start({ path: "/tmp/fixture.bin", inferior_tty: await rizinTestInferiorTty() });
+    const started = await manager.start({
+      path: "/tmp/fixture.bin",
+      inferior_tty: await rizinTestInferiorTty(),
+    });
     expect(started.ok).toBe(true);
     if (!started.ok) return;
     const controller = new AbortController();
@@ -294,7 +359,10 @@ process.stdin.resume();
       REA_RIZIN_COMMAND: provider,
     });
     managers.push(manager);
-    const started = await manager.start({ path: "/tmp/fixture.bin", inferior_tty: await rizinTestInferiorTty() });
+    const started = await manager.start({
+      path: "/tmp/fixture.bin",
+      inferior_tty: await rizinTestInferiorTty(),
+    });
     expect(started.ok).toBe(true);
     if (!started.ok) return;
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 50));
@@ -350,7 +418,10 @@ setInterval(() => {}, 1000);
       REA_RIZIN_COMMAND: provider,
     });
     managers.push(manager);
-    const started = await manager.start({ path: "/tmp/fixture.bin", inferior_tty: await rizinTestInferiorTty() });
+    const started = await manager.start({
+      path: "/tmp/fixture.bin",
+      inferior_tty: await rizinTestInferiorTty(),
+    });
     expect(started.ok).toBe(true);
     if (!started.ok) return;
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 80));
@@ -389,7 +460,10 @@ process.stdin.on("data", (chunk) => {
       REA_RIZIN_COMMAND: provider,
     });
     managers.push(manager);
-    const started = await manager.start({ path: "/tmp/fixture.bin", inferior_tty: await rizinTestInferiorTty() });
+    const started = await manager.start({
+      path: "/tmp/fixture.bin",
+      inferior_tty: await rizinTestInferiorTty(),
+    });
     expect(started.ok).toBe(true);
     if (!started.ok) return;
 

@@ -21,7 +21,7 @@ jobs:
           cache: npm
       - run: npm ci
       - uses: ./.github/actions/portable-build-cache
-      - run: npm run verify:browser:runtime
+      - run: env -u DBUS_SESSION_BUS_ADDRESS npm run verify:browser:runtime
         env:
           REA_BROWSER_EXECUTABLE: /usr/bin/google-chrome
           REA_BROWSER_NO_SANDBOX: "true"

@@ -142,10 +142,17 @@ it.each([
   "tests/boundary/providers/RizinCommandTimeout.test.ts",
   "tests/boundary/providers/RizinTimeoutEvidence.test.ts",
   "tests/boundary/providers/GdbSessionReviewRegressions.test.ts",
+  "tests/boundary/providers/gdbTestHelpers.ts",
   "tests/boundary/providers/RizinDebugSessionReviewRegressions.test.ts",
   "tests/boundary/mcp/gdbCancellationMcp.test.ts",
   "tests/boundary/mcp/rizinDebuggerCancellationMcp.test.ts",
   "tests/composition/reverseEngineeringAdmission.test.ts",
+  "tests/support/reverseEngineeringMcpHarness.ts",
+  "tests/support/reverseEngineeringCompositionEdgeCases.ts",
+  "tests/support/reverseEngineeringCompositionFixtures.ts",
+  "tests/support/reverseEngineeringService.ts",
+  "tests/support/ownedRizinCommandEvidenceTests.ts",
+  "tests/support/reverseDebuggerMcpTestHelpers.ts",
   "tests/boundary/cli/gdbStartupCleanupCli.test.ts",
   "vitest.reverse-tools.config.ts",
   "vitest.reverse-tools-semantics.config.ts",
@@ -180,12 +187,14 @@ const reverseToolsMutationConfig = JSON.parse(
     "utf8",
   ),
 ) as { include: string[] };
-const reverseToolsInputs = [...new Set([
-  ...reverseToolsVitestInputs,
-  ...reverseToolsMutationConfig.include.map((path) =>
-    path.replace(/^\.\//u, ""),
-  ),
-])];
+const reverseToolsInputs = [
+  ...new Set([
+    ...reverseToolsVitestInputs,
+    ...reverseToolsMutationConfig.include.map((path) =>
+      path.replace(/^\.\//u, ""),
+    ),
+  ]),
+];
 
 it.each(reverseToolsInputs)(
   "selects the reverse-tool quality gate for configured input %s",

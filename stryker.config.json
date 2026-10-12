@@ -41,7 +41,7 @@
     "src/process/ownedDebuggerSession.ts:28-51",
     "src/process/ownedDebuggerSession.ts:58-82",
     "src/rizin/RizinDebugSessionManager.ts:461-485",
-    "src/rizin/RizinDebugSessionManager.ts:731-732",
+    "src/rizin/RizinDebugSessionManager.ts:677-677",
     "src/cli/reverseEngineeringCommands.ts:211-211",
     "src/cli/reverseEngineeringCommands.ts:223-223"
   ],

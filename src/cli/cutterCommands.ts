@@ -33,8 +33,7 @@ export const registerCutterCommands = (
         .string()
         .uuid()
         .describe("Session ID copied from list-cutter-sessions."),
-      expectedGeneration: z
-        .coerce
+      expectedGeneration: z.coerce
         .number()
         .int()
         .nonnegative()

@@ -1,4 +1,4 @@
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -16,38 +16,10 @@ import { GdbSessionManager } from "../../../src/gdb/GdbSessionManager.js";
 import { silentLogger } from "../../../src/logger.js";
 import { registerGdbTools } from "../../../src/server/registerGdbTools.js";
 import { createToolResultDelivery } from "../../../src/server/toolResult.js";
-
-const waitForFile = async (path: string): Promise<void> => {
-  await expect
-    .poll(() => readFile(path, "utf8").catch(() => ""))
-    .toBe("started");
-};
-
-const validateStatusResponse = async (
-  client: Client,
-  name: "gdb_session_status",
-  sessionId: string,
-): Promise<Record<string, unknown>> => {
-  const listed = (await client.listTools()).tools.find(
-    (tool) => tool.name === name,
-  );
-  if (listed?.outputSchema === undefined)
-    throw new Error(`Missing advertised ${name} output schema`);
-  const response = await client.callTool({
-    name,
-    arguments: { session_id: sessionId },
-  });
-  expect(response.isError).not.toBe(true);
-  const contract = toolContract(name);
-  const parsed = contract.outputSchema.parse(response.structuredContent);
-  expect(
-    new Ajv2020({ strict: false, validateFormats: false }).validate(
-      z.record(z.string(), z.unknown()).parse(listed.outputSchema),
-      parsed,
-    ),
-  ).toBe(true);
-  return z.record(z.string(), z.unknown()).parse(parsed);
-};
+import {
+  validateDebuggerStatusResponse,
+  waitForStartedFile,
+} from "../../support/reverseDebuggerMcpTestHelpers.js";
 
 it.skipIf(process.platform === "win32")(
   "propagates MCP cancellation into a running GDB command",
@@ -57,7 +29,7 @@ it.skipIf(process.platform === "win32")(
     const commandPath = join(directory, "command-started");
     await writeFile(
       provider,
-      `#!/usr/bin/env node
+      `#!${process.execPath}
 process.stdout.write("(gdb)\\n");
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", async (chunk) => {
@@ -102,10 +74,10 @@ process.stdin.on("data", async (chunk) => {
         },
         { signal: controller.signal },
       );
-      await waitForFile(commandPath);
+      await waitForStartedFile(commandPath);
       controller.abort();
       await expect(command).rejects.toThrow(/abort/iu);
-      const status = await validateStatusResponse(
+      const status = await validateDebuggerStatusResponse(
         client,
         "gdb_session_status",
         sessionId,
@@ -128,7 +100,7 @@ it.skipIf(process.platform === "win32")(
     const tty = `${directory}/inferior-"terminal-Ω"`;
     await writeFile(
       provider,
-      `#!/usr/bin/env node
+      `#!${process.execPath}
 process.stdout.write("(gdb)\\n");
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", (chunk) => {
@@ -184,7 +156,7 @@ process.stdin.on("data", (chunk) => {
       const sessionId = z
         .object({ session_id: z.string().uuid() })
         .parse(started.structuredContent).session_id;
-      const status = await validateStatusResponse(
+      const status = await validateDebuggerStatusResponse(
         client,
         "gdb_session_status",
         sessionId,

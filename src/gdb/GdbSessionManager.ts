@@ -25,6 +25,7 @@ import {
 const STARTUP_TIMEOUT_MS = 10_000;
 const COMMAND_TIMEOUT_MS = 120_000;
 const MAX_COMMAND_OUTPUT_BYTES = 16 * 1024 * 1024;
+const MAX_COMMAND_OUTPUT_RECORDS = 16_384;
 const MAX_MI_LINE_BYTES = 16 * 1024 * 1024;
 const MAX_RECENT_MI_LINE_BYTES = 64 * 1024;
 const MAX_DIAGNOSTIC_BYTES = 64 * 1024;
@@ -136,6 +137,15 @@ class GdbCommandProcessExitError extends Error {
     super(
       `GDB exited before returning the active MI command result (exit code ${String(partial.process_exit_code)}, signal ${String(partial.process_exit_signal)}).`,
     );
+  }
+}
+
+class GdbProtocolFailureError extends Error {
+  constructor(
+    message: string,
+    readonly partial: GdbCommandResult,
+  ) {
+    super(message);
   }
 }
 
@@ -376,7 +386,9 @@ export class GdbSessionManager {
       { captureStdout: false, maxDiagnosticBytes: MAX_DIAGNOSTIC_BYTES },
     );
     let settleStdout!: () => void;
-    const stdoutSettled = new Promise<void>((resolve) => { settleStdout = resolve; });
+    const stdoutSettled = new Promise<void>((resolve) => {
+      settleStdout = resolve;
+    });
     const session: GdbSession = {
       id,
       miVersion,
@@ -416,17 +428,18 @@ export class GdbSessionManager {
     launched.process.stdin?.on("error", (cause: Error) =>
       this.#failProtocol(session, `GDB stdin stream failed: ${cause.message}`),
     );
-    launched.process.stdin?.once("close", () => {
-      if (!session.exited && session.protocolError === undefined)
-        this.#failProtocol(session, "GDB stdin stream closed unexpectedly.");
-    });
+    launched.process.stdin?.once("close", () =>
+      this.#failProtocol(session, "GDB stdin stream closed unexpectedly."),
+    );
     launched.process.once("exit", (code, signalCode) => {
       session.exited = true;
       session.exitCode = code;
       session.exitSignal = signalCode;
-      session.startupReject?.(
-        new Error(
-          `GDB exited during startup (exit code ${String(code)}, signal ${String(signalCode)}).`,
+      void this.#waitForStdoutSettlement(session).then(() =>
+        session.startupReject?.(
+          new Error(
+            `GDB exited during startup (exit code ${String(code)}, signal ${String(signalCode)}).`,
+          ),
         ),
       );
       void this.#settleExitedCommands(session, code, signalCode);
@@ -622,11 +635,7 @@ export class GdbSessionManager {
         };
         if (cause instanceof AnalysisTimeoutError)
           return err(
-            new AnalysisTimeoutError(
-              cause.operation,
-              cause.timeoutMs,
-              details,
-            ),
+            new AnalysisTimeoutError(cause.operation, cause.timeoutMs, details),
           );
         if (cause instanceof AnalysisCancelledError)
           return err(new AnalysisCancelledError(cause.operation, details));
@@ -1076,7 +1085,11 @@ export class GdbSessionManager {
     for (const line of lines) {
       for (const pending of session.pending.values()) {
         const lineBytes = Buffer.byteLength(line, "utf8") + 1;
-        if (pending.outputBytes + lineBytes <= session.maxCommandOutputBytes) {
+        if (
+          pending.outputBytes + lineBytes <= session.maxCommandOutputBytes &&
+          pending.outputBytes + lineBytes <= MAX_COMMAND_OUTPUT_BYTES &&
+          pending.lines.length < MAX_COMMAND_OUTPUT_RECORDS
+        ) {
           pending.lines.push(line);
           pending.outputBytes += lineBytes;
         } else pending.outputTruncated = true;
@@ -1106,12 +1119,24 @@ export class GdbSessionManager {
   }
 
   #failProtocol(session: GdbSession, message: string): void {
-    if (session.protocolError !== undefined) return;
+    if (session.exited || session.protocolError !== undefined) return;
     session.protocolError = message;
     for (const pending of session.pending.values()) {
       clearTimeout(pending.timer);
       pending.cleanup();
-      pending.reject(new Error(message));
+      const records = [...pending.lines];
+      pending.reject(
+        new GdbProtocolFailureError(message, {
+          command: pending.command,
+          mi: "",
+          records,
+          console: records.filter((line) => line.startsWith("~")).join("\n"),
+          target: records.filter((line) => line.startsWith("@")).join("\n"),
+          log: records.filter((line) => line.startsWith("&")).join("\n"),
+          output_truncated: pending.outputTruncated,
+          completion_status: "unknown",
+        }),
+      );
     }
     session.pending.clear();
     session.startupReject?.(new Error(message));
@@ -1122,13 +1147,45 @@ export class GdbSessionManager {
     cause: unknown,
   ): Promise<AnalysisCapabilityUnavailableError> {
     const stopped = await this.#stopDebuggerOnly(session);
+    const partial =
+      cause instanceof GdbProtocolFailureError ? cause.partial : undefined;
+    const partialObservation =
+      partial === undefined
+        ? undefined
+        : createEvidence(undefined, GDB_PROVIDER_IDENTITY, {
+            predicateType: "rea.debugger.console-observation",
+            operation: "gdb_console",
+            parameters: {
+              session_id: session.id,
+              command: partial.command,
+            },
+            result: { ...partial, records: [...partial.records] },
+            rawResult: { ...partial, records: [...partial.records] },
+            subjectUnavailableReason:
+              "The active GDB inferior identity is not established by the debugger session identifier.",
+            limitations: [
+              "The GDB MI protocol failed; retained records are partial and command completion is unknown.",
+              "The unrestricted GDB console can access local shell, filesystem, network, and target controls.",
+            ],
+          });
     return new AnalysisCapabilityUnavailableError(
       "gdb",
       "gdb_console",
       stopped.status === "incomplete"
         ? `${session.protocolError} The owned process could not be confirmed stopped: ${stopped.reason}`
         : session.protocolError!,
-      { cause },
+      {
+        cause,
+        ...(stopped.status === "incomplete"
+          ? {
+              cleanup: {
+                reason: stopped.reason,
+                resources: [session.id],
+              },
+            }
+          : {}),
+        ...(partialObservation === undefined ? {} : { partialObservation }),
+      },
     );
   }
 
@@ -1223,9 +1280,7 @@ export class GdbSessionManager {
           target: pending.lines
             .filter((line) => line.startsWith("@"))
             .join("\n"),
-          log: pending.lines
-            .filter((line) => line.startsWith("&"))
-            .join("\n"),
+          log: pending.lines.filter((line) => line.startsWith("&")).join("\n"),
           process_exit_observed: true,
           process_exit_code: code,
           process_exit_signal: signalCode,
@@ -1313,7 +1368,10 @@ export class GdbSessionManager {
               ? "rea.debugger.startup-observation"
               : "rea.debugger.console-observation",
           operation,
-          parameters: { session_id: session.id, command: pending.evidenceCommand },
+          parameters: {
+            session_id: session.id,
+            command: pending.evidenceCommand,
+          },
           result: { ...partial, records: [...partial.records] },
           rawResult: { ...partial, records: [...partial.records] },
           subjectUnavailableReason:
@@ -1420,7 +1478,10 @@ export class GdbSessionManager {
         const evidence = createEvidence(undefined, GDB_PROVIDER_IDENTITY, {
           predicateType: "rea.debugger.console-observation",
           operation: "gdb_console",
-          parameters: { session_id: session.id, command: pending.evidenceCommand },
+          parameters: {
+            session_id: session.id,
+            command: pending.evidenceCommand,
+          },
           result: { ...partial, records: [...partial.records] },
           rawResult: { ...partial, records: [...partial.records] },
           subjectUnavailableReason:
@@ -1491,7 +1552,10 @@ const miQuote = (value: string): string =>
   `"${value.replaceAll("\\", "\\\\").replaceAll('"', '\\"').replaceAll("\r", "\\r").replaceAll("\n", "\\n").replaceAll("\t", "\\t")}"`;
 
 /** @internal Decode one unambiguous GDB MI C-string field. */
-export const miStringField = (record: string, field: string): string | undefined => {
+export const miStringField = (
+  record: string,
+  field: string,
+): string | undefined => {
   const escapedField = field.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
   const valuePattern = `((?:\\\\.|[^"\\\\])*)`;
   const fieldPattern = new RegExp(
@@ -1571,7 +1635,9 @@ export const gdbOneShotCommandMayInvalidateDetachProof = (
   const firstToken = /^\s*([^\s;]+)/u.exec(command)?.[1]?.toLowerCase();
   if (
     firstToken !== undefined &&
-    (["source", "define"].some((name) => name.startsWith(firstToken)) ||
+    (["source", "define", "alias"].some((name) =>
+      name.startsWith(firstToken),
+    ) ||
       firstToken === "py" ||
       "python".startsWith(firstToken))
   )
@@ -1586,10 +1652,25 @@ export const commandMayChangeInferiorOutput = (command: string): boolean => {
   const setting = /^\s*(?:set|with)\s+(\S+)/iu.exec(command)?.[1];
   const maySetInferiorTty =
     setting !== undefined && "inferior-tty".startsWith(setting.toLowerCase());
-  return maySetInferiorTty ||
-  /\binferior-tty\b/iu.test(command) ||
-  /^\s*(?:tty(?:\s|$)|source\b|python(?:\s|$)|define\b)/iu.test(command) ||
-  /^\s*(?:run|r|start|starti)\b[^\n;]*(?:^|\s)(?:\d?>|>>|<|&>)/iu.test(command);
+  const firstToken = /^\s*([^\s;]+)/u.exec(command)?.[1]?.toLowerCase();
+  const mayBeTtyCommand =
+    firstToken !== undefined && "tty".startsWith(firstToken);
+  const mayDefineAlias =
+    firstToken !== undefined && "alias".startsWith(firstToken);
+  const mayRunWithOutputRedirection =
+    firstToken !== undefined &&
+    ["run", "start", "starti"].some((name) => name.startsWith(firstToken)) &&
+    /[<>]{1,2}|&>/u.test(command.slice(firstToken.length));
+  return (
+    maySetInferiorTty ||
+    mayBeTtyCommand ||
+    mayDefineAlias ||
+    /\binferior-tty\b/iu.test(command) ||
+    /^\s*(?:wit(?:h)?(?:\s|$)|tty(?:\s|$)|source\b|py\w*|define\b)/iu.test(
+      command,
+    ) ||
+    mayRunWithOutputRedirection
+  );
 };
 
 /** Terminate only the directly owned debugger process, never its process group or inferiors. */

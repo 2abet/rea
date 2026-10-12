@@ -19,8 +19,12 @@ it("bounds concurrent reverse-engineering provider calls", async () => {
   const service = new TestReverseEngineeringService({
     run: async () => {
       calls += 1;
-      if (mode === "failure") throw Object.assign(new Error("provider failed"), { code: "ENOENT" });
-      if (mode === "timeout") throw Object.assign(new Error("provider timed out"), { code: "ETIMEDOUT" });
+      if (mode === "failure")
+        throw Object.assign(new Error("provider failed"), { code: "ENOENT" });
+      if (mode === "timeout")
+        throw Object.assign(new Error("provider timed out"), {
+          code: "ETIMEDOUT",
+        });
       await gate;
       return { stdout: "", stderr: "" };
     },

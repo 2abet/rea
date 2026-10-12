@@ -73,8 +73,12 @@ export const createRizinCommandTimeoutEvidence = (
     limitations: [
       "The command timed out before its completion marker; retained output is partial and completion is unknown.",
       ...(cleanupFailure === undefined
-        ? ["The owned debugger session was stopped because output correlation could no longer be guaranteed."]
-        : [`The owned debugger session remains retained because cleanup could not be verified: ${cleanupFailure}`]),
+        ? [
+            "The owned debugger session was stopped because output correlation could no longer be guaranteed.",
+          ]
+        : [
+            `The owned debugger session remains retained because cleanup could not be verified: ${cleanupFailure}`,
+          ]),
       "The command is unrestricted and may access local files, the shell, network, or mutate the target.",
     ],
   });
@@ -455,6 +459,7 @@ export class RizinDebugSessionManager {
         throw new AnalysisCancelledError("rizin_debug_command");
       let cleanupFailure: string | undefined;
       if (captured.outputTruncated) {
+        // Stryker disable next-line BooleanLiteral -- `waitForCommandFrames` sets `protocolError` before reporting truncation; both detach wrappers therefore fail closed before a queued command can be awaited, so the held-tail flag cannot change this public path.
         const stopped = await this.#stopDebuggerOnly(session, true);
         if (stopped.status === "incomplete") cleanupFailure = stopped.reason;
       }
@@ -474,7 +479,11 @@ export class RizinDebugSessionManager {
         {
           predicateType: "rea.debugger.command-observation",
           operation: "rizin_debug_command",
-          parameters: { session_id: sessionId, command, inferior_tty: session.inferiorTty },
+          parameters: {
+            session_id: sessionId,
+            command,
+            inferior_tty: session.inferiorTty,
+          },
           result,
           rawResult: result,
           subjectUnavailableReason:
@@ -552,7 +561,11 @@ export class RizinDebugSessionManager {
           {
             predicateType: "rea.debugger.command-observation",
             operation: "rizin_debug_command",
-            parameters: { session_id: sessionId, command, inferior_tty: session.inferiorTty },
+            parameters: {
+              session_id: sessionId,
+              command,
+              inferior_tty: session.inferiorTty,
+            },
             result: { ...result },
             rawResult: { ...result },
             subjectUnavailableReason:
@@ -645,7 +658,9 @@ export class RizinDebugSessionManager {
   async closeAll(): Promise<void> {
     this.#closingAll = true;
     if (this.#activeStarts > 0)
-      await new Promise<void>((resolve) => this.#startDrainWaiters.push(resolve));
+      await new Promise<void>((resolve) =>
+        this.#startDrainWaiters.push(resolve),
+      );
     for (const session of this.#sessions.values()) session.closing = true;
     return closeOwnedDebuggerSessions(
       this.#sessions,
@@ -659,6 +674,14 @@ export class RizinDebugSessionManager {
     while (offset < chunk.length) {
       const boundary = chunk.indexOf(0, offset);
       const end = boundary < 0 ? chunk.length : boundary;
+      const nextOffset = boundary + 1;
+      if (boundary >= 0 && nextOffset <= offset) {
+        this.#failProtocol(
+          session,
+          "Rizin frame parser failed to advance past a NUL delimiter.",
+        );
+        return;
+      }
       const piece = chunk.subarray(offset, end);
       if (session.discardingOversizedFrame) {
         if (boundary < 0) return;
@@ -671,7 +694,7 @@ export class RizinDebugSessionManager {
           { text: frame, truncated: true },
           frameBytes,
         );
-        offset = boundary + 1;
+        offset = nextOffset;
         continue;
       }
       if (session.buffer.length + piece.length > MAX_FRAME_BYTES) {
@@ -700,7 +723,7 @@ export class RizinDebugSessionManager {
           { text: frame, truncated: true },
           frameBytes,
         );
-        offset = boundary + 1;
+        offset = nextOffset;
         continue;
       }
       session.buffer = Buffer.concat([session.buffer, piece]);
@@ -713,7 +736,7 @@ export class RizinDebugSessionManager {
         { text: frame, truncated: false },
         frameBytes,
       );
-      offset = boundary + 1;
+      offset = nextOffset;
     }
   }
 
@@ -781,9 +804,14 @@ export class RizinDebugSessionManager {
 
   async #detachInferior(
     session: RizinDebugSession,
-  ): Promise<{ readonly status: "no-inferior" } | { readonly status: "detached"; readonly outputSink: "durable" }> {
+  ): Promise<
+    | { readonly status: "no-inferior" }
+    | { readonly status: "detached"; readonly outputSink: "durable" }
+  > {
     if (session.exited || session.protocolError !== undefined)
-      throw new Error("Rizin protocol state is ambiguous; inferior detach is unverified.");
+      throw new Error(
+        "Rizin protocol state is ambiguous; inferior detach is unverified.",
+      );
     const previous = session.commandTail;
     let release!: () => void;
     session.commandTail = new Promise<void>((resolve) => (release = resolve));
@@ -797,22 +825,40 @@ export class RizinDebugSessionManager {
 
   async #detachInferiorUnlocked(
     session: RizinDebugSession,
-  ): Promise<{ readonly status: "no-inferior" } | { readonly status: "detached"; readonly outputSink: "durable" }> {
+  ): Promise<
+    | { readonly status: "no-inferior" }
+    | { readonly status: "detached"; readonly outputSink: "durable" }
+  > {
     if (session.exited || session.protocolError !== undefined)
-      throw new Error("Rizin protocol state is ambiguous; inferior detach is unverified.");
+      throw new Error(
+        "Rizin protocol state is ambiguous; inferior detach is unverified.",
+      );
     {
-      const initial = parseRizinPtraceRows(await this.#runInternalCommand(session, "olj"));
+      const initial = parseRizinPtraceRows(
+        await this.#runInternalCommand(session, "olj"),
+      );
       const inferior = initial;
       if (inferior.length === 0) return { status: "no-inferior" };
       if (inferior.length !== 1)
-        throw new Error("Rizin reported multiple or ambiguous ptrace inferiors.");
+        throw new Error(
+          "Rizin reported multiple or ambiguous ptrace inferiors.",
+        );
       const [fd, pid] = inferior[0]!;
       const processStartTime = await readProcStartTime(pid);
       await this.#verifyInferiorOutputConfiguration(session, pid);
       await this.#runInternalCommand(session, `o- ${fd}`);
-      const after = parseRizinPtraceRows(await this.#runInternalCommand(session, "olj"));
-      if (after.some(([activeFd, activePid]) => activeFd === fd || activePid === pid) || after.length !== 0)
-        throw new Error("Rizin did not confirm that the selected inferior FD was detached.");
+      const after = parseRizinPtraceRows(
+        await this.#runInternalCommand(session, "olj"),
+      );
+      if (
+        after.some(
+          ([activeFd, activePid]) => activeFd === fd || activePid === pid,
+        ) ||
+        after.length !== 0
+      )
+        throw new Error(
+          "Rizin did not confirm that the selected inferior FD was detached.",
+        );
       assertRizinProcessStartTimeStable(
         processStartTime,
         await readProcStartTime(pid),
@@ -826,27 +872,39 @@ export class RizinDebugSessionManager {
     session: RizinDebugSession,
     pid: string,
   ): Promise<void> {
-      const exitKills = (await this.#runInternalCommand(session, "e dbg.exitkills")).trim();
-      if (exitKills !== "false")
-        throw new Error("Rizin dbg.exitkills readback did not confirm false.");
-      for (const descriptor of ["1", "2"]) {
-        const descriptorPath = `/proc/${pid}/fd/${descriptor}`;
-        const destination = await readlink(descriptorPath);
-        const destinationStat = await stat(descriptorPath);
-        if (
-          destinationStat.dev !== session.inferiorTtyDevice ||
-          destinationStat.ino !== session.inferiorTtyInode ||
-          (destinationStat.mode & fsConstants.S_IFMT) !== fsConstants.S_IFCHR ||
-          await realpath(destination) !== session.inferiorTty
-        )
-          throw new Error(`Inferior descriptor ${descriptor} is not routed to the selected TTY.`);
-      }
+    const exitKills = (
+      await this.#runInternalCommand(session, "e dbg.exitkills")
+    ).trim();
+    if (exitKills !== "false")
+      throw new Error("Rizin dbg.exitkills readback did not confirm false.");
+    for (const descriptor of ["1", "2"]) {
+      const descriptorPath = `/proc/${pid}/fd/${descriptor}`;
+      const destination = await readlink(descriptorPath);
+      const destinationStat = await stat(descriptorPath);
+      if (
+        destinationStat.dev !== session.inferiorTtyDevice ||
+        destinationStat.ino !== session.inferiorTtyInode ||
+        (destinationStat.mode & fsConstants.S_IFMT) !== fsConstants.S_IFCHR ||
+        (await realpath(destination)) !== session.inferiorTty
+      )
+        throw new Error(
+          `Inferior descriptor ${descriptor} is not routed to the selected TTY.`,
+        );
+    }
   }
 
-  async #runInternalCommand(session: RizinDebugSession, command: string): Promise<string> {
+  async #runInternalCommand(
+    session: RizinDebugSession,
+    command: string,
+  ): Promise<string> {
     const marker = `__REA_CLEANUP_COMPLETE_${randomUUID().replaceAll("-", "")}__`;
     const stdin = session.launched.process.stdin;
-    if (stdin === null || stdin === undefined || stdin.destroyed || !stdin.writable)
+    if (
+      stdin === null ||
+      stdin === undefined ||
+      stdin.destroyed ||
+      !stdin.writable
+    )
       throw new Error("Rizin stdin is unavailable during cleanup.");
     stdin.write(`${command}\n!echo ${marker}\n`);
     const captured = await waitForCommandFrames(
@@ -856,7 +914,8 @@ export class RizinDebugSessionManager {
       undefined,
       this.#maxCommandOutputBytes,
     );
-    if (captured.outputTruncated) throw new Error("Rizin cleanup readback was truncated.");
+    if (captured.outputTruncated)
+      throw new Error("Rizin cleanup readback was truncated.");
     return captured.output;
   }
 
@@ -893,25 +952,30 @@ const parseRizinPtraceRows = (output: string): Array<[string, string]> => {
   } catch (cause) {
     throw new Error("Rizin returned malformed JSON for `olj`.", { cause });
   }
-  if (!Array.isArray(parsed)) throw new Error("Rizin `olj` response is not an array.");
+  if (!Array.isArray(parsed))
+    throw new Error("Rizin `olj` response is not an array.");
   const rows: Array<[string, string]> = [];
   for (const row of parsed) {
     if (
-      typeof row !== "object" || row === null ||
+      typeof row !== "object" ||
+      row === null ||
       typeof (row as { fd?: unknown }).fd !== "number" ||
       !Number.isSafeInteger((row as { fd: number }).fd) ||
       (row as { fd: number }).fd < 0 ||
       typeof (row as { raised?: unknown }).raised !== "boolean" ||
       typeof (row as { uri?: unknown }).uri !== "string"
-    ) throw new Error("Rizin `olj` response contains a malformed descriptor row.");
+    )
+      throw new Error(
+        "Rizin `olj` response contains a malformed descriptor row.",
+      );
     const uri = (row as { uri: string }).uri;
     const match = /^ptrace:\/\/(\d+)$/u.exec(uri);
     if (match !== null) {
       if ((row as { raised: boolean }).raised !== true)
         throw new Error("Rizin `olj` ptrace descriptor is not active.");
       rows.push([String((row as { fd: number }).fd), match[1]!]);
-    }
-    else if (uri.startsWith("ptrace://")) throw new Error("Rizin `olj` returned a malformed ptrace URI.");
+    } else if (uri.startsWith("ptrace://"))
+      throw new Error("Rizin `olj` returned a malformed ptrace URI.");
   }
   return rows;
 };
@@ -919,8 +983,12 @@ const parseRizinPtraceRows = (output: string): Array<[string, string]> => {
 /** @internal Pure parser kept separately testable from live `/proc` access. */
 export const parseRizinProcStartTime = (statContents: string): string => {
   const commandEnd = statContents.lastIndexOf(")");
-  if (commandEnd < 0) throw new Error("Inferior process identity is malformed.");
-  const fieldsAfterCommand = statContents.slice(commandEnd + 1).trim().split(/\s+/u);
+  if (commandEnd < 0)
+    throw new Error("Inferior process identity is malformed.");
+  const fieldsAfterCommand = statContents
+    .slice(commandEnd + 1)
+    .trim()
+    .split(/\s+/u);
   const startTime = fieldsAfterCommand[19];
   if (startTime === undefined || !/^\d+$/u.test(startTime))
     throw new Error("Inferior process start time could not be verified.");
@@ -933,7 +1001,9 @@ export const assertRizinProcessStartTimeStable = (
   after: string,
 ): void => {
   if (after !== before)
-    throw new Error("The inferior PID disappeared or was reused during detach verification.");
+    throw new Error(
+      "The inferior PID disappeared or was reused during detach verification.",
+    );
 };
 
 const readProcStartTime = async (pid: string): Promise<string> =>

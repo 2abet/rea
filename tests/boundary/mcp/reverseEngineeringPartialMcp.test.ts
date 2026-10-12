@@ -1,5 +1,4 @@
 import pino from "pino";
-import type { McpServer } from "@modelcontextprotocol/server";
 import { mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -19,20 +18,13 @@ import { err, ok } from "../../../src/domain/result.js";
 import type { WithAdmittedAnalysis } from "../../../src/server/analysisAdmission.js";
 import { createToolResultDelivery } from "../../../src/server/toolResult.js";
 import { registerReverseEngineeringTools } from "../../../src/server/registerReverseEngineeringTools.js";
+import {
+  createReverseEngineeringMcpHarness,
+  invokeWithLiveSignal,
+} from "../../support/reverseEngineeringMcpHarness.js";
 
-it("records partial Evidence and references it in the original MCP error", async () => {
-  const registrations = new Map<
-    string,
-    (input: unknown, context: unknown) => Promise<unknown>
-  >();
-  const server = {
-    registerTool: (
-      name: string,
-      _options: unknown,
-      handler: (input: unknown, context: unknown) => Promise<unknown>,
-    ) => registrations.set(name, handler),
-  } as unknown as McpServer;
-  const service = new ReverseEngineeringService({
+const createTimedOutRizinService = (): ReverseEngineeringService =>
+  new ReverseEngineeringService({
     run: async () => {
       throw Object.assign(new Error("timed out"), {
         stdout: "partial provider output",
@@ -43,6 +35,10 @@ it("records partial Evidence and references it in the original MCP error", async
       });
     },
   });
+
+it("records partial Evidence and references it in the original MCP error", async () => {
+  const { server, handler } = createReverseEngineeringMcpHarness();
+  const service = createTimedOutRizinService();
   const recordEvidence = vi.fn(() => ok("added" as const));
   registerReverseEngineeringTools(
     server,
@@ -51,14 +47,12 @@ it("records partial Evidence and references it in the original MCP error", async
     createToolResultDelivery(2 * 1024 * 1024),
     recordEvidence,
   );
-  const invoke = registrations.get("execute_rizin_command");
-  if (invoke === undefined)
-    throw new Error("Rizin MCP handler was not registered");
+  const invoke = handler("execute_rizin_command");
 
-  const response = (await invoke(
-    { path: "package.json", command: "iI" },
-    { mcpReq: { signal: new AbortController().signal } },
-  )) as {
+  const response = (await invokeWithLiveSignal(invoke, {
+    path: "package.json",
+    command: "iI",
+  })) as {
     readonly isError?: boolean;
     readonly structuredContent?: {
       readonly error?: {
@@ -78,17 +72,7 @@ it("records partial Evidence and references it in the original MCP error", async
 });
 
 it("admits Rizin mutation and rebinds after dispatch while invalidating first", async () => {
-  const registrations = new Map<
-    string,
-    (input: unknown, context: unknown) => Promise<unknown>
-  >();
-  const server = {
-    registerTool: (
-      name: string,
-      _options: unknown,
-      handler: (input: unknown, context: unknown) => Promise<unknown>,
-    ) => registrations.set(name, handler),
-  } as unknown as McpServer;
+  const { server, handler } = createReverseEngineeringMcpHarness();
   const events: string[] = [];
   const service = new ReverseEngineeringService({
     run: async () => {
@@ -111,9 +95,7 @@ it("admits Rizin mutation and rebinds after dispatch while invalidating first", 
       return ok(result);
     },
   );
-  const invoke = registrations.get("execute_rizin_command");
-  if (invoke === undefined)
-    throw new Error("Rizin MCP handler was not registered");
+  const invoke = handler("execute_rizin_command");
 
   await invoke(
     { path: "package.json", command: "iI" },
@@ -124,17 +106,7 @@ it("admits Rizin mutation and rebinds after dispatch while invalidating first", 
 });
 
 it("invalidates the snapshot in the legacy Rizin admission path", async () => {
-  const registrations = new Map<
-    string,
-    (input: unknown, context: unknown) => Promise<unknown>
-  >();
-  const server = {
-    registerTool: (
-      name: string,
-      _options: unknown,
-      handler: (input: unknown, context: unknown) => Promise<unknown>,
-    ) => registrations.set(name, handler),
-  } as unknown as McpServer;
+  const { server, handler } = createReverseEngineeringMcpHarness();
   const invalidateSnapshot = vi.fn();
   const service = new ReverseEngineeringService({
     run: async () => ({ stdout: "rizin output", stderr: "" }),
@@ -148,35 +120,26 @@ it("invalidates the snapshot in the legacy Rizin admission path", async () => {
     undefined,
     invalidateSnapshot,
   );
-  const invoke = registrations.get("execute_rizin_command");
-  if (invoke === undefined) throw new Error("Rizin MCP handler was not registered");
+  const invoke = handler("execute_rizin_command");
 
-  const response = (await invoke(
-    { path: "package.json", command: "iI" },
-    { mcpReq: { signal: new AbortController().signal } },
-  )) as { readonly isError?: boolean };
+  const response = (await invokeWithLiveSignal(invoke, {
+    path: "package.json",
+    command: "iI",
+  })) as { readonly isError?: boolean };
 
   expect(response.isError).not.toBe(true);
   expect(invalidateSnapshot).toHaveBeenCalledOnce();
 });
 
 it("skips snapshot invalidation for malformed Rizin input", async () => {
-  const registrations = new Map<
-    string,
-    (input: unknown, context: unknown) => Promise<unknown>
-  >();
-  const server = {
-    registerTool: (
-      name: string,
-      _options: unknown,
-      handler: (input: unknown, context: unknown) => Promise<unknown>,
-    ) => registrations.set(name, handler),
-  } as unknown as McpServer;
+  const { server, handler } = createReverseEngineeringMcpHarness();
   const invalidateSnapshot = vi.fn();
   const executeRizinCommand = vi.fn(async () =>
     err(new AnalysisInputError("execute_rizin_command")),
   );
-  const service = { executeRizinCommand } as unknown as ReverseEngineeringService;
+  const service = {
+    executeRizinCommand,
+  } as unknown as ReverseEngineeringService;
   registerReverseEngineeringTools(
     server,
     service,
@@ -186,13 +149,11 @@ it("skips snapshot invalidation for malformed Rizin input", async () => {
     undefined,
     invalidateSnapshot,
   );
-  const invoke = registrations.get("execute_rizin_command");
-  if (invoke === undefined) throw new Error("Rizin MCP handler was not registered");
+  const invoke = handler("execute_rizin_command");
 
-  const response = (await invoke(
-    { path: "package.json" },
-    { mcpReq: { signal: new AbortController().signal } },
-  )) as { readonly isError?: boolean };
+  const response = (await invokeWithLiveSignal(invoke, {
+    path: "package.json",
+  })) as { readonly isError?: boolean };
 
   expect(response.isError).toBe(true);
   expect(executeRizinCommand).toHaveBeenCalledOnce();
@@ -200,17 +161,7 @@ it("skips snapshot invalidation for malformed Rizin input", async () => {
 });
 
 it("delivers failed Rizin execution after external admission", async () => {
-  const registrations = new Map<
-    string,
-    (input: unknown, context: unknown) => Promise<unknown>
-  >();
-  const server = {
-    registerTool: (
-      name: string,
-      _options: unknown,
-      handler: (input: unknown, context: unknown) => Promise<unknown>,
-    ) => registrations.set(name, handler),
-  } as unknown as McpServer;
+  const { server, handler } = createReverseEngineeringMcpHarness();
   const service = new ReverseEngineeringService({
     run: async () => {
       throw new Error("Rizin command failed");
@@ -226,29 +177,18 @@ it("delivers failed Rizin execution after external admission", async () => {
     undefined,
     async (_path, _signal, operation) => ok(await operation()),
   );
-  const invoke = registrations.get("execute_rizin_command");
-  if (invoke === undefined) throw new Error("Rizin MCP handler was not registered");
+  const invoke = handler("execute_rizin_command");
 
-  const response = (await invoke(
-    { path: "package.json", command: "iI" },
-    { mcpReq: { signal: new AbortController().signal } },
-  )) as { readonly isError?: boolean };
+  const response = (await invokeWithLiveSignal(invoke, {
+    path: "package.json",
+    command: "iI",
+  })) as { readonly isError?: boolean };
 
   expect(response.isError).toBe(true);
 });
 
 it("reports rebind failure when admitted Rizin execution has no partial observation", async () => {
-  const registrations = new Map<
-    string,
-    (input: unknown, context: unknown) => Promise<unknown>
-  >();
-  const server = {
-    registerTool: (
-      name: string,
-      _options: unknown,
-      handler: (input: unknown, context: unknown) => Promise<unknown>,
-    ) => registrations.set(name, handler),
-  } as unknown as McpServer;
+  const { server, handler } = createReverseEngineeringMcpHarness();
   const service = {
     executeRizinCommand: async () =>
       err(new AnalysisInputError("execute_rizin_command")),
@@ -268,8 +208,7 @@ it("reports rebind failure when admitted Rizin execution has no partial observat
       return err(rebindFailure(result, new AnalysisInputError("rebind")));
     },
   );
-  const invoke = registrations.get("execute_rizin_command");
-  if (invoke === undefined) throw new Error("Rizin MCP handler was not registered");
+  const invoke = handler("execute_rizin_command");
 
   const response = (await invoke(
     { path: "package.json", command: "iI" },
@@ -313,17 +252,7 @@ it("retains partial Evidence and leaves the session unbound when a symlink rebin
   expect((await session.open(target)).ok).toBe(true);
   expect(session.activeTarget()?.path).toBe(target);
 
-  const registrations = new Map<
-    string,
-    (input: unknown, context: unknown) => Promise<unknown>
-  >();
-  const server = {
-    registerTool: (
-      name: string,
-      _options: unknown,
-      handler: (input: unknown, context: unknown) => Promise<unknown>,
-    ) => registrations.set(name, handler),
-  } as unknown as McpServer;
+  const { server, handler } = createReverseEngineeringMcpHarness();
   const service = new ReverseEngineeringService({
     run: async () => {
       await writeFile(alias, "changed by Rizin");
@@ -347,9 +276,7 @@ it("retains partial Evidence and leaves the session unbound when a symlink rebin
         rebindFailure,
       ),
   );
-  const invoke = registrations.get("execute_rizin_command");
-  if (invoke === undefined)
-    throw new Error("Rizin MCP handler was not registered");
+  const invoke = handler("execute_rizin_command");
 
   const response = (await invoke(
     { path: alias, command: "wx 00 @ 0" },
@@ -380,28 +307,8 @@ it("retains partial Evidence and leaves the session unbound when a symlink rebin
 });
 
 it("preserves a partial MCP error without claiming failed Evidence retention", async () => {
-  const registrations = new Map<
-    string,
-    (input: unknown, context: unknown) => Promise<unknown>
-  >();
-  const server = {
-    registerTool: (
-      name: string,
-      _options: unknown,
-      handler: (input: unknown, context: unknown) => Promise<unknown>,
-    ) => registrations.set(name, handler),
-  } as unknown as McpServer;
-  const service = new ReverseEngineeringService({
-    run: async () => {
-      throw Object.assign(new Error("timed out"), {
-        stdout: "partial provider output",
-        stderr: "",
-        code: "ETIMEDOUT",
-        signal: null,
-        killed: true,
-      });
-    },
-  });
+  const { server, handler } = createReverseEngineeringMcpHarness();
+  const service = createTimedOutRizinService();
   const recordEvidence = vi.fn((_evidence: unknown) =>
     err(new EvidenceIntegrityError("retention failed")),
   );
@@ -412,14 +319,12 @@ it("preserves a partial MCP error without claiming failed Evidence retention", a
     createToolResultDelivery(2 * 1024 * 1024),
     recordEvidence,
   );
-  const invoke = registrations.get("execute_rizin_command");
-  if (invoke === undefined)
-    throw new Error("Rizin MCP handler was not registered");
+  const invoke = handler("execute_rizin_command");
 
-  const response = (await invoke(
-    { path: "package.json", command: "iI" },
-    { mcpReq: { signal: new AbortController().signal } },
-  )) as {
+  const response = (await invokeWithLiveSignal(invoke, {
+    path: "package.json",
+    command: "iI",
+  })) as {
     readonly isError?: boolean;
     readonly structuredContent?: {
       readonly error?: {
@@ -440,17 +345,7 @@ it("preserves a partial MCP error without claiming failed Evidence retention", a
 });
 
 it("delivers objdump Evidence and ordinary input errors through their named tools", async () => {
-  const registrations = new Map<
-    string,
-    (input: unknown, context: unknown) => Promise<unknown>
-  >();
-  const server = {
-    registerTool: (
-      name: string,
-      _options: unknown,
-      handler: (input: unknown, context: unknown) => Promise<unknown>,
-    ) => registrations.set(name, handler),
-  } as unknown as McpServer;
+  const { server, handler } = createReverseEngineeringMcpHarness();
   const service = new ReverseEngineeringService({
     run: async () => ({ stdout: "objdump output", stderr: "" }),
   });
@@ -462,10 +357,8 @@ it("delivers objdump Evidence and ordinary input errors through their named tool
     delivery,
   );
   const context = { mcpReq: { signal: new AbortController().signal } };
-  const objdump = registrations.get("inspect_with_objdump");
-  const rizin = registrations.get("execute_rizin_command");
-  if (objdump === undefined || rizin === undefined)
-    throw new Error("Reverse-engineering MCP handlers were not registered");
+  const objdump = handler("inspect_with_objdump");
+  const rizin = handler("execute_rizin_command");
 
   const success = (await objdump(
     { path: "package.json", operation: "file_headers" },
@@ -500,17 +393,7 @@ it("delivers objdump Evidence and ordinary input errors through their named tool
 });
 
 it("does not treat a malformed partial observation as retained Evidence", async () => {
-  const registrations = new Map<
-    string,
-    (input: unknown, context: unknown) => Promise<unknown>
-  >();
-  const server = {
-    registerTool: (
-      name: string,
-      _options: unknown,
-      handler: (input: unknown, context: unknown) => Promise<unknown>,
-    ) => registrations.set(name, handler),
-  } as unknown as McpServer;
+  const { server, handler } = createReverseEngineeringMcpHarness();
   const invalidError = Object.assign(
     new AnalysisInputError("execute_rizin_command"),
     { partialObservation: { evidence_id: 42 } },
@@ -527,9 +410,7 @@ it("does not treat a malformed partial observation as retained Evidence", async 
     createToolResultDelivery(2 * 1024 * 1024),
     recordEvidence,
   );
-  const invoke = registrations.get("execute_rizin_command");
-  if (invoke === undefined)
-    throw new Error("Rizin MCP handler was not registered");
+  const invoke = handler("execute_rizin_command");
 
   const response = (await invoke(
     { path: "package.json", command: "iI" },
@@ -541,17 +422,7 @@ it("does not treat a malformed partial observation as retained Evidence", async 
 });
 
 it("keeps provider execution and Evidence recording inside analysis admission", async () => {
-  const registrations = new Map<
-    string,
-    (input: unknown, context: unknown) => Promise<unknown>
-  >();
-  const server = {
-    registerTool: (
-      name: string,
-      _options: unknown,
-      handler: (input: unknown, context: unknown) => Promise<unknown>,
-    ) => registrations.set(name, handler),
-  } as unknown as McpServer;
+  const { server, handler } = createReverseEngineeringMcpHarness();
   const events: string[] = [];
   const service = new ReverseEngineeringService({
     run: async () => {
@@ -577,9 +448,7 @@ it("keeps provider execution and Evidence recording inside analysis admission", 
     recordEvidence,
     admission,
   );
-  const invoke = registrations.get("inspect_with_objdump");
-  if (invoke === undefined)
-    throw new Error("objdump MCP handler was not registered");
+  const invoke = handler("inspect_with_objdump");
 
   await invoke(
     { path: "package.json", operation: "file_headers" },
@@ -595,17 +464,7 @@ it("keeps provider execution and Evidence recording inside analysis admission", 
 });
 
 it("returns admission failures without invoking a reverse-engineering provider", async () => {
-  const registrations = new Map<
-    string,
-    (input: unknown, context: unknown) => Promise<unknown>
-  >();
-  const server = {
-    registerTool: (
-      name: string,
-      _options: unknown,
-      handler: (input: unknown, context: unknown) => Promise<unknown>,
-    ) => registrations.set(name, handler),
-  } as unknown as McpServer;
+  const { server, handler } = createReverseEngineeringMcpHarness();
   const inspectWithObjdump = vi.fn();
   const service = {
     inspectWithObjdump,
@@ -621,8 +480,7 @@ it("returns admission failures without invoking a reverse-engineering provider",
     undefined,
     admission,
   );
-  const invoke = registrations.get("inspect_with_objdump");
-  if (invoke === undefined) throw new Error("objdump MCP handler was not registered");
+  const invoke = handler("inspect_with_objdump");
 
   const response = (await invoke(
     { path: "package.json", operation: "file_headers" },

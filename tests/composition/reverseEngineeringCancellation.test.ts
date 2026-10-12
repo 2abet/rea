@@ -72,6 +72,134 @@ const killProcessAndWait = async (
   return waitForProcessExit(pid, timeoutMs);
 };
 
+type CancellationResult = Awaited<
+  ReturnType<ReverseEngineeringService["executeRizinCommand"]>
+>;
+
+interface CancellationProcessMarkers {
+  readonly providerPid: string;
+  readonly descendantPid: string;
+  readonly descendantStarted: string;
+}
+
+interface CancellationProcessIds {
+  readonly providerPid: number;
+  readonly descendantPid: number;
+}
+
+const readProcessMarker = async (path: string): Promise<number | undefined> => {
+  const text = await readFile(path, "utf8").catch(() => "");
+  const pid = Number(text);
+  return Number.isSafeInteger(pid) && pid > 0 ? pid : undefined;
+};
+
+const waitForCancellationProcesses = async (
+  markers: CancellationProcessMarkers,
+): Promise<CancellationProcessIds> => {
+  for (let attempt = 0; attempt < 500; attempt += 1) {
+    const [providerPid, descendantPid, descendantStarted] = await Promise.all([
+      readProcessMarker(markers.providerPid),
+      readProcessMarker(markers.descendantPid),
+      readFile(markers.descendantStarted).then(
+        () => true,
+        () => false,
+      ),
+    ]);
+    if (
+      providerPid !== undefined &&
+      descendantPid !== undefined &&
+      descendantStarted
+    )
+      return { providerPid, descendantPid };
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 10));
+  }
+  throw new Error("Rizin provider and descendant did not start in time.");
+};
+
+const killCancellationProcesses = async (
+  ids: CancellationProcessIds,
+): Promise<void> => {
+  expect(await killProcessAndWait(ids.providerPid, 2_000)).toBe(true);
+  expect(await killProcessAndWait(ids.descendantPid, 2_000)).toBe(true);
+};
+
+const settleCancelledProvider = async (
+  pending: Promise<CancellationResult>,
+  ids: CancellationProcessIds,
+): Promise<CancellationResult> => {
+  let outcome = await settleWithin(pending, 7_000);
+  if (outcome.status === "timeout") {
+    await killCancellationProcesses(ids);
+    outcome = await settleWithin(pending, 3_000);
+  }
+  if (outcome.status === "timeout")
+    throw new Error(
+      "Rizin cancellation did not settle after terminating the provider and descendant",
+    );
+  if (outcome.status === "rejected") throw outcome.reason;
+  return outcome.value;
+};
+
+const expectCancelledResult = (result: CancellationResult): void => {
+  expect(result.ok).toBe(false);
+  if (result.ok) return;
+  expect(result.error._tag).toBe("AnalysisCancelledError");
+  expect(result.error.cleanup).toBeUndefined();
+  expect(result.error.capturedOutput).toMatchObject({
+    stdout: "provider output before cancellation",
+    stderr: "",
+    truncated: false,
+    exit_code: null,
+    signal: "SIGKILL",
+  });
+  expect(result.error.cause).toBeInstanceOf(Error);
+  expect(result.error.partialObservation).toMatchObject({
+    raw_result: {
+      stdout: "provider output before cancellation",
+      completion_status: "unknown",
+    },
+  });
+};
+
+const cleanupCancellationScenario = async (options: {
+  readonly controller: AbortController;
+  readonly pending: Promise<CancellationResult> | undefined;
+  readonly service: ReverseEngineeringService;
+  readonly processIds: CancellationProcessIds | undefined;
+  readonly directory: string;
+}): Promise<void> => {
+  options.controller.abort();
+  try {
+    if (options.pending !== undefined) {
+      try {
+        if (options.processIds !== undefined)
+          await settleCancelledProvider(options.pending, options.processIds);
+        else await settleWithin(options.pending, 10_000);
+      } catch {
+        // Main assertions report operation failures; continue cleanup.
+      }
+    }
+    let cleanup = await settleWithin(options.service.close(), 7_000);
+    if (cleanup.status === "timeout" && options.processIds !== undefined) {
+      await killCancellationProcesses(options.processIds);
+      cleanup = await settleWithin(options.service.close(), 3_000);
+    }
+    if (cleanup.status === "timeout")
+      throw new Error("Service cleanup did not settle within its deadline.");
+    if (cleanup.status === "rejected") throw cleanup.reason;
+    if (options.processIds !== undefined) {
+      for (const pid of [
+        options.processIds.providerPid,
+        options.processIds.descendantPid,
+      ]) {
+        if (processIsRunning(pid)) await killProcessAndWait(pid, 2_000);
+      }
+    }
+  } finally {
+    await rm(options.directory, { recursive: true, force: true });
+  }
+};
+
 it("uses stoppable process mode for caller-selected provider commands", async () => {
   const directory = await mkdtemp(join(tmpdir(), "rea-rizin-stoppable-"));
   const path = join(directory, "fixture.bin");
@@ -97,6 +225,7 @@ it.skipIf(process.platform === "win32")(
   async () => {
     const directory = await mkdtemp(join(tmpdir(), "rea-rizin-cancel-settle-"));
     const path = join(directory, "fixture.bin");
+    const providerPidMarker = join(directory, "provider-pid");
     const descendantStartedMarker = join(directory, "descendant-started");
     const descendantPidMarker = join(directory, "descendant-pid");
     const descendantMarker = join(directory, "descendant-finished");
@@ -114,6 +243,7 @@ it.skipIf(process.platform === "win32")(
       `#!${process.execPath}
 import { spawn } from "node:child_process";
 import { writeFileSync } from "node:fs";
+writeFileSync(process.env.REA_TEST_PROVIDER_PID, String(process.pid));
 process.stdout.write("provider output before cancellation");
 const child = spawn(process.execPath, ["-e", ${JSON.stringify(descendantScript)}], { env: process.env, stdio: "ignore" });
 writeFileSync(process.env.REA_TEST_DESCENDANT_PID, String(child.pid));
@@ -126,6 +256,7 @@ setInterval(() => {}, 1000);
       environment: {
         REA_RIZIN_COMMAND: provider,
         REA_TEST_ARTIFACT: path,
+        REA_TEST_PROVIDER_PID: providerPidMarker,
         REA_TEST_DESCENDANT_STARTED: descendantStartedMarker,
         REA_TEST_DESCENDANT_PID: descendantPidMarker,
         REA_TEST_DESCENDANT: descendantMarker,
@@ -133,96 +264,39 @@ setInterval(() => {}, 1000);
     });
 
     let pending: ReturnType<typeof service.executeRizinCommand> | undefined;
-    let descendantPid: number | undefined;
+    let processIds: CancellationProcessIds | undefined;
     try {
       pending = service.executeRizinCommand(
         { path, command: "sleep" },
         { signal: controller.signal },
       );
-      let descendantStarted = false;
-      for (let attempt = 0; attempt < 500; attempt += 1) {
-        const pidText = await readFile(descendantPidMarker, "utf8").catch(
-          () => "",
-        );
-        const parsedPid = Number(pidText);
-        if (Number.isSafeInteger(parsedPid) && parsedPid > 0)
-          descendantPid = parsedPid;
-        descendantStarted = await readFile(descendantStartedMarker).then(
-          () => true,
-          () => false,
-        );
-        if (descendantPid !== undefined && descendantStarted) break;
-        await new Promise((resolveDelay) => setTimeout(resolveDelay, 10));
-      }
-      expect(descendantStarted).toBe(true);
-      expect(descendantPid).toBeDefined();
+      processIds = await waitForCancellationProcesses({
+        providerPid: providerPidMarker,
+        descendantPid: descendantPidMarker,
+        descendantStarted: descendantStartedMarker,
+      });
       controller.abort();
 
-      const result = await pending;
-      expect(result.ok).toBe(false);
-      if (!result.ok) {
-        expect(result.error._tag).toBe("AnalysisCancelledError");
-        expect(result.error.cleanup).toBeUndefined();
-        expect(result.error.capturedOutput).toMatchObject({
-          stdout: "provider output before cancellation",
-          stderr: "",
-          truncated: false,
-          exit_code: null,
-          signal: "SIGKILL",
-        });
-        expect(result.error.cause).toBeInstanceOf(Error);
-        expect(result.error.partialObservation).toMatchObject({
-          raw_result: {
-            stdout: "provider output before cancellation",
-            completion_status: "unknown",
-          },
-        });
-      }
+      expectCancelledResult(await settleCancelledProvider(pending, processIds));
       expect(await readFile(path, "utf8")).toBe("before");
       await new Promise((resolveDelay) => setTimeout(resolveDelay, 600));
       await expect(readFile(descendantMarker)).rejects.toMatchObject({
         code: "ENOENT",
       });
-      if (descendantPid !== undefined)
-        expect(await waitForProcessExit(descendantPid, 2_000)).toBe(true);
+      expect(await waitForProcessExit(processIds.descendantPid, 2_000)).toBe(
+        true,
+      );
+      expect(await waitForProcessExit(processIds.providerPid, 2_000)).toBe(
+        true,
+      );
     } finally {
-      controller.abort();
-      try {
-        if (pending !== undefined) {
-          let outcome = await settleWithin(pending, 7_000);
-          if (outcome.status === "timeout") {
-            if (descendantPid !== undefined)
-              expect(await killProcessAndWait(descendantPid, 2_000)).toBe(true);
-            outcome = await settleWithin(pending, 3_000);
-          }
-          if (outcome.status === "timeout")
-            throw new Error(
-              "Rizin cancellation did not settle within its cleanup deadline",
-            );
-          if (outcome.status === "rejected") throw outcome.reason;
-        }
-      } finally {
-        try {
-          let cleanup = await settleWithin(service.close(), 7_000);
-          if (cleanup.status === "timeout") {
-            if (descendantPid !== undefined)
-              expect(await killProcessAndWait(descendantPid, 2_000)).toBe(true);
-            cleanup = await settleWithin(service.close(), 3_000);
-          }
-          if (cleanup.status === "timeout")
-            throw new Error(
-              "Reverse-engineering service cleanup did not settle within its deadline",
-            );
-          if (cleanup.status === "rejected") throw cleanup.reason;
-        } finally {
-          try {
-            if (descendantPid !== undefined && processIsRunning(descendantPid))
-              expect(await killProcessAndWait(descendantPid, 2_000)).toBe(true);
-          } finally {
-            await rm(directory, { recursive: true, force: true });
-          }
-        }
-      }
+      await cleanupCancellationScenario({
+        controller,
+        pending,
+        service,
+        processIds,
+        directory,
+      });
     }
   },
 );
