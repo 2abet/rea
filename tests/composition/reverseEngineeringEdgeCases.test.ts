@@ -889,7 +889,39 @@ it("preserves a provider timeout when cancellation arrives during the final dige
             stdout: "partial timeout output",
             completion_status: "unknown",
           },
+          limitations: expect.arrayContaining([
+            expect.stringContaining("AnalysisTimeoutError"),
+          ]),
         },
+      },
+    });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+it("classifies E2BIG as a provider command resource constraint", async () => {
+  const { directory, path } = await createArtifact();
+  const service = new ReverseEngineeringService({
+    runOwned: async () => {
+      throw new OwnedCommandFailure(
+        "process",
+        "Command launch failed.",
+        null,
+        null,
+        { cause: Object.assign(new Error("argument list too long"), { code: "E2BIG" }) },
+      );
+    },
+  });
+
+  try {
+    const result = await service.executeRizinCommand({ path, command: "iI" });
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        _tag: "AnalysisResourceConstraintError",
+        resource: "transport",
+        operation: "execute_rizin_command",
       },
     });
   } finally {
