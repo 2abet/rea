@@ -1,10 +1,12 @@
 import { mkdtemp, rm, truncate, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import type { Stats } from "node:fs";
 import { join } from "node:path";
 
 import { expect, it, vi } from "vitest";
 
 import { TestReverseEngineeringService as ReverseEngineeringService } from "../support/reverseEngineeringService.js";
+import { AnalysisCapabilityUnavailableError } from "../../src/domain/analysisErrorCore.js";
 import { objdumpCommand } from "../../src/objdump/ObjdumpCommand.js";
 import {
   OwnedCommandFailure,
@@ -83,6 +85,53 @@ it("returns cancellation that arrived before the artifact digest starts", async 
     error: { _tag: "AnalysisCancelledError" },
   });
 });
+
+it.each(["cancellation", "deadline"] as const)(
+  "interrupts a pending stat on %s and observes its eventual rejection",
+  async (interruption) => {
+    const { directory, path } = await createArtifact();
+    const controller = new AbortController();
+    let rejectStat: ((cause: Error) => void) | undefined;
+    let announceStat: (() => void) | undefined;
+    const statStarted = new Promise<void>((resolve) => {
+      announceStat = resolve;
+    });
+    const service = new ReverseEngineeringService({
+      stat: async () => {
+        announceStat?.();
+        return await new Promise<Stats>((_resolve, reject) => {
+          rejectStat = reject;
+        });
+      },
+      run: async () => ({ stdout: "", stderr: "" }),
+    });
+
+    try {
+      if (interruption === "deadline") vi.useFakeTimers();
+      const resultPromise = service.inspectWithObjdump(
+        { path, operation: "file_headers" },
+        { signal: controller.signal },
+      );
+      await statStarted;
+      if (interruption === "cancellation") controller.abort();
+      else await vi.advanceTimersByTimeAsync(120_000);
+      await expect(resultPromise).resolves.toMatchObject({
+        ok: false,
+        error: {
+          _tag:
+            interruption === "cancellation"
+              ? "AnalysisCancelledError"
+              : "AnalysisTimeoutError",
+        },
+      });
+      rejectStat?.(new Error("late stat failure"));
+      await Promise.resolve();
+    } finally {
+      vi.useRealTimers();
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+);
 
 it.each([
   ["EACCES", "AnalysisAccessDeniedError"],
@@ -570,6 +619,78 @@ const providerSnapshot = (
   exitCode: 0,
   signal: null,
   ...overrides,
+});
+
+it("preserves raw retained byte counts when output text replaces invalid UTF-8", async () => {
+  const { directory, path } = await createArtifact();
+  const snapshot = providerSnapshot({
+    stdout: { text: "�", bytes: 1, observedBytes: 1, invalidUtf8: true },
+    stderr: { text: "�", bytes: 2, observedBytes: 2, invalidUtf8: true },
+    exitCode: 7,
+  });
+  const service = new ReverseEngineeringService({
+    runOwned: async () => {
+      throw new OwnedCommandFailure(
+        "cancelled",
+        "Command was cancelled after output capture",
+        snapshot,
+      );
+    },
+  });
+
+  try {
+    const result = await service.executeRizinCommand({ path, command: "iI" });
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        _tag: "AnalysisCancelledError",
+        capturedOutput: {
+          stdout: "�",
+          stderr: "�",
+          stdout_bytes: 1,
+          stderr_bytes: 2,
+        },
+      },
+    });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+it("preserves the provider remediation when owned process preparation fails", async () => {
+  const { directory, path } = await createArtifact();
+  const remediation = new AnalysisCapabilityUnavailableError(
+    "rizin",
+    "execute_rizin_command",
+    "Rizin needs permission to inspect this process",
+    { userMessage: "Grant process inspection permission, then retry." },
+  );
+  const service = new ReverseEngineeringService({
+    runOwned: async () => {
+      throw new OwnedCommandFailure(
+        "process",
+        "Could not prepare process ownership",
+        null,
+        null,
+        { cause: remediation },
+      );
+    },
+  });
+
+  try {
+    const result = await service.executeRizinCommand({ path, command: "iI" });
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        _tag: "AnalysisCapabilityUnavailableError",
+        providerId: "rizin",
+        reason: remediation.reason,
+        userMessage: remediation.userMessage,
+      },
+    });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 it("waits for active provider cleanup during shutdown and rejects new work", async () => {

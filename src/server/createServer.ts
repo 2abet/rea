@@ -344,6 +344,9 @@ export const createServer = (
       ? undefined
       : (evidence) => session.recordEvidence(evidence),
     analysisAdmission,
+    session === undefined
+      ? undefined
+      : () => session.invalidateSnapshotForExternalMutation(),
   );
   registerCutterTools(
     server,
