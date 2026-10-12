@@ -324,13 +324,25 @@ export class ProviderProcessSupervisor {
     );
   }
 
-  /** Wait until the producer has closed its output streams; exit alone does not prove complete output. */
+  /** Wait until output streams close; WindowsOwnedProcess closes only after its whole Job Object settles. */
   async waitForOutputClose(timeoutMs: number): Promise<boolean> {
     return waitForProcessEvent(
       this.#outputClosed,
       this.#outputClose.promise,
       timeoutMs,
     );
+  }
+
+  /** Unreference inherited output pipes without closing streams shared with descendants. */
+  unrefOutputStreams(): void {
+    for (const stream of [
+      this.launch.process.stdout,
+      this.launch.process.stderr,
+    ]) {
+      const unref = (stream as (Readable & { unref?: () => void }) | null)
+        ?.unref;
+      unref?.call(stream);
+    }
   }
 
   /** Share each stop attempt; incomplete cleanup retains ownership and permits retry. */
