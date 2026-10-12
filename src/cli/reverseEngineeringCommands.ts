@@ -4,6 +4,7 @@ import type { Logger } from "pino";
 import { createReverseEngineeringService } from "../composition/reverseEngineering.js";
 import { AnalysisError } from "../domain/analysisErrorBase.js";
 import { AnalysisOutputError } from "../domain/analysisErrorCore.js";
+import { evidenceSchema, type Evidence } from "../domain/evidence.js";
 import type { Result } from "../domain/result.js";
 import { err } from "../domain/result.js";
 import { projectAnalysisError } from "../domain/analysisErrorProjection.js";
@@ -14,11 +15,11 @@ import { CLI_COMMANDS } from "../cliCommandNames.js";
 import type { ReverseEngineeringService } from "../application/reverse/ReverseEngineeringService.js";
 import { GdbSessionManager } from "../gdb/GdbSessionManager.js";
 
-const executeWithCleanup = async <Value>(
+const executeWithCleanup = async (
   service: ReverseEngineeringService,
-  execute: () => Promise<Result<Value, AnalysisError>>,
-): Promise<Result<Value, AnalysisError>> => {
-  let result: Result<Value, AnalysisError>;
+  execute: () => Promise<Result<Evidence, AnalysisError>>,
+): Promise<Result<Evidence, AnalysisError>> => {
+  let result: Result<Evidence, AnalysisError>;
   try {
     result = await execute();
   } catch (cause) {
@@ -56,7 +57,32 @@ const executeWithCleanup = async <Value>(
     );
     return err(error);
   }
+  if (!result.ok && result.error.cleanupIncomplete) {
+    result.error.resolveCleanup();
+    const evidence = cleanupOnlyCompleteEvidence(result.error);
+    if (evidence !== undefined) return { ok: true, value: evidence };
+  }
   return result;
+};
+
+const cleanupOnlyCompleteEvidence = (
+  error: AnalysisError,
+): Evidence | undefined => {
+  if (
+    !(error instanceof AnalysisOutputError) ||
+    !error.cleanupOnly ||
+    error.partialObservation === undefined
+  )
+    return undefined;
+  const parsed = evidenceSchema.safeParse(error.partialObservation);
+  if (!parsed.success) return undefined;
+  const normalized = parsed.data.normalized_result;
+  return typeof normalized === "object" &&
+    normalized !== null &&
+    !Array.isArray(normalized) &&
+    normalized.completion_status === "complete"
+    ? parsed.data
+    : undefined;
 };
 
 const asCleanupError = (cause: unknown): AnalysisError =>

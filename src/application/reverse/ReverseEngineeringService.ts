@@ -347,7 +347,12 @@ export class ReverseEngineeringService {
         failure = new AnalysisOutputError(
           operation,
           "Provider process cleanup remains incomplete.",
-          { cause, capturedOutput, cleanup: cause.cleanup },
+          {
+            cause,
+            capturedOutput,
+            cleanup: cause.cleanup,
+            cleanupOnly: true,
+          },
         );
       if (capture.signal !== null || typeof capture.code !== "number") {
         exitCode = null;

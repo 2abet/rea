@@ -1,6 +1,6 @@
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 
 import { afterEach, expect, it } from "vitest";
 
@@ -28,6 +28,103 @@ it("keeps persistent GDB sessions unavailable on Windows", async () => {
     expect(gdb.error.message).toContain("Job Object");
   }
 });
+
+it.skipIf(process.platform === "win32")(
+  "spawns GDB from the provider environment snapshot",
+  async () => {
+    directory = await mkdtemp(join(tmpdir(), "rea-gdb-environment-snapshot-"));
+    const selectedDirectory = join(directory, "selected-bin");
+    await import("node:fs/promises").then(({ mkdir }) => mkdir(selectedDirectory));
+    const selectedPath = [selectedDirectory, process.env.PATH ?? ""].join(delimiter);
+    const provider = join(selectedDirectory, "gdb");
+    const markerPath = join(directory, "selected-provider-started");
+    await writeFile(
+      provider,
+      `#!${process.execPath}
+await import("node:fs/promises").then(({ writeFile }) => writeFile(${JSON.stringify(markerPath)}, "started"));
+process.stdout.write("(gdb)\\n");
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => {
+  for (const line of chunk.split("\\n")) {
+    const match = /^(\\d+)/.exec(line);
+    if (match) process.stdout.write(match[1] + "^done\\n");
+  }
+});
+`,
+    );
+    await chmod(provider, 0o700);
+    const suppliedEnvironment: NodeJS.ProcessEnv = { PATH: selectedPath };
+    const manager = new GdbSessionManager({ environment: suppliedEnvironment });
+    managers.push(manager);
+    suppliedEnvironment.PATH = join(directory, "mutated-bin");
+
+    const started = await manager.start();
+    expect(started.ok, started.ok ? undefined : started.error.message).toBe(true);
+    await expect(readFile(markerPath, "utf8")).resolves.toBe("started");
+    if (started.ok) {
+      const closed = await manager.close(started.value.session_id);
+      expect(closed.ok).toBe(true);
+    }
+  },
+);
+
+it.skipIf(process.platform === "win32")(
+  "classifies an early GDB startup exit as a process failure with diagnostics",
+  async () => {
+    directory = await mkdtemp(join(tmpdir(), "rea-gdb-startup-early-exit-"));
+    const provider = join(directory, "fake-gdb-exits-during-config.mjs");
+    await writeFile(
+      provider,
+      `#!/usr/bin/env node
+process.stdout.write("(gdb)\\n");
+process.stderr.write("GDB startup stderr diagnostic\\n");
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => {
+  for (const line of chunk.split("\\n")) {
+    const match = /^(\\d+)/.exec(line);
+    if (match && line.includes("auto-load off")) {
+      process.stdout.write("~\\"GDB startup diagnostic\\n\\"\\n");
+      process.exit(7);
+    }
+  }
+});
+`,
+    );
+    await chmod(provider, 0o700);
+    const manager = new GdbSessionManager({
+      environment: { REA_GDB_COMMAND: provider },
+      startupTimeoutMs: 1_000,
+    });
+    managers.push(manager);
+
+    const started = await manager.start();
+
+    expect(started.ok).toBe(false);
+    if (!started.ok) {
+      expect(started.error).toMatchObject({
+        _tag: "AnalysisCapabilityUnavailableError",
+        operation: "start_gdb_session",
+      });
+      expect(started.error).not.toMatchObject({ _tag: "AnalysisTimeoutError" });
+      expect(JSON.stringify(started.error)).toContain("GDB startup diagnostic");
+      expect(JSON.stringify(started.error)).toContain("process_exit_observed");
+      expect(started.error.partialObservation).toMatchObject({
+        parameters: {
+          command: "-gdb-set auto-load off",
+        },
+        raw_result: {
+          process_exit_code: 7,
+          process_exit_observed: true,
+          completion_status: "unknown",
+        },
+      });
+      expect(started.error.capturedOutput).toMatchObject({
+        stderr: "GDB startup stderr diagnostic\n",
+        exit_code: 7,
+      });
+    }
+  },
+);
 
 it.skipIf(process.platform === "win32")(
   "bounds persistent GDB sessions before spawning another process",
@@ -288,6 +385,61 @@ process.stdin.on("data", (chunk) => {
       await readFile(join(directory, "pid"), "utf8"),
     );
     expect(manager.status(started.value.session_id)?.state).toBe("closed");
+  },
+);
+
+it.skipIf(process.platform === "win32")(
+  "retains timed-out GDB records and cleanup uncertainty when stopping is incomplete",
+  async () => {
+    directory = await mkdtemp(join(tmpdir(), "rea-gdb-timeout-cleanup-incomplete-"));
+    const provider = join(directory, "fake-gdb-timeout-cleanup.mjs");
+    await writeFile(
+      provider,
+      `#!/usr/bin/env node
+process.stdout.write("(gdb)\\n");
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => {
+  for (const line of chunk.split("\\n")) {
+    const match = /^(\\d+)/.exec(line);
+    if (!match) continue;
+    if (line.includes("auto-load off")) process.stdout.write(match[1] + "^done\\n");
+    else process.stdout.write("~\\"partial console record\\n\\"\\n@target partial\\n&log partial\\n");
+  }
+});
+`,
+    );
+    await chmod(provider, 0o700);
+    const manager = new GdbSessionManager({
+      environment: { REA_GDB_COMMAND: provider },
+      commandTimeoutMs: 40,
+      stopProcess: async (session) => {
+        session.launched.process.kill("SIGTERM");
+        return { status: "incomplete", reason: "simulated incomplete stop" };
+      },
+    });
+    managers.push(manager);
+    const started = await manager.start();
+    expect(started.ok).toBe(true);
+    if (!started.ok) return;
+
+    const result = await manager.execute(started.value.session_id, "shell sleep 5");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toMatchObject({
+        _tag: "AnalysisCapabilityUnavailableError",
+        cleanup: {
+          reason: "simulated incomplete stop",
+          resources: [started.value.session_id],
+        },
+        partialObservation: {
+          predicate_type: "rea.debugger.console-observation",
+          raw_result: {
+            records: ['~"partial console record', '"', "@target partial", "&log partial"],
+            completion_status: "unknown",
+          },
+        },
+      });
+    }
   },
 );
 
