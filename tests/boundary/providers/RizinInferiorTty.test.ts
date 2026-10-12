@@ -255,6 +255,25 @@ it.skipIf(process.platform !== "linux").each([
 );
 
 it.skipIf(process.platform !== "linux")(
+  "detaches a verified fake inferior before stopping the Rizin debugger",
+  async () => {
+    const sessionId = await startFakeInferiorSession();
+
+    const closed = await manager!.close(sessionId);
+
+    expect(closed.ok).toBe(true);
+    if (!closed.ok) return;
+    expect(manager!.status(sessionId)).toBeUndefined();
+    expect(inferiorPid).toBeDefined();
+    expect(() => process.kill(inferiorPid!, 0)).not.toThrow();
+    const stat = await readFile(`/proc/${inferiorPid!}/stat`, "utf8");
+    const commandEnd = stat.lastIndexOf(") ");
+    expect(commandEnd).toBeGreaterThan(0);
+    expect(stat.slice(commandEnd + 2).trimStart()[0]).not.toBe("Z");
+  },
+);
+
+it.skipIf(process.platform !== "linux")(
   "refuses detach when Rizin reports dbg.exitkills=true",
   async () => {
     const sessionId = await startFakeInferiorSession({ exitKills: "true" });
