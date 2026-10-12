@@ -36,6 +36,7 @@ export const toolFamilyCatalog = (sources) => {
         ...sources.wasmContracts.WASM_TOOL_CONTRACTS,
         ...sources.sqliteContracts.SQLITE_TOOL_CONTRACTS,
         ...sources.captureContracts.CAPTURE_TOOL_CONTRACTS,
+        ...sources.signalContracts.SIGNAL_TOOL_CONTRACTS,
       ],
     },
     {
@@ -231,6 +232,10 @@ export const providerCatalog = (sources) => {
     {
       identity: sources.captureProvider.TSHARK_PROVIDER_IDENTITY,
       contracts: sources.captureContracts.CAPTURE_TOOL_CONTRACTS,
+    },
+    {
+      identity: sources.signalProvider.SIGROK_PROVIDER_IDENTITY,
+      contracts: sources.signalContracts.SIGNAL_TOOL_CONTRACTS,
     },
     {
       identity: sources.wasmProvider.WABT_PROVIDER_IDENTITY,
