@@ -90,6 +90,8 @@ export interface ProviderProcessSnapshot {
   readonly diagnosticTruncated?: boolean;
   readonly stdout: {
     readonly text: string;
+    /** True when retained bytes cannot be represented exactly as UTF-8 text. */
+    readonly invalidUtf8?: true;
     /** Bytes retained in text, limited by maxDiagnosticBytes when configured. */
     readonly bytes: number;
     /** All bytes drained from this stream since construction or resetOutput. */
@@ -97,6 +99,8 @@ export interface ProviderProcessSnapshot {
   };
   readonly stderr: {
     readonly text: string;
+    /** True when retained bytes cannot be represented exactly as UTF-8 text. */
+    readonly invalidUtf8?: true;
     /** Bytes retained in text, limited by maxDiagnosticBytes when configured. */
     readonly bytes: number;
     readonly observedBytes: number;
@@ -562,11 +566,19 @@ class ProcessOutputCapture {
   }
 
   snapshot(observedBytes: number): ProviderProcessSnapshot["stdout"] {
-    const text = Buffer.concat(this.#chunks, this.#bytes).toString("utf8");
+    const buffer = Buffer.concat(this.#chunks, this.#bytes);
+    const text = buffer.toString("utf8");
+    let invalidUtf8 = false;
+    try {
+      new TextDecoder("utf-8", { fatal: true }).decode(buffer);
+    } catch {
+      invalidUtf8 = true;
+    }
     return {
       text,
       bytes: this.#bytes,
       observedBytes,
+      ...(invalidUtf8 ? { invalidUtf8: true } : {}),
     };
   }
 }

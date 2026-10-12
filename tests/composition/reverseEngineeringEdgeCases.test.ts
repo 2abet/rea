@@ -251,7 +251,7 @@ it("cancels an in-progress file digest through its abort listener", async () => 
   }
 });
 
-it("rejects a digest when cancellation arrives before stream listeners attach", async () => {
+it("cancels after operation admission and before starting the artifact digest", async () => {
   const { directory, path } = await createArtifact();
   let reads = 0;
   const signal = {
@@ -266,7 +266,13 @@ it("rejects a digest when cancellation arrives before stream listeners attach", 
     reason: undefined,
     dispatchEvent: () => true,
   } as AbortSignal;
-  const service = new ReverseEngineeringService();
+  let digestStarted = false;
+  const service = new ReverseEngineeringService({
+    digest: async () => {
+      digestStarted = true;
+      return "a".repeat(64);
+    },
+  });
 
   try {
     const result = await service.inspectWithObjdump(
@@ -277,7 +283,8 @@ it("rejects a digest when cancellation arrives before stream listeners attach", 
       ok: false,
       error: { _tag: "AnalysisCancelledError" },
     });
-    expect(reads).toBe(3);
+    expect(reads).toBe(2);
+    expect(digestStarted).toBe(false);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -945,6 +952,115 @@ it("retains an owned process failure snapshot with an unknown exit code", async 
         },
       },
     });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+it("fails with partial unknown Evidence when owned output collection fails after exit 0", async () => {
+  const { directory, path } = await createArtifact();
+  const service = new ReverseEngineeringService({
+    runOwned: async () => {
+      throw Object.assign(
+        new OwnedCommandFailure(
+          "process",
+          "stdout stream failed: fixture read failure",
+          providerSnapshot({ exitCode: 0 }),
+        ),
+        { collectionFailure: true },
+      );
+    },
+  });
+
+  try {
+    const result = await service.executeRizinCommand({ path, command: "iI" });
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        _tag: "AnalysisOutputError",
+        partialObservation: {
+          raw_result: {
+            stdout: "captured owned output",
+            stderr: "diagnostic",
+            exit_code: null,
+            completion_status: "unknown",
+          },
+        },
+      },
+    });
+    if (result.ok) throw new Error("Expected collection failure");
+    expect(result.error.cause).toMatchObject({
+      collectionFailure: true,
+      cause: { reason: "process" },
+    });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+it("does not claim provider completion or a final digest while owned cleanup is incomplete", async () => {
+  const { directory, path } = await createArtifact();
+  const service = new ReverseEngineeringService({
+    runOwned: async () => {
+      throw new OwnedCommandFailure(
+        "process",
+        "Owned process cleanup remains incomplete.",
+        providerSnapshot({ exitCode: 0 }),
+        "descendant remains active",
+        undefined,
+        ["run-id", "pid:42"],
+      );
+    },
+  });
+
+  try {
+    const result = await service.executeRizinCommand({ path, command: "iI" });
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        _tag: "AnalysisOutputError",
+        partialObservation: {
+          raw_result: {
+            exit_code: 0,
+            completion_status: "unknown",
+            artifact_sha256_after: null,
+            artifact_changed: null,
+          },
+          limitations: expect.arrayContaining([
+            expect.stringContaining("owned provider cleanup is incomplete"),
+          ]),
+        },
+      },
+    });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+it("records an explicit loss marker when provider bytes are invalid UTF-8", async () => {
+  const { directory, path } = await createArtifact();
+  const service = new ReverseEngineeringService({
+    runOwned: async () =>
+      providerSnapshot({
+        stdout: {
+          text: "captured � output",
+          bytes: 17,
+          observedBytes: 17,
+          invalidUtf8: true,
+        },
+      }),
+  });
+
+  try {
+    const result = await service.executeRizinCommand({ path, command: "iI" });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value).toMatchObject({
+        raw_result: { stdout: "captured � output" },
+      });
+      expect(result.value.limitations).toContain(
+        "Captured stdout bytes contain invalid or incomplete UTF-8; replacement characters in the text capture do not preserve the original bytes.",
+      );
+    }
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

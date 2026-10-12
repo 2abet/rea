@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -50,6 +50,19 @@ class FakeGdbProcess extends EventEmitter implements ProviderProcessHandle {
     this.stdin?.destroy();
     this.emit("exit", code, signal);
     this.emit("close", code, signal);
+  }
+
+  exitLeader(code: number): void {
+    if (this.exitCode !== null || this.signalCode !== null) return;
+    this.exitCode = code;
+    this.emit("exit", code, null);
+  }
+
+  closeInheritedOutput(): void {
+    this.stdout.end();
+    this.stderr.end();
+    this.stdin?.destroy();
+    this.emit("close", this.exitCode, this.signalCode);
   }
 }
 
@@ -123,6 +136,175 @@ it("returns cancellation when GDB startup is aborted after spawn", async () => {
   expect(fake.children[0]?.signalCode).toBe("SIGTERM");
 });
 
+it("configures and verifies the caller-selected inferior TTY before reporting ready", async () => {
+  const tty = '/dev/pts/42 "🚀"';
+  const miTty = tty.replaceAll("\\", "\\\\").replaceAll('"', '\\"');
+  const commands: string[] = [];
+  const fake = createFakeSpawner((_child, token, command) => {
+    commands.push(command);
+    if (command.includes("inferior-tty-show"))
+      _child.stdout.write(`${token}^done,inferior_tty_terminal="${miTty}"\n`);
+    else if (command.includes("list-thread-groups"))
+      _child.stdout.write(`${token}^done,groups=[]\n`);
+    else _child.stdout.write(`${token}^done\n`);
+  });
+  const manager = managerWithFakeSpawner(fake.spawnProcess);
+
+  const started = await manager.start(undefined, { inferiorTty: tty });
+
+  expect(started.ok).toBe(true);
+  if (!started.ok) return;
+  const status = manager.status(started.value.session_id);
+  expect(status).toMatchObject({
+    inferior_tty: tty,
+    inferior_tty_verified: true,
+  });
+  expect(
+    commands.indexOf(`-inferior-tty-set ${JSON.stringify(tty)}`),
+  ).toBeGreaterThan(-1);
+  expect(commands.indexOf("-inferior-tty-show")).toBeGreaterThan(
+    commands.indexOf(`-inferior-tty-set ${JSON.stringify(tty)}`),
+  );
+});
+
+it("rejects a GDB leader exit without a verified sink and retains inherited output", async () => {
+  const fake = createFakeSpawner();
+  const manager = managerWithFakeSpawner(fake.spawnProcess);
+  const started = await manager.start();
+  expect(started.ok).toBe(true);
+  if (!started.ok) return;
+  const child = fake.children[0];
+  if (child === undefined) return;
+  child.exitLeader(7);
+
+  const closed = await manager.close(started.value.session_id);
+
+  expect(closed.ok).toBe(false);
+  expect(manager.status(started.value.session_id)).toMatchObject({
+    state: "closed",
+    inferior_tty: null,
+    inferior_tty_verified: false,
+  });
+  expect(child.killSignals).toEqual([]);
+  child.stdout.write("=thread-group-exited,id=descendant-sentinel\n");
+  child.closeInheritedOutput();
+  expect(manager.status(started.value.session_id)?.recent_mi_records).toContain(
+    "=thread-group-exited,id=descendant-sentinel",
+  );
+});
+
+it("waits for inherited output settlement after leader exit when a sink was verified", async () => {
+  directory ??= await mkdtemp(join(tmpdir(), "rea-gdb-coverage-"));
+  const tty = join(directory, "inferior-output");
+  await writeFile(tty, "");
+  const fake = createFakeSpawner((_child, token, command) => {
+    if (command.includes("inferior-tty-show"))
+      fake.children[0]?.stdout.write(
+        `${token}^done,inferior_tty_terminal=${JSON.stringify(tty)}\n`,
+      );
+    else if (command.includes("list-thread-groups"))
+      fake.children[0]?.stdout.write(`${token}^done,groups=[]\n`);
+    else fake.children[0]?.stdout.write(`${token}^done\n`);
+  });
+  const manager = managerWithFakeSpawner(fake.spawnProcess);
+  const started = await manager.start(undefined, { inferiorTty: tty });
+  expect(started.ok).toBe(true);
+  if (!started.ok) return;
+  const child = fake.children[0];
+  if (child === undefined) return;
+  expect(manager.status(started.value.session_id)?.inferior_tty_verified).toBe(
+    true,
+  );
+  child.exitLeader(7);
+
+  const closing = manager.close(started.value.session_id);
+  await new Promise((resolve) => setImmediate(resolve));
+  await writeFile(tty, "descendant sentinel after GDB leader exit\n");
+  child.closeInheritedOutput();
+  const closed = await closing;
+
+  expect(closed).toMatchObject({
+    ok: true,
+    value: { target_state: "unknown" },
+  });
+  expect(await readFile(tty, "utf8")).toBe(
+    "descendant sentinel after GDB leader exit\n",
+  );
+  expect(manager.status(started.value.session_id)).toBeUndefined();
+  expect(child.killSignals).toEqual([]);
+});
+
+it("retries close after an exited GDB's inherited output streams settle", async () => {
+  const fake = createFakeSpawner();
+  const manager = managerWithFakeSpawner(fake.spawnProcess);
+  const started = await manager.start();
+  expect(started.ok).toBe(true);
+  if (!started.ok) return;
+  const child = fake.children[0];
+  if (child === undefined) return;
+
+  child.exitLeader(3);
+  const firstClose = await manager.close(started.value.session_id);
+  expect(firstClose.ok).toBe(false);
+  if (!firstClose.ok)
+    expect(firstClose.error.message).toMatch(/inherited output streams/i);
+  expect(manager.status(started.value.session_id)).toBeDefined();
+
+  child.closeInheritedOutput();
+  await expect(manager.close(started.value.session_id)).resolves.toMatchObject({
+    ok: true,
+    value: { target_state: "unknown" },
+  });
+  expect(manager.status(started.value.session_id)).toBeUndefined();
+});
+
+it("rejects inferior TTY configuration when GDB reports a different terminal", async () => {
+  const fake = createFakeSpawner((child, token, command) => {
+    child.stdout.write(
+      command.includes("inferior-tty-show")
+        ? `${token}^done,inferior_tty_terminal="/dev/pts/other"\n`
+        : command.includes("list-thread-groups")
+          ? `${token}^done,groups=[]\n`
+          : `${token}^done\n`,
+    );
+  });
+  const manager = managerWithFakeSpawner(fake.spawnProcess);
+
+  const started = await manager.start(undefined, {
+    inferiorTty: "/dev/pts/requested",
+  });
+
+  expect(started.ok).toBe(false);
+  if (!started.ok)
+    expect(started.error._tag).toBe("AnalysisCapabilityUnavailableError");
+  expect(
+    fake.children.every((child) => child.killSignals.includes("SIGTERM")),
+  ).toBe(true);
+});
+
+it.each([
+  ["trailing garbage", 'inferior_tty_terminal="/dev/pts/42"junk'],
+  [
+    "duplicate field",
+    'inferior_tty_terminal="/dev/pts/42",inferior_tty_terminal="/dev/pts/42"',
+  ],
+])("rejects MI inferior TTY readback with %s", async (_label, fields) => {
+  const fake = createFakeSpawner((child, token, command) => {
+    child.stdout.write(
+      command.includes("inferior-tty-show")
+        ? `${token}^done,${fields}\n`
+        : `${token}^done\n`,
+    );
+  });
+  const manager = managerWithFakeSpawner(fake.spawnProcess);
+  const started = await manager.start(undefined, {
+    inferiorTty: "/dev/pts/42",
+  });
+  expect(started.ok).toBe(false);
+  if (!started.ok)
+    expect(started.error._tag).toBe("AnalysisCapabilityUnavailableError");
+});
+
 const managerWithFakeSpawner = (
   spawnProcess: (
     options: OwnedProviderProcessSpawnOptions,
@@ -179,7 +361,9 @@ process.stdin.on('data', (chunk) => {
 
 afterEach(async () => {
   await Promise.all(
-    managers.splice(0).map((manager) => manager.closeAll().catch(() => undefined)),
+    managers
+      .splice(0)
+      .map((manager) => manager.closeAll().catch(() => undefined)),
   );
   if (directory !== undefined)
     await rm(directory, { recursive: true, force: true });
@@ -410,8 +594,7 @@ it.each([
           return Reflect.apply(originalWrite, stdin, arguments_);
         if (failure === "callback") {
           const callback = arguments_[2] as
-            | ((error?: Error | null) => void)
-            | undefined;
+            ((error?: Error | null) => void) | undefined;
           queueMicrotask(() =>
             callback?.(new Error("simulated callback error")),
           );
@@ -576,6 +759,86 @@ it("refuses to close a session while GDB reports a live target", async () => {
 });
 
 it("detaches a live inferior before the shared stop helper signals GDB", async () => {
+  const tty = "/dev/pts/42";
+  const commands: string[] = [];
+  let detached = false;
+  const fake = createFakeSpawner((_child, token, command) => {
+    commands.push(command);
+    if (command.includes("inferior-tty-show"))
+      fake.children[0]?.stdout.write(
+        `${token}^done,inferior_tty_terminal=${JSON.stringify(tty)}\n`,
+      );
+    else if (command.includes("list-thread-groups"))
+      fake.children[0]?.stdout.write(
+        detached
+          ? `${token}^done,groups=[]\n`
+          : `${token}^done,groups=[{id="i1",pid="123"}]\n`,
+      );
+    else {
+      if (command.includes("target-detach")) detached = true;
+      fake.children[0]?.stdout.write(`${token}^done\n`);
+    }
+  });
+  const manager = managerWithFakeSpawner(fake.spawnProcess);
+  const started = await manager.start(undefined, { inferiorTty: tty });
+  expect(started.ok).toBe(true);
+  if (!started.ok) return;
+
+  const closed = await manager.close(started.value.session_id);
+
+  expect(closed).toMatchObject({
+    ok: true,
+    value: { target_state: "unknown" },
+  });
+  expect(commands).toContain("-list-thread-groups --recurse 1");
+  expect(commands).toContain("-target-detach");
+  expect(
+    commands.filter((command) => command.includes("target-detach")),
+  ).toHaveLength(1);
+  expect(commands).not.toContain("-gdb-exit");
+  expect(commands.indexOf("-inferior-tty-show")).toBeLessThan(
+    commands.indexOf("-target-detach"),
+  );
+  expect(fake.children[0]?.killSignals).toEqual(["SIGTERM"]);
+});
+
+it("revokes the verified sink after an abbreviated with inferior-tty run command", async () => {
+  const tty = "/dev/pts/42";
+  const commands: string[] = [];
+  const fake = createFakeSpawner((_child, token, command) => {
+    commands.push(command);
+    if (command.includes("inferior-tty-show"))
+      fake.children[0]?.stdout.write(
+        `${token}^done,inferior_tty_terminal=${JSON.stringify(tty)}\n`,
+      );
+    else if (command.includes("list-thread-groups"))
+      fake.children[0]?.stdout.write(
+        `${token}^done,groups=[{id="i1",pid="123"}]\n`,
+      );
+    else fake.children[0]?.stdout.write(`${token}^done\n`);
+  });
+  const manager = managerWithFakeSpawner(fake.spawnProcess);
+  const started = await manager.start(undefined, { inferiorTty: tty });
+  expect(started.ok).toBe(true);
+  if (!started.ok) return;
+
+  const overridden = await manager.execute(
+    started.value.session_id,
+    "with inferior-t /tmp/other-output -- run",
+  );
+
+  expect(overridden.ok).toBe(true);
+  expect(manager.status(started.value.session_id)).toMatchObject({
+    inferior_tty: tty,
+    inferior_tty_verified: false,
+  });
+  const closed = await manager.close(started.value.session_id);
+  expect(closed.ok).toBe(false);
+  expect(commands).not.toContain("-target-detach");
+  expect(manager.status(started.value.session_id)).toBeDefined();
+});
+
+it("does not detach a live inferior when no durable TTY was selected", async () => {
   const commands: string[] = [];
   const fake = createFakeSpawner((_child, token, command) => {
     commands.push(command);
@@ -590,11 +853,18 @@ it("detaches a live inferior before the shared stop helper signals GDB", async (
   expect(started.ok).toBe(true);
   if (!started.ok) return;
 
-  await manager.closeAll();
+  await expect(manager.closeAll()).rejects.toMatchObject({
+    errors: [
+      expect.objectContaining({
+        message: expect.stringMatching(/durable output sink/i),
+      }),
+    ],
+  });
 
-  expect(commands).toContain("-list-thread-groups --recurse 1");
-  expect(commands).toContain("-target-detach");
-  expect(fake.children[0]?.killSignals).toEqual(["SIGTERM"]);
+  expect(commands).not.toContain("-target-detach");
+  expect(commands).not.toContain("-gdb-exit");
+  expect(manager.status(started.value.session_id)).toBeDefined();
+  expect(fake.children[0]?.killSignals).toEqual([]);
 });
 
 it("retains ownership without signaling when recursive MI reports multiple inferiors", async () => {
@@ -696,7 +966,11 @@ it("retains ownership and sends no signal when MI state is saturated or unknown"
   const timedOut = await manager.execute(started.value.session_id, "saturated");
   expect(timedOut.ok).toBe(false);
   await expect(manager.closeAll()).rejects.toMatchObject({
-    errors: [expect.objectContaining({ message: expect.stringMatching(/inferior detach/i) })],
+    errors: [
+      expect.objectContaining({
+        message: expect.stringMatching(/inferior detach/i),
+      }),
+    ],
   });
 
   expect(manager.status(started.value.session_id)?.state).toBe("closed");
@@ -767,7 +1041,7 @@ it("closes with unknown target state when MI cannot confirm thread groups", asyn
   expect(manager.status(started.value.session_id)).toBeDefined();
 });
 
-it("cleans up an already-exited GDB session and a close queued during exit", async () => {
+it("closes an exited GDB session without a TTY after inherited output settles", async () => {
   const manager = await managerFor(
     responsiveProvider(`
       if (match[2].includes('auto-load off')) process.stdout.write(match[1] + '^done\\n');
@@ -791,7 +1065,7 @@ it("cleans up an already-exited GDB session and a close queued during exit", asy
   expect(manager.status(started.value.session_id)).toBeUndefined();
 });
 
-it("cleans an exited GDB session when close begins after process exit", async () => {
+it("closes an exited GDB session when close begins after inherited output settled", async () => {
   const manager = await managerFor(
     responsiveProvider(`
       if (match[2].includes('auto-load off')) process.stdout.write(match[1] + '^done\\n');
@@ -1043,9 +1317,9 @@ process.stdin.on('data', (chunk) => {
   if (!started.ok) return;
   await manager.execute(started.value.session_id, "large unicode output");
 
-  const retained = manager.status(started.value.session_id)?.recent_mi_records.find(
-    (record) => record.startsWith("~"),
-  );
+  const retained = manager
+    .status(started.value.session_id)
+    ?.recent_mi_records.find((record) => record.startsWith("~"));
   expect(retained).toBeDefined();
   if (retained !== undefined) {
     expect(Buffer.byteLength(retained, "utf8")).toBeLessThanOrEqual(64 * 1024);

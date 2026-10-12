@@ -46,9 +46,22 @@ const MAX_CONCURRENT_REVERSE_ENGINEERING_OPERATIONS = 8;
 export interface ReverseEngineeringServiceOptions {
   readonly environment?: Readonly<NodeJS.ProcessEnv>;
   readonly commands: ReverseEngineeringCommandPort;
-  readonly run?: typeof execFileOutput;
+  readonly run?: ReverseEngineeringCommandRunner;
   readonly runOwned?: typeof runOwnedCommand;
   readonly digest?: typeof digestFile;
+}
+
+interface ReverseEngineeringCommandRunner {
+  (
+    command: string,
+    arguments_: readonly string[],
+    options?: Parameters<typeof execFileOutput>[2],
+  ): Promise<{
+    readonly stdout: string;
+    readonly stderr: string;
+    readonly stdoutInvalidUtf8?: boolean;
+    readonly stderrInvalidUtf8?: boolean;
+  }>;
 }
 
 export type ReverseEngineeringServiceRuntimeOptions = Omit<
@@ -60,7 +73,7 @@ export type ReverseEngineeringServiceRuntimeOptions = Omit<
 export class ReverseEngineeringService {
   readonly #environment: Readonly<NodeJS.ProcessEnv>;
   readonly #commands: ReverseEngineeringCommandPort;
-  readonly #run: typeof execFileOutput;
+  readonly #run: ReverseEngineeringCommandRunner;
   readonly #digest: typeof digestFile;
   readonly #pendingCleanup = new Map<
     ProviderProcessSupervisor,
@@ -287,6 +300,9 @@ export class ReverseEngineeringService {
     let exitCode: number | string | null = 0;
     let signalName: string | null = null;
     let outputTruncated = false;
+    let stdoutInvalidUtf8 = false;
+    let stderrInvalidUtf8 = false;
+    let cleanupIncomplete = false;
     let completionStatus: "complete" | "unknown" = "complete";
     let failure: AnalysisError | undefined;
     try {
@@ -303,6 +319,8 @@ export class ReverseEngineeringService {
       });
       stdout = output.stdout;
       stderr = output.stderr;
+      stdoutInvalidUtf8 = output.stdoutInvalidUtf8 === true;
+      stderrInvalidUtf8 = output.stderrInvalidUtf8 === true;
     } catch (cause) {
       const capture = execFileOutputFailure(cause);
       const code =
@@ -369,21 +387,20 @@ export class ReverseEngineeringService {
           cause,
           capturedOutput,
         });
-      if (
-        failure === undefined &&
-        cause instanceof OwnedOutputFailure &&
-        cause.cleanup !== undefined
-      )
-        failure = new AnalysisOutputError(
-          operation,
-          "Provider process cleanup remains incomplete.",
-          {
-            cause,
-            capturedOutput,
-            cleanup: cause.cleanup,
-            cleanupOnly: true,
-          },
-        );
+      if (cause instanceof OwnedOutputFailure && cause.cleanup !== undefined) {
+        cleanupIncomplete = true;
+        if (failure === undefined)
+          failure = new AnalysisOutputError(
+            operation,
+            "Provider process cleanup remains incomplete.",
+            {
+              cause,
+              capturedOutput,
+              cleanup: cause.cleanup,
+              cleanupOnly: true,
+            },
+          );
+      }
       if (
         failure === undefined &&
         cause instanceof OwnedOutputFailure &&
@@ -398,12 +415,20 @@ export class ReverseEngineeringService {
         exitCode = null;
         completionStatus = "unknown";
       }
+      if (cause instanceof OwnedOutputFailure) {
+        stdoutInvalidUtf8 = cause.stdoutInvalidUtf8;
+        stderrInvalidUtf8 = cause.stderrInvalidUtf8;
+      }
     }
     let digestAfter: string | null = null;
-    try {
-      digestAfter = await this.#digest(absolutePath, signal);
-    } catch {
-      // Preserve the provider's collected observations if the artifact vanished or became unreadable.
+    if (cleanupIncomplete) {
+      completionStatus = "unknown";
+    } else {
+      try {
+        digestAfter = await this.#digest(absolutePath, signal);
+      } catch {
+        // Preserve the provider's collected observations if the artifact vanished or became unreadable.
+      }
     }
     if (signal?.aborted && failure === undefined) {
       failure = new AnalysisCancelledError(operation, {
@@ -446,6 +471,14 @@ export class ReverseEngineeringService {
             "Rizin commands and retained plugins may read files or access network resources outside the selected artifact; those external inputs are not bound to Evidence.",
           ]
         : []),
+      ...(stdoutInvalidUtf8 || stderrInvalidUtf8
+        ? [
+            `Captured ${[
+              ...(stdoutInvalidUtf8 ? ["stdout"] : []),
+              ...(stderrInvalidUtf8 ? ["stderr"] : []),
+            ].join(" and ")} bytes contain invalid or incomplete UTF-8; replacement characters in the text capture do not preserve the original bytes.`,
+          ]
+        : []),
       ...(outputTruncated
         ? [
             "The provider command ended before completion could be confirmed; captured output is partial.",
@@ -456,7 +489,7 @@ export class ReverseEngineeringService {
         : [
             `The provider process terminated by signal ${signalName}; captured output may be partial and command completion is unknown.`,
           ]),
-      "Pre-run and post-run digests detect artifact changes across the provider call but cannot prove the exact bytes consumed during the call.",
+      "When both are available, pre-run and post-run digests detect artifact changes across the provider call but cannot prove the exact bytes consumed during the call.",
       ...(artifactChanged === true
         ? [
             "The provider command may have changed the artifact while analysis was running; pre-run and post-run digests are both reported.",
@@ -464,9 +497,11 @@ export class ReverseEngineeringService {
         : []),
       ...(digestAfter === null
         ? [
-            signal?.aborted
-              ? "The post-run artifact digest is unknown because cancellation interrupted the digest."
-              : "The post-run artifact digest is unknown because the artifact could not be read after the provider call.",
+            cleanupIncomplete
+              ? "The post-run artifact digest is unknown because owned provider cleanup is incomplete; a remaining process may still change the artifact."
+              : signal?.aborted
+                ? "The post-run artifact digest is unknown because cancellation interrupted the digest."
+                : "The post-run artifact digest is unknown because the artifact could not be read after the provider call.",
           ]
         : []),
     ];
@@ -499,6 +534,8 @@ interface OwnedOutputFailureOptions {
   readonly code: number | string | null;
   readonly signal: string | null;
   readonly outputTruncated: boolean;
+  readonly stdoutInvalidUtf8?: boolean;
+  readonly stderrInvalidUtf8?: boolean;
   readonly collectionFailure?: boolean;
   readonly cleanup?: AnalysisCleanupObservation;
   readonly cause?: unknown;
@@ -510,6 +547,8 @@ class OwnedOutputFailure extends Error {
   readonly code: number | string | null;
   readonly signal: string | null;
   readonly outputTruncated: boolean;
+  readonly stdoutInvalidUtf8: boolean;
+  readonly stderrInvalidUtf8: boolean;
   readonly collectionFailure: boolean;
   readonly cleanup: AnalysisCleanupObservation | undefined;
 
@@ -522,6 +561,8 @@ class OwnedOutputFailure extends Error {
     this.code = options.code;
     this.signal = options.signal;
     this.outputTruncated = options.outputTruncated;
+    this.stdoutInvalidUtf8 = options.stdoutInvalidUtf8 ?? false;
+    this.stderrInvalidUtf8 = options.stderrInvalidUtf8 ?? false;
     this.collectionFailure = options.collectionFailure ?? false;
     this.cleanup = options.cleanup;
   }
@@ -533,7 +574,7 @@ const runOwnedCommandOutput = (
     owner: ProviderProcessSupervisor,
     cleanup: AnalysisCleanupObservation,
   ) => void,
-): typeof execFileOutput => async (
+): ReverseEngineeringCommandRunner => async (
   command,
   args,
   options = {},
@@ -567,6 +608,8 @@ const runOwnedCommandOutput = (
         code: snapshot.exitCode ?? null,
         signal: snapshot.signal,
         outputTruncated: snapshot.diagnosticTruncated === true,
+        stdoutInvalidUtf8: snapshot.stdout.invalidUtf8 === true,
+        stderrInvalidUtf8: snapshot.stderr.invalidUtf8 === true,
       });
     if (snapshot.exitCode !== 0)
       throw new OwnedOutputFailure({
@@ -575,8 +618,15 @@ const runOwnedCommandOutput = (
         code: snapshot.exitCode ?? null,
         signal: null,
         outputTruncated: snapshot.diagnosticTruncated === true,
+        stdoutInvalidUtf8: snapshot.stdout.invalidUtf8 === true,
+        stderrInvalidUtf8: snapshot.stderr.invalidUtf8 === true,
       });
-    return { stdout: snapshot.stdout.text, stderr: snapshot.stderr.text };
+    return {
+      stdout: snapshot.stdout.text,
+      stderr: snapshot.stderr.text,
+      stdoutInvalidUtf8: snapshot.stdout.invalidUtf8 === true,
+      stderrInvalidUtf8: snapshot.stderr.invalidUtf8 === true,
+    };
   } catch (cause) {
     if (!(cause instanceof OwnedCommandFailure)) throw cause;
     if (cause.cleanupOwner !== undefined && cause.cleanupFailure !== null)
@@ -601,6 +651,8 @@ const runOwnedCommandOutput = (
       code,
       signal: snapshot?.signal ?? null,
       outputTruncated: snapshot?.diagnosticTruncated === true,
+      stdoutInvalidUtf8: snapshot?.stdout.invalidUtf8 === true,
+      stderrInvalidUtf8: snapshot?.stderr.invalidUtf8 === true,
       ...(cause.collectionFailure ? { collectionFailure: true } : {}),
       ...(cause.cleanupFailure === null
         ? {}

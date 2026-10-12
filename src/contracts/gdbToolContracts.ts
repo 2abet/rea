@@ -26,8 +26,16 @@ export const GDB_TOOL_CONTRACTS = [
     ...toolContractMetadata("start_gdb_session"),
     kind: "native-provider",
     description:
-      "Start a BYO GDB process in MI3 mode when available, suppress startup files, and disable auto-loading. The session persists in this REA MCP server process and receives an explicit session ID. Persistent sessions are unavailable on Windows because the owned Job Object cleanup cannot safely distinguish the debugger from its inferior processes.",
-    inputSchema: z.strictObject({}),
+      "Start a BYO GDB process in MI3 mode when available, suppress startup files, and disable auto-loading. Optionally set inferior_tty to a caller-selected terminal for future inferior runs; REA verifies the setting through GDB/MI before the session becomes ready. The selected terminal must remain available after GDB exits. A live inferior can be detached during close only while this durable output sink remains verified. The session persists in this REA MCP server process and receives an explicit session ID. Persistent sessions are unavailable on Windows because the owned Job Object cleanup cannot safely distinguish the debugger from its inferior processes.",
+    inputSchema: z.strictObject({
+      inferior_tty: z
+        .string()
+        .min(1)
+        .optional()
+        .describe(
+          "Caller-selected terminal path for future inferior runs. GDB must report the exact configured path before the session is ready.",
+        ),
+    }),
     outputSchema: z.strictObject({
       session_id: sessionId,
       mi_version: z.enum(["mi3", "mi2"]),
@@ -72,6 +80,8 @@ export const GDB_TOOL_CONTRACTS = [
       stderr_observed_bytes: z.number().int().nonnegative(),
       stderr_truncated: z.boolean(),
       diagnostics_truncated: z.boolean(),
+      inferior_tty: z.string().nullable(),
+      inferior_tty_verified: z.boolean(),
     }),
     examples: [
       {

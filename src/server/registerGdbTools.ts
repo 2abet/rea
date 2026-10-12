@@ -26,12 +26,19 @@ export const registerGdbTools = (
   server.registerTool(
     start.name,
     toolRegistrationOptions(start),
-    async (_input, context: ServerContext) => {
+    async (input, context: ServerContext) => {
       const result = await logToolExecution(logger, start.name, () =>
-        manager.start(context.mcpReq.signal),
+        manager.start(context.mcpReq.signal, {
+          ...(input.inferior_tty === undefined
+            ? {}
+            : { inferiorTty: input.inferior_tty }),
+        }),
       );
       if (result.ok)
-        return delivery.toCallToolResult({ ok: true, value: result.value }, start);
+        return delivery.toCallToolResult(
+          { ok: true, value: result.value },
+          start,
+        );
       const partial = result.error.partialObservation;
       const parsed = evidenceSchema.safeParse(partial);
       if (parsed.success) {
