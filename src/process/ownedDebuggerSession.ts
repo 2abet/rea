@@ -4,14 +4,41 @@ export type OwnedDebuggerStopResult =
   | { readonly status: "incomplete"; readonly reason: string };
 
 const DETACH_TIMEOUT_MS = 1_000;
+export type OwnedDebuggerDetachResult =
+  | { readonly status: "no-inferior" }
+  | { readonly status: "detached"; readonly outputSink: "durable" };
+const detachAttempts = new WeakMap<
+  object,
+  Promise<OwnedDebuggerDetachResult>
+>();
 
 const waitForInferiorDetach = async (
-  detach: () => Promise<"detached" | "no-inferior">,
-): Promise<"detached" | "no-inferior" | undefined> => {
+  session: object,
+  detach: () => Promise<OwnedDebuggerDetachResult>,
+): Promise<OwnedDebuggerDetachResult | undefined> => {
+  let attempt = detachAttempts.get(session);
+  if (attempt === undefined) {
+    const pending = Promise.resolve().then(detach);
+    let tracked!: Promise<OwnedDebuggerDetachResult>;
+    tracked = pending.then(
+      (result) => {
+        if (detachAttempts.get(session) === tracked)
+          detachAttempts.delete(session);
+        return result;
+      },
+      (cause: unknown) => {
+        if (detachAttempts.get(session) === tracked)
+          detachAttempts.delete(session);
+        throw cause;
+      },
+    );
+    attempt = tracked;
+    detachAttempts.set(session, tracked);
+  }
   let timer: NodeJS.Timeout | undefined;
   try {
     return await Promise.race([
-      detach(),
+      attempt,
       new Promise<undefined>((resolve) => {
         timer = setTimeout(() => resolve(undefined), DETACH_TIMEOUT_MS);
       }),
@@ -28,7 +55,8 @@ interface OwnedDebuggerProcess {
     readonly process: { kill(signal: NodeJS.Signals): boolean };
   };
   /** Must return only after the provider verifies detachment or no inferior. */
-  readonly detachInferior?: () => Promise<"detached" | "no-inferior">;
+  /** Confirms no inferior, or detaches only after verifying a durable output sink. */
+  readonly detachInferior?: () => Promise<OwnedDebuggerDetachResult>;
   readonly supervisor: {
     waitForExit(timeoutMs: number): Promise<boolean>;
     /** WindowsOwnedProcess closes output only after the whole Job Object settles. */
@@ -46,19 +74,23 @@ export const stopOwnedDebuggerProcess = async (
 ): Promise<OwnedDebuggerStopResult> => {
   const platform = options.platform ?? process.platform;
   if (session.exited) {
-    if (platform === "win32") {
-      try {
-        if (!(await session.supervisor.waitForOutputClose(1_000)))
-          return {
-            status: "incomplete",
-            reason: `Owned ${debuggerName} process leader exited, but its Windows Job Object still has active descendants or has not reported settlement.`,
-          };
-      } catch (cause: unknown) {
+    try {
+      if (!(await session.supervisor.waitForOutputClose(1_000)))
         return {
           status: "incomplete",
-          reason: `Owned ${debuggerName} Windows Job Object settlement could not be verified: ${cause instanceof Error ? cause.message : String(cause)}`,
+          reason:
+            platform === "win32"
+              ? `Owned ${debuggerName} process leader exited, but its Windows Job Object still has active descendants or has not reported settlement.`
+              : `Owned ${debuggerName} process leader exited, but inherited output streams are still open or have not reported settlement.`,
         };
-      }
+    } catch (cause: unknown) {
+      return {
+        status: "incomplete",
+        reason:
+          platform === "win32"
+            ? `Owned ${debuggerName} Windows Job Object settlement could not be verified: ${cause instanceof Error ? cause.message : String(cause)}`
+            : `Owned ${debuggerName} inherited output stream settlement could not be verified: ${cause instanceof Error ? cause.message : String(cause)}`,
+      };
     }
     if (platform !== "win32") session.supervisor.unrefOutputStreams();
     session.supervisor.dispose();
@@ -75,16 +107,28 @@ export const stopOwnedDebuggerProcess = async (
         status: "incomplete",
         reason: `Owned ${debuggerName} inferior detach cannot be verified because the provider has no detach capability.`,
       };
-    const detached = await waitForInferiorDetach(session.detachInferior);
+    const detached = await waitForInferiorDetach(
+      session,
+      session.detachInferior,
+    );
     if (detached === undefined)
       return {
         status: "incomplete",
         reason: `Owned ${debuggerName} inferior detach was not verified within ${DETACH_TIMEOUT_MS} ms.`,
       };
-    if (detached !== "detached" && detached !== "no-inferior")
+    const verifiedNoInferior =
+      typeof detached === "object" &&
+      detached !== null &&
+      detached.status === "no-inferior";
+    const detachedWithSink =
+      typeof detached === "object" &&
+      detached !== null &&
+      detached.status === "detached" &&
+      detached.outputSink === "durable";
+    if (!verifiedNoInferior && !detachedWithSink)
       return {
         status: "incomplete",
-        reason: `Owned ${debuggerName} provider did not confirm inferior detachment or absence.`,
+        reason: `Owned ${debuggerName} provider did not confirm no inferior or detachment with a durable output sink.`,
       };
   } catch (cause: unknown) {
     return {
@@ -111,7 +155,11 @@ export const stopOwnedDebuggerProcess = async (
   return { status: "stopped" };
 };
 
-/** Stop every owned session and retain failed sessions for possible recovery. */
+/**
+ * Stop every owned session and retain failed sessions for possible recovery.
+ * Callers must block replacement admission and drain in-flight starts until
+ * this settles; incomplete cleanup leaves the old owner in the map for retry.
+ */
 export const closeOwnedDebuggerSessions = async <
   Session extends { id: string },
 >(
@@ -120,7 +168,8 @@ export const closeOwnedDebuggerSessions = async <
   debuggerName: string,
 ): Promise<void> => {
   const results = await Promise.allSettled(
-    [...sessions.values()].map(async (session) => ({
+    [...sessions.entries()].map(async ([key, session]) => ({
+      key,
       session,
       result: await stop(session),
     })),
@@ -135,9 +184,9 @@ export const closeOwnedDebuggerSessions = async <
       );
       continue;
     }
-    const { session, result } = settled.value;
+    const { key, session, result } = settled.value;
     if (result.status === "incomplete") failures.push(new Error(result.reason));
-    else sessions.delete(session.id);
+    else if (sessions.get(key) === session) sessions.delete(key);
   }
   if (failures.length > 0)
     throw new AggregateError(
