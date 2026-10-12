@@ -1013,6 +1013,22 @@ it("revokes detach proof for a GDB Python abbreviation that changes inferior TTY
   expect(commands).not.toContain("-target-detach");
 });
 
+it("revokes detach proof for a Python alias nested in a GDB with command", async () => {
+  const tty = "/dev/pts/42";
+  const { manager, sessionId, commands } =
+    await startWithVerifiedInferiorTty(tty);
+
+  await manager.execute(
+    sessionId,
+    'with confirm off -- py gdb.execute("set " + chr(45).join(["inferior", "tty"]) + " /dev/null")',
+  );
+
+  expect(manager.status(sessionId)?.inferior_tty_verified).toBe(false);
+  const closed = await manager.close(sessionId);
+  expect(closed.ok).toBe(false);
+  expect(commands).not.toContain("-target-detach");
+});
+
 it("does not detach a live inferior when no durable TTY was selected", async () => {
   const commands: string[] = [];
   const fake = createFakeSpawner((_child, token, command) => {
