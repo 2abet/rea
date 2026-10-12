@@ -78,7 +78,7 @@ jobs:
   static:
     name: Static checks
     needs: changes
-    if: ${{ always() }}
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     steps:
       - name: Require successful change classification
@@ -95,8 +95,20 @@ jobs:
         run: npm run check:ci
       - if: needs.changes.outputs.code == 'true'
         run: npm run verify:test-discovery
+      - name: Check LLDB producer retention and launch contracts
+        if: needs.changes.outputs.code == 'true'
+        run: npm run test:python
       - if: needs.changes.outputs.code != 'true'
         run: npm run format:check
+      - name: Upload complete static diagnostics
+        if: always() && needs.changes.outputs.code == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: static-check-reports
+          path: .cache/static-checks/
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
 
   test-shard:
     name: Test shard (${{ matrix.shard }})
@@ -187,7 +199,7 @@ jobs:
         continue-on-error: true
         uses: actions/download-artifact@v4
         with:
-          name: test-results
+          name: test-timings
           run-id: ${{ steps.history.outputs.run-id }}
           github-token: ${{ github.token }}
           path: .cache/ci-test-history
@@ -216,20 +228,21 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  sqlite-runtime:
+    needs: [changes, build]
+    if: needs.changes.outputs.code == 'true'
+    uses: ./.github/workflows/sqlite-runtime.yml
+
   test:
     name: Test (coverage + timing)
     needs: [changes, test-shard]
-    if: ${{ always() }}
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     steps:
-      - name: Require successful test shards
+      - name: Require successful change classification
         env:
           CHANGES_RESULT: ${{ needs.changes.result }}
-          CODE_REQUIRED: ${{ needs.changes.outputs.code }}
-          SHARD_RESULT: ${{ needs.test-shard.result }}
-        run: |
-          test "${CHANGES_RESULT}" = "success"
-          test "${CODE_REQUIRED}" != "true" || test "${SHARD_RESULT}" = "success"
+        run: test "${CHANGES_RESULT}" = "success"
       - uses: actions/checkout@v4
         if: needs.changes.outputs.code == 'true' && success()
       - uses: actions/setup-node@v4
@@ -246,6 +259,7 @@ jobs:
           pattern: vitest-report-*
           merge-multiple: true
       - name: Merge coverage, JUnit, and timing reports
+        id: merge
         if: needs.changes.outputs.code == 'true' && success()
         run: >-
           npm run test:ci:merge --
@@ -259,27 +273,13 @@ jobs:
           --outputFile.junit=test-results.xml
           --outputFile.json=test-results.json
       - name: Summarize slowest test files
-        if: needs.changes.outputs.code == 'true' && success()
-        shell: bash
-        run: |
-          node <<'NODE' >> "${GITHUB_STEP_SUMMARY}"
-          const report = JSON.parse(require("node:fs").readFileSync("test-results.json", "utf8"));
-          const files = (report.testResults ?? [])
-            .map((result) => ({
-              name: result.name,
-              duration: Math.max(0, (result.endTime ?? result.startTime) - result.startTime),
-            }))
-            .sort((left, right) => right.duration - left.duration)
-            .slice(0, 20);
-          console.log("## Slowest deterministic test files\n");
-          console.log("| File | Duration (ms) |");
-          console.log("| --- | ---: |");
-          for (const file of files) {
-            console.log(`| \`${file.name}\` | ${file.duration} |`);
-          }
-          NODE
+        if: needs.changes.outputs.code == 'true' && !cancelled() && hashFiles('test-results.json') != ''
+        env:
+          SHARD_RESULT: ${{ needs.test-shard.result }}
+          MERGE_RESULT: ${{ steps.merge.outcome }}
+        run: node scripts/ci/test-report.mjs
       - uses: actions/upload-artifact@v4
-        if: needs.changes.outputs.code == 'true' && always()
+        if: needs.changes.outputs.code == 'true' && !cancelled() && hashFiles('test-results.json') != ''
         with:
           name: test-results
           path: |
@@ -288,6 +288,21 @@ jobs:
             coverage/
           if-no-files-found: error
           retention-days: 30
+      - name: Publish successful timing history
+        if: needs.changes.outputs.code == 'true' && success() && needs.test-shard.result == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-timings
+          path: .cache/ci-test-history/test-results.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
+      - name: Require successful test shards
+        if: ${{ !cancelled() }}
+        env:
+          CODE_REQUIRED: ${{ needs.changes.outputs.code }}
+          SHARD_RESULT: ${{ needs.test-shard.result }}
+        run: test "${CODE_REQUIRED}" != "true" || test "${SHARD_RESULT}" = "success"
 
   conformance-fixtures:
     name: Source-built conformance fixtures
@@ -522,6 +537,7 @@ jobs:
           tests/boundary/filesystem/javascript-applications/javascriptArtifactReconstruction.test.ts
           tests/conformance/providers/ghidra/windowsCapabilities.test.ts
           src/ghidra/GhidraInstallation.test.ts
+          tests/boundary/filesystem/ghidraJavaProbe.test.ts
           tests/boundary/providers/ghidra/ghidraTransport.test.ts
           tests/boundary/providers/ghidra/ghidraTargetSnapshot.test.ts
           tests/boundary/providers/ghidra/ghidraLauncher.test.ts
@@ -659,7 +675,7 @@ jobs:
 
   required:
     name: CI required
-    if: ${{ always() }}
+    if: ${{ !cancelled() }}
     needs:
       [
         changes,
@@ -668,6 +684,7 @@ jobs:
         build,
         reverse-tools-quality,
         test-shard,
+        sqlite-runtime,
         test,
         conformance-fixtures,
         windows-native-build,

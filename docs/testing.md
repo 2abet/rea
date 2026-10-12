@@ -19,11 +19,12 @@ behavior, and complete CI evidence before merging.
 | `npm run test:boundary`           | Boundary, CLI boundary, MCP boundary, process boundary, and process-global projects                                     |
 | `npm run test:mcp`                | MCP boundary project                                                                                                    |
 | `npm run test:acceptance`         | Complete compiled CLI and MCP acceptance workflows                                                                      |
+| `npm run test:python`             | LLDB producer retention and launch contracts with a fake LLDB API; no native debugger required                          |
 | `npm run test:watch`              | Dirty source tests in watch mode, without build                                                                         |
 | `npm run test:watch:all`          | Changed tests from every project; builds at startup, so rebuild after production edits before relying on compiled tests |
 | `npm run check:changed`           | Cached typecheck/lint and branch-related source feedback                                                                |
 | `npm run check:pr`                | Opt-in complete local deterministic gate and generated-file checks                                                      |
-| `npm run docs:check`              | Generated-document validation from current source and build outputs                                                     |
+| `npm run docs:check`              | Generated-document validation and fresh onboarding example consistency checks                                           |
 
 For example:
 
@@ -67,6 +68,16 @@ correctness. Select relevant boundary files and real-provider lanes explicitly.
 Source projects also contain large capacity regressions; `test:fast` promises
 no compiled-runtime prerequisite, not a fixed time budget.
 
+`npm run lint` prints errors and a warning summary; `npm run jscpd` prints
+duplication statistics. Complete reports remain in `.cache/static-checks/` and
+CI uploads them as `static-check-reports`, including after a failed static gate.
+Use `npm run lint:details` or `npm run jscpd:details` for all console diagnostics.
+Both duplicate commands scan production and test code with the same 3% limit;
+the summary commands preserve checker failures and restore reports from cached
+static tasks. Both lint caches include the website, documentation configuration,
+and experiment code scanned by the checker; a regression compares the actual
+lint inventory with Turbo's resolved inputs.
+
 Routine iterations and rebases need focused regressions and relevant checks.
 Before handing off a PR, run `npm run check` and generated-document checks when
 applicable; CI owns the full suite and coverage. Use the full local gate for
@@ -97,6 +108,12 @@ runner. Preserve simultaneous launches where concurrency is itself under test.
 
 Build/documentation writers hold checkout-local output locks. Tests do not
 hold a broad command lock; `check:pr` finishes tests before document validation.
+Turbo caches deterministic preparation and static checks, but `test:run` always
+executes. Repository files do not fully describe installed tool contents or host
+state. A previous test pass therefore cannot replace current validation, even
+when the source tree is unchanged. `check:pr` also runs the fast Python producer
+suite; CI runs it in the static job for code changes. These producer tests do not
+establish real LLDB engine coverage.
 
 Vitest's persistent compile cache remains disabled. The `cliTest` fixture shares
 a temporary Node compile cache among its fresh CLI subprocesses. The worker
@@ -247,17 +264,25 @@ Coverage does not replace named boundary or real-provider scenarios.
 
 CI runs six native Vitest shards without retries. Each shard emits a blob
 report; the merge job produces aggregate coverage plus JUnit and JSON timing
-reports, uploads them together, and writes the slowest files to the workflow
-summary. Static checks, documentation, build, package verification, and
+reports even when a shard fails, uploads available diagnostics, and writes the
+slowest files to the workflow summary. Partial reports are marked diagnostic
+only. Failed, cancelled, or missing selected shards still fail the required gate,
+and aggregate coverage thresholds remain enforced by the merge command.
+Only successful complete merges publish the small `test-timings` artifact, with
+checkout-relative paths; the build job downloads that artifact for the sequencer
+instead of the coverage/JUnit bundle. Missing history falls back to native
+sharding. Static checks, documentation, build, package verification, and
 real-system lanes remain separate jobs so one kind of evidence cannot stand in
 for another.
 
 The build job saves portable Turbo outputs across runs. Eight Linux real-system
 lanes restore this cache without waiting for the build job. The shared action
 derives its key from `test:prepare --dry=json` task hashes, runner OS and
-architecture, and `.npmrc`; test-only changes can reuse compiled outputs. Every
+architecture, `.npmrc`, `.nvmrc`, and the lockfile; test-only changes can reuse compiled outputs. Every
 build and verification command still runs, so Turbo checks task inputs and
-rebuilds misses. There is no prefix fallback to accumulate older build outputs.
+rebuilds misses. A restore prefix with the same platform and toolchain permits
+partial task reuse when one generator's inputs change; Turbo still invalidates
+that generator's entry. Native outputs are not stored in this cache.
 
 Native package jobs, the Windows curated lane, and the Apple artifact lane reuse
 the same workflow's Turbo cache for portable compiled JavaScript, skills, and
@@ -266,9 +291,10 @@ commands, which restore matching outputs or rebuild on a cache miss. Native
 artifacts, dependency installs, package archives, and runtime verification remain
 host-local. Keep platform-dependent outputs out of this shared cache.
 
-The PR acceptance target is a median `npm run check:pr` wall time below three
-minutes across three warm-build runs on the benchmark host. Keep Vitest caches
-cold unless separately identified. A PR that touches packaging or real-system
+Record cold and warm preparation separately from fresh test execution when
+benchmarking the optional `npm run check:pr` gate. Compare multiple runs on the
+same host, including subprocess and queue costs; a cached pass is not a test
+runtime measurement. A PR that touches packaging or real-system
 behavior requires the applicable `verify:*` lanes; packaging and installation
 changes also require `npm run verify:package`. The full-gate benchmark measures
 that explicit lane, not the routine iteration requirement.
@@ -303,6 +329,7 @@ prove behavior on the verified Ghidra 12.1.4 and JDK 21 build.
 | `npm run verify:ghidra`                    | Linux x64/arm64 ELF or macOS x64/arm64 Mach-O                                                   | Host C compiler, Ghidra 12.1.4, and full JDK 21                     |
 | `npm run verify:ghidra:seeds`              | POSIX; raw x86 fixture; seed ordering, BSS labels, analyzer readback and unknown-name rejection | Ghidra 12.1.4 and full JDK 21                                       |
 | `npm run verify:ghidra:swift`              | macOS x64/arm64 Mach-O                                                                          | Host Swift compiler, Ghidra 12.1.4, and full JDK 21                 |
+| `npm run verify:ghidra:riscv`              | Linux/macOS x64/arm64 host; source-owned RV32/RV64 ELF through CLI and MCP                      | RISC-V Clang, LLD, LLVM readelf, Ghidra 12.1.4, and full JDK 21     |
 | `npm run verify:ghidra:switch`             | Linux x64 ELF; GCC/Clang optimized and stripped switch fixtures                                 | GCC, Clang, GNU nm/objdump/strip, Ghidra 12.1.4, and full JDK 21    |
 | `npm run verify:ghidra:aarch64-jump-table` | Any supported Ghidra host; AArch64 ELF; signed/unsigned byte/halfword tables; host ARM64 Mach-O | Clang with AArch64 target support, Ghidra 12.1.4, and full JDK 21   |
 | `npm run verify:ghidra:cross-format`       | Any supported Ghidra host; also analyzes AArch64 ELF, x86-64 PE, and x86-64 Mach-O              | `clang`, LLD, and `lld-link` in addition to host-lane prerequisites |
@@ -693,7 +720,8 @@ not make native host acceptance unavailable.
 Pull requests that change only root `README*.md` files, `docs/`, `AGENTS.md`,
 `CONTRIBUTING.md`, `CHANGELOG.md`, `SECURITY.md`, `native/windows/README.md`,
 or the GitHub issue and pull-request templates run formatting and
-generated-document validation without the source-test shards or native package
+generated-document validation, including the small onboarding example consistency
+suite, without the source-test shards or native package
 lanes. Classification compares the PR head with its merge base, so later
 base-branch changes do not expand that scope. Static and coverage aggregate jobs
 remain present and fail if classification fails. Every code change retains the

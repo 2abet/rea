@@ -125,6 +125,11 @@ export const TOOL_EFFECTS: Readonly<Record<string, ToolEffects>> = {
     idempotent: false,
   }),
   inspect_go_binary: evidence,
+  inspect_sqlite_database: effects({
+    mutatesSession: true,
+    writesFilesystem: true,
+    launchesProcess: true,
+  }),
   inspect_wasm_artifact: effects({
     mutatesSession: true,
     writesFilesystem: true,

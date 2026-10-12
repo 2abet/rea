@@ -34,6 +34,7 @@ export const toolFamilyCatalog = (sources) => {
         ...sources.evmContracts.EVM_TOOL_CONTRACTS,
         ...sources.goContracts.GO_TOOL_CONTRACTS,
         ...sources.wasmContracts.WASM_TOOL_CONTRACTS,
+        ...sources.sqliteContracts.SQLITE_TOOL_CONTRACTS,
       ],
     },
     {
@@ -237,6 +238,10 @@ export const providerCatalog = (sources) => {
     {
       identity: sources.goProvider.GO_BINARY_PROVIDER_IDENTITY,
       contracts: sources.goContracts.GO_TOOL_CONTRACTS,
+    },
+    {
+      identity: sources.sqliteDomain.SQLITE_PROVIDER_IDENTITY,
+      contracts: sources.sqliteContracts.SQLITE_TOOL_CONTRACTS,
     },
     {
       identity: sources.artifactProviders.ARTIFACT_GRAPH_PROVIDER,
