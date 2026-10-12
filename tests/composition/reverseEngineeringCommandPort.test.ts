@@ -56,3 +56,48 @@ it("uses provider profiles supplied through the application port", async () => {
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+it("does not reintroduce ambient variables absent from the captured provider environment", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "rea-reverse-env-"));
+  const path = join(directory, "fixture.bin");
+  const variable = "REA_TEST_LATE_PROVIDER_ENV";
+  const previous = process.env[variable];
+  await writeFile(path, Buffer.from([0x7f, 0x45, 0x4c, 0x46]));
+  process.env[variable] = "late-ambient-value";
+  const run = vi.fn(
+    async (
+      _command: string,
+      _args: readonly string[],
+      _options?: ExecFileOutputOptions,
+    ) => ({ stdout: "captured", stderr: "" }),
+  );
+  const service = new ReverseEngineeringService({
+    environment: { REA_OBJDUMP_COMMAND: "captured-objdump" },
+    commands: {
+      objdump: () => ({
+        executable: "captured-objdump",
+        arguments: [path],
+        identity: { id: "test.objdump", name: "Captured objdump", version: null },
+        environmentOverrides: { PROFILE_VALUE: "explicit" },
+      }),
+      rizin: () => ({
+        executable: "captured-rizin",
+        arguments: [path],
+        identity: { id: "test.rizin", name: "Captured Rizin", version: null },
+      }),
+    },
+    run,
+  });
+
+  try {
+    await service.inspectWithObjdump({ path, operation: "file_headers" });
+    expect(run.mock.calls[0]?.[2]?.env).toEqual({
+      REA_OBJDUMP_COMMAND: "captured-objdump",
+      PROFILE_VALUE: "explicit",
+    });
+  } finally {
+    if (previous === undefined) delete process.env[variable];
+    else process.env[variable] = previous;
+    await rm(directory, { recursive: true, force: true });
+  }
+});

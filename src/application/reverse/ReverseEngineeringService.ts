@@ -89,7 +89,7 @@ export class ReverseEngineeringService {
   constructor(
     options: ReverseEngineeringServiceOptions,
   ) {
-    this.#environment = options.environment ?? process.env;
+    this.#environment = { ...(options.environment ?? process.env) };
     this.#commands = options.commands;
     this.#run =
       options.run ??
@@ -308,7 +308,6 @@ export class ReverseEngineeringService {
     try {
       const output = await this.#run(command, args, {
         env: {
-          ...process.env,
           ...this.#environment,
           ...profile.environmentOverrides,
         },
@@ -325,6 +324,16 @@ export class ReverseEngineeringService {
       const capture = execFileOutputFailure(cause);
       const code =
         capture?.code ?? (cause as NodeJS.ErrnoException).code ?? undefined;
+      if (code === "E2BIG")
+        return err(
+          new AnalysisResourceConstraintError(
+            operation,
+            "transport",
+            "The host rejected the provider command because its argument list exceeds the process launch limit.",
+            { argument_bytes: Buffer.byteLength(args.join("\0")) },
+            { cause },
+          ),
+        );
       if (
         capture === undefined ||
         code === "ENOENT" ||
@@ -489,6 +498,11 @@ export class ReverseEngineeringService {
         : [
             `The provider process terminated by signal ${signalName}; captured output may be partial and command completion is unknown.`,
           ]),
+      ...(failure === undefined
+        ? []
+        : [
+            `Command completion is unknown because the operation failed with ${failure._tag}: ${failure.message}`,
+          ]),
       "When both are available, pre-run and post-run digests detect artifact changes across the provider call but cannot prove the exact bytes consumed during the call.",
       ...(artifactChanged === true
         ? [
@@ -635,6 +649,10 @@ const runOwnedCommandOutput = (
         resources: cause.resources,
       });
     const snapshot = cause.snapshot;
+    const launchErrorCode =
+      cause.cause instanceof Error
+        ? Reflect.get(cause.cause, "code")
+        : undefined;
     const code =
       cause.reason === "cancelled"
         ? "ABORT_ERR"
@@ -642,6 +660,8 @@ const runOwnedCommandOutput = (
           ? "ETIMEDOUT"
           : cause.reason === "output-limit"
             ? "ERR_CHILD_PROCESS_STDIO_MAXBUFFER"
+            : launchErrorCode === "E2BIG"
+              ? "E2BIG"
           : snapshot === null
             ? "ERR_PROVIDER_LAUNCH"
             : (snapshot.exitCode ?? null);

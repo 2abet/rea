@@ -9,9 +9,9 @@ import type { CliInstance } from "../../../src/cli/types.js";
 import type { GdbSessionManager } from "../../../src/gdb/GdbSessionManager.js";
 
 it("retries retained GDB cleanup when CLI session startup fails", async () => {
-  const commands = new Map<string, { run(input: { args: { command: string } }): Promise<unknown> }>();
+  const commands = new Map<string, { run(input: { args: { command: string }; options: { inferiorTty: string } }): Promise<unknown> }>();
   const cli = {
-    command: (name: string, definition: { run(input: { args: { command: string } }): Promise<unknown> }) => {
+    command: (name: string, definition: { run(input: { args: { command: string }; options: { inferiorTty: string } }): Promise<unknown> }) => {
       commands.set(name, definition);
       return cli;
     },
@@ -32,9 +32,10 @@ it("retries retained GDB cleanup when CLI session startup fails", async () => {
   try {
     const command = commands.get(CLI_COMMANDS.debugWithGdb);
     if (command === undefined) throw new Error("GDB CLI command was not registered");
-    const result = await command.run({ args: { command: "info files" } });
+    const result = await command.run({ args: { command: "info files" }, options: { inferiorTty: "/dev/pts/42" } });
     expect(result).toMatchObject({ code: "unreadable_output" });
     expect(manager.start).toHaveBeenCalledOnce();
+    expect(manager.start).toHaveBeenCalledWith(expect.anything(), { inferiorTty: "/dev/pts/42" });
     expect(closeAll).toHaveBeenCalledOnce();
   } finally {
     process.exitCode = originalExitCode;
@@ -42,9 +43,9 @@ it("retries retained GDB cleanup when CLI session startup fails", async () => {
 });
 
 it("marks the CLI failed when retained GDB cleanup remains incomplete", async () => {
-  const commands = new Map<string, { run(input: { args: { command: string } }): Promise<unknown> }>();
+  const commands = new Map<string, { run(input: { args: { command: string }; options: { inferiorTty: string } }): Promise<unknown> }>();
   const cli = {
-    command: (name: string, definition: { run(input: { args: { command: string } }): Promise<unknown> }) => {
+    command: (name: string, definition: { run(input: { args: { command: string }; options: { inferiorTty: string } }): Promise<unknown> }) => {
       commands.set(name, definition);
       return cli;
     },
@@ -59,7 +60,7 @@ it("marks the CLI failed when retained GDB cleanup remains incomplete", async ()
   try {
     const command = commands.get(CLI_COMMANDS.debugWithGdb);
     if (command === undefined) throw new Error("GDB CLI command was not registered");
-    const result = await command.run({ args: { command: "info files" } });
+    const result = await command.run({ args: { command: "info files" }, options: { inferiorTty: "/dev/pts/42" } });
     expect(result).toMatchObject({ code: "unreadable_output" });
     expect(manager.closeAll).toHaveBeenCalledOnce();
     expect(process.exitCode).toBe(1);
