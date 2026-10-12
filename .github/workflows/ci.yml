@@ -659,6 +659,7 @@ jobs:
         pr-title,
         static,
         build,
+        reverse-tools-quality,
         test-shard,
         test,
         conformance-fixtures,
