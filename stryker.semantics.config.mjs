@@ -14,6 +14,7 @@ const config = {
   },
   coverageAnalysis: "off",
   thresholds: { break: null },
+  ignorePatterns: ["/.cache/rea-command-locks/**", "/coverage/**"],
   concurrency: 2,
   timeoutMS: 30000,
   reporters: ["clear-text", "progress", "html", "json"],
