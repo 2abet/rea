@@ -100,7 +100,7 @@ it.each([
   expect(gdbErrorMessage(cause)).toBe(message);
 });
 
-it("rejects an invalid caller TTY and a platform without safe GDB ownership", async () => {
+it("rejects an invalid caller TTY and platforms without safe GDB ownership", async () => {
   const invalid = await new GdbSessionManager().start(undefined, {
     inferiorTty: "bad\0tty",
   });
@@ -108,6 +108,24 @@ it("rejects an invalid caller TTY and a platform without safe GDB ownership", as
     ok: false,
     error: { _tag: "AnalysisInputError" },
   });
+
+  let macSpawned = false;
+  const macos = new GdbSessionManager({
+    platform: "darwin",
+    spawnProcess: async () => {
+      macSpawned = true;
+      throw new Error("unsupported hosts must not spawn GDB");
+    },
+  });
+  managers.push(macos);
+  const macUnavailable = await macos.start();
+  expect(macUnavailable).toMatchObject({
+    ok: false,
+    error: { _tag: "AnalysisCapabilityUnavailableError" },
+  });
+  if (!macUnavailable.ok)
+    expect(macUnavailable.error.message).toContain("available only on Linux");
+  expect(macSpawned).toBe(false);
 
   const windows = new GdbSessionManager({ platform: "win32" });
   managers.push(windows);
@@ -332,6 +350,7 @@ it("classifies cancellation while asynchronous GDB ownership preparation is pend
     entered = resolve;
   });
   const manager = new GdbSessionManager({
+    platform: "linux",
     environment: {},
     spawnProcess: async (options) =>
       new Promise<never>((_resolve, reject) => {
@@ -980,6 +999,7 @@ const managerWithFakeSpawner = (
   options: ConstructorParameters<typeof GdbSessionManager>[0] = {},
 ): GdbSessionManager => {
   const manager = new GdbSessionManager({
+    platform: "linux",
     environment: { REA_GDB_COMMAND: "fake-gdb" },
     spawnProcess,
     verifyInferiorOutputSink: async () => undefined,
@@ -1025,6 +1045,7 @@ const managerFor = async (
   options: ConstructorParameters<typeof GdbSessionManager>[0] = {},
 ): Promise<GdbSessionManager> => {
   const manager = new GdbSessionManager({
+    platform: "linux",
     environment: { REA_GDB_COMMAND: await createProvider(body) },
     ...options,
   });
@@ -1065,12 +1086,15 @@ afterEach(async () => {
 it("rejects a pre-cancelled GDB start and an unconfigured executable", async () => {
   const cancelled = new AbortController();
   cancelled.abort();
-  const startResult = await new GdbSessionManager().start(cancelled.signal);
+  const startResult = await new GdbSessionManager({ platform: "linux" }).start(
+    cancelled.signal,
+  );
   expect(startResult.ok).toBe(false);
   if (!startResult.ok)
     expect(startResult.error._tag).toBe("AnalysisCancelledError");
 
   const missing = await new GdbSessionManager({
+    platform: "linux",
     environment: { REA_GDB_COMMAND: join(tmpdir(), "does-not-exist-gdb") },
   }).start();
   expect(missing.ok).toBe(false);
@@ -1086,6 +1110,7 @@ if (process.argv.includes('--interpreter=mi3')) process.exit(0);
 ${responsiveProvider()}
 `);
   const manager = new GdbSessionManager({
+    platform: "linux",
     environment: { REA_GDB_COMMAND: provider },
   });
   managers.push(manager);
@@ -1101,6 +1126,7 @@ it("retains ownership when GDB startup fails before its prompt and stop is incom
   let retainedSessionId: string | undefined;
   const provider = await createProvider("process.exit(0);\n");
   const manager = new GdbSessionManager({
+    platform: "linux",
     environment: { REA_GDB_COMMAND: provider },
     stopProcess: async (session, name) => {
       stopCalls += 1;
@@ -1146,6 +1172,7 @@ it("returns startup timeout when the MI prompt never arrives", async () => {
     "process.stdin.resume(); setInterval(() => {}, 1000);\n",
   );
   const manager = new GdbSessionManager({
+    platform: "linux",
     environment: { REA_GDB_COMMAND: provider },
     startupTimeoutMs: 20,
   });
@@ -1216,6 +1243,7 @@ it("retains startup timeout without partial evidence when cleanup is uncertain",
     "process.stdin.resume(); setInterval(() => {}, 1000);\n",
   );
   const manager = new GdbSessionManager({
+    platform: "linux",
     environment: { REA_GDB_COMMAND: provider },
     startupTimeoutMs: 20,
     stopProcess: async (session, name) => {
@@ -1298,6 +1326,7 @@ it("handles a start signal that becomes aborted during listener registration", a
     },
   });
   const manager = new GdbSessionManager({
+    platform: "linux",
     environment: { REA_GDB_COMMAND: provider },
   });
   managers.push(manager);
@@ -2081,6 +2110,7 @@ it("retains a session when closing cannot confirm the debugger process stopped",
   let stopCalls = 0;
   const provider = await createProvider(responsiveProvider());
   const manager = new GdbSessionManager({
+    platform: "linux",
     environment: { REA_GDB_COMMAND: provider },
     stopProcess: async (session, name) => {
       stopCalls += 1;
@@ -2133,6 +2163,7 @@ it("preserves a command timeout when stopping the owned process rejects", async 
   `),
   );
   const manager = new GdbSessionManager({
+    platform: "linux",
     environment: { REA_GDB_COMMAND: provider },
     commandTimeoutMs: 25,
     stopProcess: async (session, name) => {
@@ -2630,6 +2661,7 @@ it("preserves the protocol failure when an incomplete stop adds uncertainty", as
 it("drains buffered startup stdout before capturing early-exit Evidence", async () => {
   const children: FakeGdbProcess[] = [];
   const manager = new GdbSessionManager({
+    platform: "linux",
     environment: {},
     startupTimeoutMs: 500,
     spawnProcess: async (options) => {

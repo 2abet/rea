@@ -54,6 +54,7 @@ process.stdin.on("data", async (chunk) => {
     );
     await chmod(provider, 0o700);
     const manager = new GdbSessionManager({
+      platform: "linux",
       environment: { REA_GDB_COMMAND: provider },
     });
     const server = new McpServer({ name: "gdb-cancellation", version: "1" });
@@ -126,6 +127,7 @@ process.stdin.on("data", (chunk) => {
     );
     await chmod(provider, 0o700);
     const manager = new GdbSessionManager({
+      platform: "linux",
       environment: { REA_GDB_COMMAND: provider },
     });
     const server = new McpServer({ name: "gdb-inferior-tty", version: "1" });

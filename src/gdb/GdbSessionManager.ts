@@ -367,6 +367,16 @@ export class GdbSessionManager {
       );
     if (this.#closing || signal?.aborted)
       return err(new AnalysisCancelledError("start_gdb_session"));
+    if (this.#platform !== "linux")
+      return err(
+        new AnalysisCapabilityUnavailableError(
+          "gdb",
+          "start_gdb_session",
+          this.#platform === "win32"
+            ? "Persistent Windows GDB sessions are unavailable because owned Job Object cleanup can terminate debugger inferiors."
+            : "Persistent GDB sessions are available only on Linux because REA verifies live inferior output descriptors through /proc.",
+        ),
+      );
     const controller = new AbortController();
     const relayAbort = (): void => controller.abort(signal?.reason);
     signal?.addEventListener("abort", relayAbort, { once: true });
@@ -429,14 +439,6 @@ export class GdbSessionManager {
       AnalysisError
     >
   > {
-    if (this.#platform === "win32")
-      return err(
-        new AnalysisCapabilityUnavailableError(
-          "gdb",
-          "start_gdb_session",
-          "Persistent Windows GDB sessions are unavailable because the owned Job Object cleanup can terminate debugger inferiors.",
-        ),
-      );
     const id = randomUUID();
     const mi3 = await this.#startProtocol(
       id,

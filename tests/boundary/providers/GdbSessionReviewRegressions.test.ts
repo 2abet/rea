@@ -7,6 +7,14 @@ import { afterEach, expect, it } from "vitest";
 
 import { GdbSessionManager } from "../../../src/gdb/GdbSessionManager.js";
 import { spawnOwnedProviderProcess } from "../../../src/process/ProviderProcess.js";
+import { stopOwnedDebuggerProcess } from "../../../src/process/ownedDebuggerSession.js";
+
+// These tests launch controlled fake providers; Linux admission is injected so
+// lifecycle semantics remain testable on hosts that correctly reject GDB.
+const createGdbManagerForInjectedPlatform = (
+  options: ConstructorParameters<typeof GdbSessionManager>[0] = {},
+): GdbSessionManager =>
+  new GdbSessionManager({ platform: "linux", ...options });
 
 let directory: string | undefined;
 const managers: Array<{ closeAll(): Promise<void> }> = [];
@@ -35,7 +43,7 @@ const expectOwnedProcessExited = async (pidText: string): Promise<void> => {
 };
 
 it("keeps persistent GDB sessions unavailable on Windows", async () => {
-  const gdb = await new GdbSessionManager({
+  const gdb = await createGdbManagerForInjectedPlatform({
     environment: { REA_GDB_COMMAND: "/missing/gdb" },
     platform: "win32",
   }).start();
@@ -76,7 +84,9 @@ process.stdin.on("data", (chunk) => {
     );
     await chmod(provider, 0o700);
     const suppliedEnvironment: NodeJS.ProcessEnv = { PATH: selectedPath };
-    const manager = new GdbSessionManager({ environment: suppliedEnvironment });
+    const manager = createGdbManagerForInjectedPlatform({
+      environment: suppliedEnvironment,
+    });
     managers.push(manager);
     suppliedEnvironment.PATH = join(directory, "mutated-bin");
 
@@ -115,7 +125,7 @@ process.stdin.on("data", (chunk) => {
 `,
     );
     await chmod(provider, 0o700);
-    const manager = new GdbSessionManager({
+    const manager = createGdbManagerForInjectedPlatform({
       environment: { REA_GDB_COMMAND: provider },
       startupTimeoutMs: 1_000,
     });
@@ -172,7 +182,7 @@ process.stdin.on("data", (chunk) => {
 `,
     );
     await chmod(provider, 0o700);
-    const manager = new GdbSessionManager({
+    const manager = createGdbManagerForInjectedPlatform({
       environment: { REA_GDB_COMMAND: provider },
       stopProcess: async (session) => {
         detachChecked = true;
@@ -234,7 +244,7 @@ process.stdin.on("data", (chunk) => {
 `,
     );
     await chmod(provider, 0o700);
-    const manager = new GdbSessionManager({
+    const manager = createGdbManagerForInjectedPlatform({
       environment: { REA_GDB_COMMAND: provider },
       maxSessions: 1,
     });
@@ -295,7 +305,7 @@ process.stdin.on("data", (chunk) => {
     const secondSpawnGate = new Promise<void>((resolve) => {
       releaseSecondSpawn = resolve;
     });
-    const manager = new GdbSessionManager({
+    const manager = createGdbManagerForInjectedPlatform({
       environment: { REA_GDB_COMMAND: provider },
       maxSessions: 2,
       spawnProcess: async (options) => {
@@ -343,7 +353,6 @@ it.skipIf(process.platform === "win32")(
       provider,
       `#!${process.execPath}
 import { readFile, writeFile } from "node:fs/promises";
-await writeFile(${JSON.stringify(pidPath)}, String(process.pid));
 process.on("SIGTERM", async () => {
   await writeFile(${JSON.stringify(signalPath)}, "SIGTERM");
   while (true) {
@@ -356,13 +365,27 @@ process.on("SIGTERM", async () => {
   }
   process.exit(0);
 });
+await writeFile(${JSON.stringify(pidPath)}, String(process.pid));
 process.stdin.resume();
 `,
     );
     await chmod(provider, 0o700);
-    const manager = new GdbSessionManager({
+    let enterStop!: () => void;
+    const stopEntered = new Promise<void>((resolve) => {
+      enterStop = resolve;
+    });
+    let releaseStop!: () => void;
+    const stopGate = new Promise<void>((resolve) => {
+      releaseStop = resolve;
+    });
+    const manager = createGdbManagerForInjectedPlatform({
       environment: { REA_GDB_COMMAND: provider },
       startupTimeoutMs: 30_000,
+      stopProcess: async (session, name, options) => {
+        enterStop();
+        await stopGate;
+        return stopOwnedDebuggerProcess(session, name, options);
+      },
     });
     managers.push(manager);
 
@@ -386,21 +409,20 @@ process.stdin.resume();
       closeSettled = true;
     });
     try {
-      await expect
-        .poll(() => readFile(signalPath, "utf8").catch(() => undefined), {
-          interval: 5,
-          timeout: 5_000,
-        })
-        .toBe("SIGTERM");
+      await stopEntered;
       expect(closeSettled).toBe(false);
+      await writeFile(releasePath, "release");
+      releaseStop();
     } finally {
       await writeFile(releasePath, "release");
+      releaseStop();
     }
     const started = await starting;
     await closing;
     expect(started.ok).toBe(false);
     if (started.ok) throw new Error("GDB unexpectedly started");
     expect(started.error._tag).toBe("AnalysisCancelledError");
+    expect(await readFile(signalPath, "utf8")).toBe("SIGTERM");
     await expectOwnedProcessExited(pidText);
     expect(manager.status("unknown-session")).toBeUndefined();
     await expect(manager.start()).resolves.toMatchObject({
@@ -441,7 +463,7 @@ process.stdin.on("data", (chunk) => {
 `,
     );
     await chmod(provider, 0o700);
-    const manager = new GdbSessionManager({
+    const manager = createGdbManagerForInjectedPlatform({
       environment: { REA_GDB_COMMAND: provider },
     });
     managers.push(manager);
@@ -482,7 +504,7 @@ setTimeout(() => process.exit(0), 250).unref();
 `,
     );
     await chmod(provider, 0o700);
-    const manager = new GdbSessionManager({
+    const manager = createGdbManagerForInjectedPlatform({
       environment: { REA_GDB_COMMAND: provider },
       commandTimeoutMs: 40,
     });
@@ -539,7 +561,7 @@ setTimeout(() => process.exit(0), 250);
 `,
     );
     await chmod(provider, 0o700);
-    const manager = new GdbSessionManager({
+    const manager = createGdbManagerForInjectedPlatform({
       environment: { REA_GDB_COMMAND: provider },
       commandTimeoutMs: 40,
       stopProcess: async () => ({
@@ -613,7 +635,7 @@ process.stdin.on("data", (chunk) => {
 `,
     );
     await chmod(provider, 0o700);
-    const manager = new GdbSessionManager({
+    const manager = createGdbManagerForInjectedPlatform({
       environment: { REA_GDB_COMMAND: provider },
     });
     managers.push(manager);
@@ -664,7 +686,7 @@ process.stdin.on("data", (chunk) => {
 `,
     );
     await chmod(provider, 0o700);
-    const manager = new GdbSessionManager({
+    const manager = createGdbManagerForInjectedPlatform({
       environment: { REA_GDB_COMMAND: provider },
     });
     managers.push(manager);
@@ -713,7 +735,7 @@ process.stdin.on("data", (chunk) => {
 `,
     );
     await chmod(provider, 0o700);
-    const manager = new GdbSessionManager({
+    const manager = createGdbManagerForInjectedPlatform({
       environment: { REA_GDB_COMMAND: provider },
     });
     managers.push(manager);
@@ -777,7 +799,7 @@ setTimeout(() => process.exit(0), 500);
 `,
     );
     await chmod(provider, 0o700);
-    const manager = new GdbSessionManager({
+    const manager = createGdbManagerForInjectedPlatform({
       environment: { REA_GDB_COMMAND: provider },
       stopProcess: async () => ({
         status: "incomplete",
@@ -828,7 +850,7 @@ process.stdin.on("data", (chunk) => {
 `,
     );
     await chmod(provider, 0o700);
-    const manager = new GdbSessionManager({
+    const manager = createGdbManagerForInjectedPlatform({
       environment: { REA_GDB_COMMAND: provider },
     });
     managers.push(manager);
@@ -869,7 +891,7 @@ setInterval(() => {}, 1000);
 `,
     );
     await chmod(provider, 0o700);
-    const manager = new GdbSessionManager({
+    const manager = createGdbManagerForInjectedPlatform({
       environment: { REA_GDB_COMMAND: provider },
     });
     managers.push(manager);
@@ -914,7 +936,7 @@ process.stdin.on("data", (chunk) => {
 `,
     );
     await chmod(provider, 0o700);
-    const manager = new GdbSessionManager({
+    const manager = createGdbManagerForInjectedPlatform({
       environment: { REA_GDB_COMMAND: provider },
     });
     managers.push(manager);
@@ -1021,7 +1043,7 @@ setTimeout(() => process.exit(0), 250);
 `,
     );
     await chmod(provider, 0o700);
-    const manager = new GdbSessionManager({
+    const manager = createGdbManagerForInjectedPlatform({
       environment: { REA_GDB_COMMAND: provider },
       stopProcess: async () => ({
         status: "incomplete",
