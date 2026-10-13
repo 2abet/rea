@@ -126,7 +126,7 @@ validated.
 Both real CLI complete results match full MCP normalized results, subjects,
 parameters, IDs and limitations. Portable CLI summary/URI views match MCP retained
 normalized facts and subjects; source forms/caller parameters remain distinct.
-Source bytes stay unchanged. Eighteen context/grading regressions pass, including
+Source bytes stay unchanged. Twenty context/grading regressions pass, including
 cited complete metadata/counts/UTF-16 diagnostics and exact ordered response ID
 lists that reject parent lookups, duplicates and nested representations. URI
 prefix coverage must come from its cited page, even if an uncited page has the
@@ -159,7 +159,7 @@ the preceding driver accepts inconsistent coverage, while the corrected driver
 rejects wrong status, next offset or exhaustion. Unmodified exhausted and
 continuable URI pages still pass. The grader also requires each cited receipt's
 subject digest and local path to identify the reference capture, and uses the
-reference page's verified coverage. Eighteen grading/context regressions pass,
+reference page's verified coverage. Twenty grading/context regressions pass,
 including missing or malformed subjects and faithful but inconsistent coverage;
 all four original model answers still pass factual regrading. Strict resource
 grades remain false where terminal whole-scope counters are unknown.
@@ -170,6 +170,17 @@ page replies. Retained parents must be declared in each view receipt's Evidence
 links and differ from that response's own ID. The grader enforces the same link
 relationship. Private actual-reply injections and normal complete/summary
 controls exercise this boundary; these do not establish a provider defect.
+
+The grader preserves each receipt's producing tool while indexing it; conflicting
+tool/envelope ownership for one ID remains ambiguous, while identical repeated
+receipts are allowed. Complete delivery requires the capture tool/operation.
+Summary delivery uses the capture tool but correctly delegates its Evidence
+operation to `inspect_analysis_view`; the URI page uses that view tool/operation.
+Both the grader and SDK observation producer validate this actual contract.
+Wrong-tool/operation regressions fail before the correction and pass afterward;
+private SDK operation faults are rejected while real complete/summary controls
+and all four stored model factual grades still pass. No operation is rewritten
+to make the tool name and delegated Evidence operation identical.
 
 **Decision: keep existing complete defaults; add no production optimization.**
 For these compact recordings and this question, summary/page costs more total

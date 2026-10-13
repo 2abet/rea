@@ -82,13 +82,15 @@ class PcapGraderWorkflowTests(unittest.TestCase):
         prefix = ['http://example.test/one', 'http://example.test/two']
         coverage = {'status': 'page', 'examined': 2, 'total': 3, 'next_offset': 2, 'exhausted': False}
         subject = {'digest': {'sha256': capture['target']['sha256']}, 'local_path': capture['target']['path']}
-        summary = {'evidence_id': summary_id, 'subject': copy.deepcopy(subject), 'evidence_links': [parent],
+        summary = {'evidence_id': summary_id, 'operation': 'inspect_analysis_view',
+                   'subject': copy.deepcopy(subject), 'evidence_links': [parent],
                    'limitations': ['source', 'view'],
                    'normalized_result': {'kind': 'summary', 'view': {'kind': 'summary'},
                        'parent_operation': 'inspect_pcap_capture', 'parent_evidence_id': parent,
                        'summary': capture, 'coverage': {'status': 'complete-within-view', 'examined': 1, 'total': 1, 'next_offset': None, 'exhausted': True},
                        'limitations': ['source', 'view'], 'unknowns': ['unrecorded traffic']}}
-        page = {'evidence_id': page_id, 'subject': copy.deepcopy(subject), 'evidence_links': [parent],
+        page = {'evidence_id': page_id, 'operation': 'inspect_analysis_view',
+                'subject': copy.deepcopy(subject), 'evidence_links': [parent],
                 'limitations': ['source', 'view'],
                 'normalized_result': {'kind': 'pcap',
                     'view': {'kind': 'pcap', 'facet': 'http-uris', 'offset': 0, 'limit': 2},
@@ -111,7 +113,7 @@ class PcapGraderWorkflowTests(unittest.TestCase):
                 'parent_evidence_id': value['parent_evidence_id'], 'coverage': value['coverage'],
                 'unknowns': value['unknowns'], 'normalized_limitations': value['limitations']}
 
-    def grade(self, answer, records, reference):
+    def grade(self, answer, records, reference, producer_tools=None):
         review = runpy.run_path(str(Path(__file__).with_name('review-model.py')))
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory);trial = root / 'trial';trial.mkdir()
@@ -120,8 +122,9 @@ class PcapGraderWorkflowTests(unittest.TestCase):
                 (trial / name).write_text(json.dumps(value))
             (trial / 'answer.txt').write_text(json.dumps(answer))
             events = [{'type': 'item.completed', 'item': {'type': 'mcp_tool_call',
-                       'tool': 'inspect_analysis_view' if value['normalized_result'].get('kind') == 'pcap' else 'inspect_pcap_capture',
-                       'status': 'completed', 'result': {'structuredContent': value}}} for value in records]
+                       'tool': producer_tools[index] if producer_tools is not None else
+                           ('inspect_analysis_view' if value['normalized_result'].get('kind') == 'pcap' else 'inspect_pcap_capture'),
+                       'status': 'completed', 'result': {'structuredContent': value}}} for index, value in enumerate(records)]
             (trial / 'events.jsonl').write_text(''.join(json.dumps(value) + '\n' for value in events))
             source = root / 'reference';source.mkdir();(source / 'answer.json').write_text(json.dumps(reference))
             resource = root / 'resource.log'
@@ -187,12 +190,16 @@ class PcapGraderWorkflowTests(unittest.TestCase):
         source.update({key: [] for key in capture['retained_counts']})
         source['http_request_uris'] = reference['http_request_uris_first2'] + ['http://example.test/three']
         source['diagnostics'] = {'tshark_stderr': '', 'capinfos_stderr': '\U0001f4a5'}
-        receipt = {'evidence_id': 'ev_' + 'a' * 64, 'subject': copy.deepcopy(records[0]['subject']), 'evidence_links': [],
+        receipt = {'evidence_id': 'ev_' + 'a' * 64, 'operation': 'inspect_pcap_capture',
+                   'subject': copy.deepcopy(records[0]['subject']), 'evidence_links': [],
                    'limitations': ['source'], 'normalized_result': source}
         reference['delivery_observations'] = [{'evidence_id': receipt['evidence_id'],
                                               'limitations': receipt['limitations'], 'coverage': source['coverage']}]
         answer = copy.deepcopy({**reference, 'evidence_ids': [receipt['evidence_id']]})
         self.assertTrue(self.grade(answer, [receipt], reference)['all_factual_checks_pass'])
+        self.assertFalse(self.grade(answer, [receipt], reference, ['inspect_analysis_view'])['all_factual_checks_pass'])
+        wrong_operation = copy.deepcopy(receipt);wrong_operation['operation'] = 'inspect_analysis_view'
+        self.assertFalse(self.grade(answer, [wrong_operation], reference)['all_factual_checks_pass'])
         for subject in [None, {'digest': {'sha256': 'e' * 64}, 'local_path': source['target']['path']}]:
             changed = copy.deepcopy(receipt);changed['subject'] = subject
             report = self.grade(answer, [changed], reference)
@@ -263,6 +270,29 @@ class PcapGraderWorkflowTests(unittest.TestCase):
             report = self.grade(answer, records, reference)
             self.assertFalse(report['factual_checks']['pcap_cited_parents_linked'])
             self.assertFalse(report['all_factual_checks_pass'])
+
+    def test_cited_receipts_preserve_tool_and_delegated_operation_provenance(self):
+        for tools in [['inspect_analysis_view', 'inspect_analysis_view'],
+                      ['inspect_pcap_capture', 'inspect_pcap_capture'],
+                      ['unrelated_tool', 'inspect_analysis_view']]:
+            with self.subTest(tools=tools):
+                answer, records, reference = self.fixture()
+                report = self.grade(answer, records, reference, tools)
+                self.assertTrue(report['factual_checks']['pcap_original_delivery_observations'])
+                self.assertFalse(report['all_factual_checks_pass'])
+        for index in [0, 1]:
+            answer, records, reference = self.fixture();records[index]['operation'] = 'inspect_pcap_capture'
+            self.assertFalse(self.grade(answer, records, reference)['all_factual_checks_pass'])
+
+    def test_repeated_identical_receipts_pass_but_conflicting_id_ownership_fails(self):
+        answer, records, reference = self.fixture();duplicate = copy.deepcopy(records[0])
+        self.assertTrue(self.grade(answer, [duplicate, *records], reference)['all_factual_checks_pass'])
+        for duplicate_first in [True, False]:
+            with self.subTest(duplicate_first=duplicate_first):
+                items = [duplicate, *records] if duplicate_first else [*records, duplicate]
+                tools = ['unrelated_tool', 'inspect_pcap_capture', 'inspect_analysis_view'] if duplicate_first else \
+                        ['inspect_pcap_capture', 'inspect_analysis_view', 'unrelated_tool']
+                self.assertFalse(self.grade(answer, items, reference, tools)['all_factual_checks_pass'])
 
     def test_reported_ids_are_only_the_ordered_unique_response_receipts(self):
         answer, records, reference = self.fixture()

@@ -538,6 +538,16 @@ const pcapObservation = (evidence) => {
     target?.path !== values.path
   )
     throw new Error("PCAP Evidence does not identify the selected capture");
+  // Summary delivery delegates to a retained view, whose Evidence operation is
+  // inspect_analysis_view even when inspect_pcap_capture was requested.
+  const operation =
+    values.delivery === "summary"
+      ? "inspect_analysis_view"
+      : "inspect_pcap_capture";
+  if (evidence.operation !== operation)
+    throw new Error(
+      "PCAP Evidence operation differs from the requested delivery",
+    );
   if (
     values.delivery === "summary" &&
     (typeof value.parent_evidence_id !== "string" ||

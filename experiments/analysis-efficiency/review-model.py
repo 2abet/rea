@@ -181,8 +181,18 @@ def main():
         check('capture', ('capture' in answer, json.dumps(answer.get('capture'), sort_keys=True)),
               (True, json.dumps(reference['capture'], sort_keys=True)))
         prefix = answer.get('http_request_uris_first2')
-        records = {value['evidence_id']: value for values in producer_results.values()
-                   for value in values if isinstance(value, dict) and 'evidence_id' in value}
+        records = {}
+        for tool, values in producer_results.items():
+            for value in values:
+                if not isinstance(value, dict) or not isinstance(value.get('evidence_id'), str):
+                    continue
+                identity = value['evidence_id']
+                entry = (tool, value)
+                if identity not in records:
+                    records[identity] = entry
+                elif records[identity] != entry:
+                    # An ID with conflicting producers or envelopes is ambiguous.
+                    records[identity] = None
         observations = answer.get('delivery_observations')
         canonical_observations = [pcap_observation_fields(value) for value in observations] if isinstance(observations, list) else observations
         if isinstance(prefix, dict):
@@ -192,7 +202,8 @@ def main():
             if 'coverage' in prefix:
                 last = canonical_observations[-1] if isinstance(canonical_observations, list) and canonical_observations else None
                 identity = last.get('evidence_id') if isinstance(last, dict) else None
-                record = records.get(identity) if isinstance(identity, str) else None
+                entry = records.get(identity) if isinstance(identity, str) else None
+                record = entry[1] if entry is not None else None
                 page = record['normalized_result'] if record is not None else {}
                 checks['pcap_prefix_coverage_observed'] = (
                     page.get('kind') == 'pcap'
@@ -208,7 +219,8 @@ def main():
         if isinstance(canonical_observations, list):
             for observation in canonical_observations:
                 identity = observation.get('evidence_id') if isinstance(observation, dict) else None
-                record = records.get(identity) if isinstance(identity, str) else None
+                entry = records.get(identity) if isinstance(identity, str) else None
+                record = entry[1] if entry is not None else None
                 if record is None:
                     expected_observations.append(None)
                     continue
@@ -237,7 +249,14 @@ def main():
                 and all(isinstance(value, str) and re.fullmatch(r'ev_[a-f0-9]{64}', value) for value in identities)
                 and len(set(identities)) == len(identities)
             )
-            cited = [records.get(identity) if isinstance(identity, str) else None for identity in identities]
+            entries = [records.get(identity) if isinstance(identity, str) else None for identity in identities]
+            cited = [entry[1] if entry is not None else None for entry in entries]
+            expected_tools = ['inspect_pcap_capture'] + (['inspect_analysis_view'] if len(reference['delivery_observations']) == 2 else [])
+            check('pcap_cited_producer_tools', [entry[0] if entry is not None else None for entry in entries], expected_tools)
+            # Summary delivery delegates to a retained view; its envelope operation
+            # is inspect_analysis_view even though the requested tool is inspect_pcap_capture.
+            expected_operations = ['inspect_pcap_capture'] if len(expected_tools) == 1 else ['inspect_analysis_view'] * 2
+            check('pcap_cited_operations', [record.get('operation') if isinstance(record, dict) else None for record in cited], expected_operations)
             checks['pcap_cited_subjects_match_artifact'] = bool(cited) and all(
                 isinstance(record, dict)
                 and isinstance(record.get('subject'), dict)
@@ -296,6 +315,8 @@ def main():
             checks['pcap_cited_capture'] = False
             checks['pcap_cited_subjects_match_artifact'] = False
             checks['pcap_cited_parents_linked'] = False
+            checks['pcap_cited_producer_tools'] = False
+            checks['pcap_cited_operations'] = False
     elif domain == 'flutter-aot':
         for key in ['target', 'abi', 'libapp', 'string_pool', 'coverage', 'limitations']:
             check(key, answer.get(key), reference[key])
