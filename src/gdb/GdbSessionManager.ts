@@ -54,6 +54,8 @@ interface PendingCommand {
   outputBytes: number;
   outputTruncated: boolean;
   outputInvalidUtf8: boolean;
+  terminalRecord: string | undefined;
+  awaitingInferiorStop: boolean;
   readonly resolve: (result: GdbCommandResult) => void;
   readonly reject: (error: Error) => void;
   readonly cleanup: () => void;
@@ -265,6 +267,8 @@ interface GdbSession {
   readonly cleanupFailures: Set<AnalysisError>;
   readonly lines: string[];
   readonly bufferChunks: Buffer[];
+  bufferTail: Buffer | undefined;
+  bufferTailBytes: number;
   bufferBytes: number;
   invalidUtf8Observed: boolean;
   promptTail: string;
@@ -519,6 +523,8 @@ export class GdbSessionManager {
       cleanupFailures: new Set(),
       lines: [],
       bufferChunks: [],
+      bufferTail: undefined,
+      bufferTailBytes: 0,
       bufferBytes: 0,
       invalidUtf8Observed: false,
       promptTail: "",
@@ -647,6 +653,12 @@ export class GdbSessionManager {
       }
       if (signal?.aborted)
         throw new AnalysisCancelledError("start_gdb_session");
+      // Give queued exit notifications a turn before publishing startup.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      if (session.exited || session.protocolError !== undefined)
+        throw new Error(
+          session.protocolError ?? "GDB exited during startup readiness.",
+        );
       // Before this point no target command can run. Once a usable session is
       // published, the inferior state is no longer inferred from startup phase.
       session.noInferiorVerified = false;
@@ -1238,14 +1250,24 @@ export class GdbSessionManager {
         );
         return;
       }
-      if (piece.byteLength > 0) session.bufferChunks.push(Buffer.from(piece));
+      this.#appendLineBytes(session, piece);
       if (newline < 0) break;
-      const record = Buffer.concat(session.bufferChunks, session.bufferBytes);
+      const record = Buffer.concat(
+        [
+          ...session.bufferChunks,
+          ...(session.bufferTail === undefined
+            ? []
+            : [session.bufferTail.subarray(0, session.bufferTailBytes)]),
+        ],
+        session.bufferBytes,
+      );
       const withoutCarriageReturn =
         record.at(-1) === 0x0d ? record.subarray(0, -1) : record;
       const invalidUtf8 = !isUtf8(withoutCarriageReturn);
       const line = withoutCarriageReturn.toString("utf8");
       session.bufferChunks.length = 0;
+      session.bufferTail = undefined;
+      session.bufferTailBytes = 0;
       session.bufferBytes = 0;
       if (invalidUtf8) session.invalidUtf8Observed = true;
       if (line.length > 0) lines.push({ value: line, invalidUtf8 });
@@ -1274,6 +1296,29 @@ export class GdbSessionManager {
           pending.outputInvalidUtf8 ||= invalidUtf8;
         } else pending.outputTruncated = true;
       }
+      if (line.startsWith("*stopped")) {
+        for (const [token, pending] of session.pending) {
+          if (!pending.awaitingInferiorStop) continue;
+          clearTimeout(pending.timer);
+          session.pending.delete(token);
+          pending.cleanup();
+          const records = [...pending.lines];
+          pending.resolve({
+            command: "",
+            mi: pending.terminalRecord ?? "",
+            records,
+            console: records.filter((record) => record.startsWith("~")).join("\n"),
+            target: records.filter((record) => record.startsWith("@")).join("\n"),
+            log: records.filter((record) => record.startsWith("&")).join("\n"),
+            output_truncated: pending.outputTruncated,
+            ...(pending.outputInvalidUtf8
+              ? { output_invalid_utf8: true as const }
+              : {}),
+            completion_status: "complete",
+          });
+        }
+        continue;
+      }
       const match = /^(\d+)\^(done|running|connected|error|exit)(?:,|$)/u.exec(
         line,
       );
@@ -1281,6 +1326,11 @@ export class GdbSessionManager {
       const token = Number(match[1]);
       const pending = session.pending.get(token);
       if (pending === undefined) continue;
+      if (match[2] === "running") {
+        pending.terminalRecord = line;
+        pending.awaitingInferiorStop = true;
+        continue;
+      }
       clearTimeout(pending.timer);
       session.pending.delete(token);
       pending.cleanup();
@@ -1298,6 +1348,29 @@ export class GdbSessionManager {
           : {}),
         completion_status: "complete",
       });
+    }
+  }
+
+  #appendLineBytes(session: GdbSession, piece: Buffer): void {
+    const slabBytes = 64 * 1024;
+    let offset = 0;
+    while (offset < piece.length) {
+      session.bufferTail ??= Buffer.allocUnsafe(slabBytes);
+      const remaining = slabBytes - session.bufferTailBytes;
+      const copied = Math.min(remaining, piece.length - offset);
+      piece.copy(
+        session.bufferTail,
+        session.bufferTailBytes,
+        offset,
+        offset + copied,
+      );
+      session.bufferTailBytes += copied;
+      offset += copied;
+      if (session.bufferTailBytes === slabBytes) {
+        session.bufferChunks.push(session.bufferTail);
+        session.bufferTail = undefined;
+        session.bufferTailBytes = 0;
+      }
     }
   }
 
@@ -1679,6 +1752,8 @@ export class GdbSessionManager {
         outputBytes: 0,
         outputTruncated: false,
         outputInvalidUtf8: false,
+        terminalRecord: undefined,
+        awaitingInferiorStop: false,
       };
       session.pending.set(token, pending);
       abortListener = (): void => {
