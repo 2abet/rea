@@ -46,7 +46,7 @@ SCHEME_PREFIX = r"^[\x00-\x20]*([a-z][a-z0-9+.-]*):"
 URL_PREFIX = r"^([\x00-\x20]*(?:([a-z][a-z0-9+.-]*):)?//)"
 
 
-def authority_start(text):
+def authority_start(text, base_scheme=None):
     """Return where an authority begins and whether it is special, or None.
 
     Follows WHATWG URL parsing as src/domain/recordedTransportUrl.ts does:
@@ -57,6 +57,11 @@ def authority_start(text):
     scheme = re.match(SCHEME_PREFIX, text, flags=re.I)
     name = scheme.group(1).lower() if scheme is not None else None
     if name is not None and name in SPECIAL_SCHEMES and name != "file":
+        # A same-scheme Location without two slash-equivalent separators is
+        # relative to the recorded request, so its @ belongs to the path.
+        following = text[scheme.end():scheme.end() + 2]
+        if name == base_scheme and (len(following) < 2 or any(char not in "/\\" for char in following)):
+            return None
         start = scheme.end()
     else:
         prefix = re.match(URL_PREFIX, text, flags=re.I)
@@ -70,7 +75,7 @@ def authority_start(text):
     return start, True
 
 
-def without_userinfo(value):
+def without_userinfo(value, base_scheme=None):
     """Remove an authority's userinfo using the WHATWG authority boundary.
 
     Special schemes and scheme-relative references also end the authority
@@ -78,7 +83,7 @@ def without_userinfo(value):
     """
     binary = isinstance(value, bytes)
     text = value.decode("latin-1") if binary else value
-    located = authority_start(text)
+    located = authority_start(text, base_scheme)
     if located is None:
         return value
     start, special = located
@@ -110,12 +115,12 @@ def project_record(state, secrets):
             return None
         return text
 
-    def transport_value(value, path, transport_url):
+    def transport_value(value, path, transport_url, base_scheme):
         if not (transport_url or re.fullmatch(r"/(?:backup/)*request/(?:path|authority)", path)):
             return value, False
         binary = isinstance(value, bytes)
         separator = b"@" if binary else "@"
-        safe_url = without_userinfo(value)
+        safe_url = without_userinfo(value, base_scheme if transport_url else None)
         if path.endswith("/authority") and separator in safe_url:
             safe_url = safe_url.rsplit(separator, 1)[1]
         changed = safe_url != value
@@ -130,7 +135,7 @@ def project_record(state, secrets):
         del numbers[before[1]:]
         del redactions[before[2]:]
 
-    def visit(value, path, depth=0, credential=False, transport_url=False):
+    def visit(value, path, depth=0, credential=False, transport_url=False, base_scheme=None):
         if depth > 64:
             raise CaptureFailure("input-limit", "Native capture exceeds the 64-level evidence nesting budget.", path)
         if credential:
@@ -140,7 +145,7 @@ def project_record(state, secrets):
                 binaries.append({"pointer": path, "representation": "producer-bytes", "state": "redacted", "content_base64": None, "bytes": None, "sha256": None})
             return None
         if isinstance(value, bytes):
-            safe_bytes, credential_url = transport_value(value, path, transport_url)
+            safe_bytes, credential_url = transport_value(value, path, transport_url, base_scheme)
             content_base64 = base64.b64encode(value).decode("ascii")
             digest = hashlib.sha256(value).hexdigest()
             hidden = any(secret in value or secret in safe_bytes for secret in byte_secrets) or any(secret in content_base64 or secret in digest or secret in str(len(value)) for secret in secrets)
@@ -157,7 +162,7 @@ def project_record(state, secrets):
                 return None
             return safe_text
         if isinstance(value, str):
-            safe_text, _ = transport_value(value, path, transport_url)
+            safe_text, _ = transport_value(value, path, transport_url, base_scheme)
             return redact(safe_text, path, value)
         if isinstance(value, bool) or value is None:
             return value
@@ -175,10 +180,16 @@ def project_record(state, secrets):
                 for index, field in enumerate(value):
                     if not isinstance(field, (list, tuple)) or len(field) != 2 or not isinstance(field[0], bytes):
                         raise CaptureFailure("format", "Native header/trailer is not an ordered byte pair.", pointer(path, index))
-                    result.append([visit(field[0], pointer(pointer(path, index), 0), depth + 2), visit(field[1], pointer(pointer(path, index), 1), depth + 2, field[0].lower() in CREDENTIALS, field[0].lower() in {b"location", b"referer", b"origin"})])
+                    result.append([visit(field[0], pointer(pointer(path, index), 0), depth + 2), visit(field[1], pointer(pointer(path, index), 1), depth + 2, field[0].lower() in CREDENTIALS, field[0].lower() in {b"location", b"referer", b"origin"}, base_scheme if field[0].lower() == b"location" else None)])
                 return result
-            return [visit(item, pointer(path, index), depth + 1) for index, item in enumerate(value)]
+            return [visit(item, pointer(path, index), depth + 1, base_scheme=base_scheme) for index, item in enumerate(value)]
         if isinstance(value, dict):
+            if path == "" or re.fullmatch(r"/backup(?:/backup)*", path):
+                request = value.get("request")
+                scheme = request.get("scheme") if isinstance(request, dict) else None
+                if isinstance(scheme, bytes):
+                    scheme = scheme.decode("latin-1")
+                base_scheme = scheme.lower() if isinstance(scheme, str) and re.fullmatch(r"[a-z][a-z0-9+.-]*", scheme, flags=re.I) else None
             result = {}
             for key, item in value.items():
                 if not isinstance(key, str):
@@ -189,7 +200,7 @@ def project_record(state, secrets):
                     validate_omitted(item, pointer(path, key), depth + 1)
                     redactions.append({"pointer": path, "reason": "explicit-sensitive-value", "scope": "property-name"})
                     continue
-                result[key] = visit(item, pointer(path, key), depth + 1)
+                result[key] = visit(item, pointer(path, key), depth + 1, base_scheme=base_scheme)
             return result
         raise CaptureFailure("decoder", "Native parser returned an unexpected value type: " + type(value).__name__ + ".", path)
 

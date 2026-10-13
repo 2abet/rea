@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { appendFileSync } from "node:fs";
 import { matchesGlob } from "node:path";
 import { CI_FLAGS as flags, MANUAL_VERIFIERS, SCOPES } from "./scopes.mjs";
+import { planTestSelection } from "./test-selection.mjs";
 
 // Test files select the host/runtime lanes that execute their focused suites.
 const HOST_TEST_OWNERS = ["apple", "package", "sqlite"];
@@ -25,6 +26,15 @@ const FIXTURE_SOURCES = [
   "tests/conformance/versions/**",
 ];
 const READINESS_SOURCES = ["tests/conformance/readiness/**"];
+// These reporters affect CI output only; they do not select a host or provider
+// verification lane when changed on their own.
+const PORTABLE_CI_REPORTERS = new Set([
+  "scripts/ci/job-timings.mjs",
+  "scripts/ci/job-timings-batch.mjs",
+  "scripts/ci/test-report.mjs",
+  "scripts/ci/test-timing-reporter.mjs",
+  "scripts/ci/test-history.mjs",
+]);
 const matchesAny = (file, patterns) =>
   patterns.some((pattern) => matchesGlob(file, pattern));
 const selected = Object.fromEntries(flags.map((flag) => [flag, false]));
@@ -200,6 +210,7 @@ if (tier === "reused") {
       }
       if (matchesAny(file, READINESS_SOURCES)) selected.readiness = true;
       if (file.startsWith("tests/")) continue;
+      if (PORTABLE_CI_REPORTERS.has(file)) continue;
       if (
         /^(src\/process\/|src\/filesystem\/|src\/contracts\/tool|src\/server\/createServer|src\/cli\.ts|scripts\/ci\/)/.test(
           file,
@@ -240,11 +251,17 @@ const matrix = {
       ]
     : [linux],
 };
-const plan = { ...selected, tier, matrix, files, reasons };
+const testSelection = planTestSelection(files, event, tier);
+const plan = { ...selected, tier, matrix, files, reasons, testSelection };
 if (process.env.GITHUB_OUTPUT)
   appendFileSync(
     process.env.GITHUB_OUTPUT,
-    Object.entries({ ...selected, tier, matrix: JSON.stringify(matrix) })
+    Object.entries({
+      ...selected,
+      tier,
+      matrix: JSON.stringify(matrix),
+      test_selection: JSON.stringify(testSelection),
+    })
       .map(([key, value]) => `${key}=${value}\n`)
       .join(""),
   );

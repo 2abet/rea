@@ -32,8 +32,11 @@ def load_capture():
 capture = load_capture()
 
 
-def location(value):
-    record = capture.project_record({"response": {"headers": [[b"Location", value]]}}, [])
+def location(value, scheme=None):
+    state = {"response": {"headers": [[b"Location", value]]}}
+    if scheme is not None:
+        state["request"] = {"scheme": scheme}
+    record = capture.project_record(state, [])
     sidecar = next(
         field for field in record["binary_fields"] if field["pointer"] == "/response/headers/0/1"
     )
@@ -41,6 +44,37 @@ def location(value):
 
 
 class TransportUserinfoTests(unittest.TestCase):
+    def test_same_scheme_locations_preserve_relative_path_text_and_bytes(self):
+        for value in [b"https:invoice@customer", b"https:/invoice@customer", b"https:\\invoice@customer"]:
+            with self.subTest(value=value):
+                text, sidecar, redactions = location(value, b"https")
+                self.assertEqual(text, value.decode("ascii"))
+                self.assertEqual(sidecar["state"], "retained")
+                self.assertEqual(redactions, [])
+
+    def test_location_authorities_still_remove_credentials_with_a_base_scheme(self):
+        for value, scheme, expected in [
+            (b"https://user:pass@host/path", b"https", "https://host/path"),
+            (b"https:\\\\user:pass@host/path", b"https", "https:\\\\host/path"),
+            (b"https:user:pass@host/path", b"http", "https:host/path"),
+        ]:
+            with self.subTest(value=value, scheme=scheme):
+                text, sidecar, redactions = location(value, scheme)
+                self.assertEqual(text, expected)
+                self.assertEqual(sidecar["state"], "redacted")
+                self.assertEqual(len(redactions), 1)
+
+    def test_backup_location_uses_its_own_request_scheme(self):
+        record = capture.project_record({
+            "request": {"scheme": b"http"},
+            "backup": {
+                "request": {"scheme": b"https"},
+                "response": {"headers": [[b"Location", b"https:invoice@customer"]]},
+            },
+        }, [])
+        self.assertEqual(record["reported"]["backup"]["response"]["headers"][0][1], "https:invoice@customer")
+        self.assertEqual(record["redactions"], [])
+
     def test_backslash_ends_a_special_scheme_authority(self):
         text, sidecar, redactions = location(b"https://example.test\\part@tail")
         self.assertEqual(text, "https://example.test\\part@tail")
