@@ -354,6 +354,37 @@ class PcapGraderWorkflowTests(unittest.TestCase):
                     answer, records, reference = self.fixture();records[index]['normalized_result'][field] = wrong
                     self.assertFalse(self.grade(answer, records, reference, tools)['all_factual_checks_pass'])
 
+    def test_faithful_summary_coverage_must_describe_the_single_complete_view(self):
+        for field, wrong in [('status', 'page'), ('examined', 0), ('total', 2),
+                             ('next_offset', 0), ('exhausted', False), ('examined', 1.0)]:
+            with self.subTest(field=field, wrong=wrong):
+                answer, records, reference = self.fixture()
+                records[0]['normalized_result']['coverage'][field] = wrong
+                answer['delivery_observations'][0] = self.observation(records[0])
+                report = self.grade(answer, records, reference)
+                self.assertTrue(report['factual_checks']['pcap_original_delivery_observations'])
+                self.assertFalse(report['all_factual_checks_pass'])
+
+    def test_present_normalized_provenance_requires_string_arrays(self):
+        for index in [0, 1]:
+            for field in ['limitations', 'unknowns']:
+                for wrong in [None, {}, 'scope', [None], [1]]:
+                    with self.subTest(index=index, field=field, wrong=wrong):
+                        answer, records, reference = self.fixture()
+                        records[index]['normalized_result'][field] = wrong
+                        answer['delivery_observations'][index] = self.observation(records[index])
+                        self.assertFalse(self.grade(answer, records, reference)['all_factual_checks_pass'])
+                for empty in [True, False]:
+                    answer, records, reference = self.fixture()
+                    key = 'normalized_limitations' if field == 'limitations' else field
+                    if empty:
+                        records[index]['normalized_result'][field] = []
+                        answer['delivery_observations'][index][key] = []
+                    else:
+                        records[index]['normalized_result'].pop(field)
+                        answer['delivery_observations'][index].pop(key)
+                    self.assertTrue(self.grade(answer, records, reference)['all_factual_checks_pass'])
+
     def test_missing_or_wrong_kind_does_not_hide_malformed_view_containers(self):
         for index, container in [(0, 'summary'), (1, 'page')]:
             for kind in [None, 'unexpected']:

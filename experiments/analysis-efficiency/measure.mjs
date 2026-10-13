@@ -534,6 +534,13 @@ const pcapObservation = (evidence, requestedView) => {
   if (typeof evidenceId !== "string" || !PCAP_EVIDENCE_ID.test(evidenceId))
     throw new Error("PCAP Evidence receipt identity is missing or malformed");
   const value = normalized(evidence);
+  for (const key of ["limitations", "unknowns"])
+    if (
+      Object.hasOwn(value, key) &&
+      (!Array.isArray(value[key]) ||
+        !value[key].every((item) => typeof item === "string"))
+    )
+      throw new Error("PCAP normalized provenance lacks a valid string list");
   const target =
     value.kind === "summary"
       ? value.summary?.target
@@ -618,6 +625,16 @@ const inspectPcapTarget = async () => {
   if (values.delivery === "summary") {
     if (n.kind !== "summary" || n.parent_operation !== "inspect_pcap_capture")
       throw new Error("Runtime returned no requested PCAP summary");
+    if (
+      !isDeepStrictEqual(n.coverage, {
+        status: "complete-within-view",
+        examined: 1,
+        total: 1,
+        next_offset: null,
+        exhausted: true,
+      })
+    )
+      throw new Error("PCAP summary coverage differs from its complete view");
     capture = n.summary;
     const parentEvidenceId = observations[0].parent_evidence_id;
     const view = { kind: "pcap", facet: "http-uris", offset: 0, limit: 2 };

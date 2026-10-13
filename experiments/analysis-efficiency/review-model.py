@@ -193,6 +193,10 @@ def main():
             normalized = value.get('normalized_result')
             supported = (isinstance(normalized, dict) and isinstance(value.get('limitations'), list)
                          and all(isinstance(item, str) for item in value['limitations']))
+            if supported:
+                supported = all(key not in normalized or (isinstance(normalized[key], list)
+                                and all(isinstance(item, str) for item in normalized[key]))
+                                for key in ['limitations', 'unknowns'])
             if supported and ('summary' in normalized or normalized.get('kind') == 'summary'):
                 supported = isinstance(normalized.get('summary'), dict)
             if supported and ('page' in normalized or normalized.get('kind') == 'pcap'):
@@ -252,6 +256,10 @@ def main():
                   [x.get('kind', 'complete') for x in reference['delivery_observations']])
             check('pcap_requested_views', json.dumps([x.get('view') for x in canonical_observations], sort_keys=True),
                   json.dumps([x.get('view') for x in reference['delivery_observations']], sort_keys=True))
+            if len(reference['delivery_observations']) == 2:
+                check('pcap_summary_coverage', json.dumps(canonical_observations[0].get('coverage'), sort_keys=True),
+                      json.dumps({'status': 'complete-within-view', 'examined': 1, 'total': 1,
+                                  'next_offset': None, 'exhausted': True}, sort_keys=True))
             identities = [x.get('evidence_id') for x in canonical_observations]
             checks['pcap_observations_have_reported_ids'] = (
                 isinstance(answer.get('evidence_ids'), list)
@@ -332,6 +340,8 @@ def main():
                     )
         else:
             checks['pcap_requested_delivery_chain'] = False
+            if len(reference['delivery_observations']) == 2:
+                checks['pcap_summary_coverage'] = False
             checks['pcap_observations_have_reported_ids'] = False
             checks['pcap_requested_views'] = False
             checks['pcap_cited_source_supports_uri_prefix'] = False

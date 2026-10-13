@@ -126,7 +126,7 @@ validated.
 Both real CLI complete results match full MCP normalized results, subjects,
 parameters, IDs and limitations. Portable CLI summary/URI views match MCP retained
 normalized facts and subjects; source forms/caller parameters remain distinct.
-Source bytes stay unchanged. Twenty-six context/grading regressions pass, including
+Source bytes stay unchanged. Twenty-eight context/grading regressions pass, including
 cited complete metadata/counts/UTF-16 diagnostics and exact ordered response ID
 lists that reject parent lookups, duplicates and nested representations. URI
 prefix coverage must come from its cited page, even if an uncited page has the
@@ -159,7 +159,7 @@ the preceding driver accepts inconsistent coverage, while the corrected driver
 rejects wrong status, next offset or exhaustion. Unmodified exhausted and
 continuable URI pages still pass. The grader also requires each cited receipt's
 subject digest and local path to identify the reference capture, and uses the
-reference page's verified coverage. Twenty-six grading/context regressions pass,
+reference page's verified coverage. Twenty-eight grading/context regressions pass,
 including missing or malformed subjects and faithful but inconsistent coverage;
 all four original model answers still pass factual regrading. Strict resource
 grades remain false where terminal whole-scope counters are unknown.
@@ -228,3 +228,12 @@ parent citations, missing nulls, false scope and malformed identities. These are
 grader regressions, not real-provider evidence. All four stored actual model
 answers still pass; no model reruns are required. Transcript readers close their
 owned file handles after grading.
+
+The SDK driver and factual grader require summary coverage to describe its one
+complete view and require each present normalized limitations/unknowns field to
+be a string array. Missing fields and valid empty arrays remain distinct.
+Controlled consumer mutations over actual SDK replies reproduce the previously
+accepted inconsistent summary coverage and verify rejection after the guard;
+complete and summary controls still pass. These mutations do not establish a
+malformed-response defect in the provider. The four stored model answers still
+pass factual regrading without another model run.
