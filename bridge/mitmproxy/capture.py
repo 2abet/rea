@@ -42,31 +42,54 @@ class BoundedReader:
 
 
 SPECIAL_SCHEMES = {"ftp", "file", "http", "https", "ws", "wss"}
+SCHEME_PREFIX = r"^[\x00-\x20]*([a-z][a-z0-9+.-]*):"
 URL_PREFIX = r"^([\x00-\x20]*(?:([a-z][a-z0-9+.-]*):)?//)"
+
+
+def authority_start(text):
+    """Return where an authority begins and whether it is special, or None.
+
+    Follows WHATWG URL parsing as src/domain/recordedTransportUrl.ts does:
+    special schemes (and scheme-relative references) skip every leading "/"
+    or "\\" before the authority, so `https://\\user:pass@host` still has
+    userinfo. File URLs carry no userinfo and keep their "//" boundary.
+    """
+    scheme = re.match(SCHEME_PREFIX, text, flags=re.I)
+    name = scheme.group(1).lower() if scheme is not None else None
+    if name is not None and name in SPECIAL_SCHEMES and name != "file":
+        start = scheme.end()
+    else:
+        prefix = re.match(URL_PREFIX, text, flags=re.I)
+        if prefix is None:
+            return None
+        if prefix.group(2) is not None:
+            return prefix.end(), prefix.group(2).lower() in SPECIAL_SCHEMES
+        start = prefix.end()
+    while start < len(text) and text[start] in "/\\":
+        start += 1
+    return start, True
 
 
 def without_userinfo(value):
     """Remove an authority's userinfo using the WHATWG authority boundary.
 
-    Special schemes (and scheme-relative references) also end the authority
-    at a backslash, so later path text containing "@" is not userinfo. This
-    matches src/domain/recordedTransportUrl.ts.
+    Special schemes and scheme-relative references also end the authority
+    at a backslash, so later path text containing "@" is not userinfo.
     """
     binary = isinstance(value, bytes)
     text = value.decode("latin-1") if binary else value
-    prefix = re.match(URL_PREFIX, text, flags=re.I)
-    if prefix is None:
+    located = authority_start(text)
+    if located is None:
         return value
-    scheme = prefix.group(2)
-    special = scheme is None or scheme.lower() in SPECIAL_SCHEMES
+    start, special = located
     terminators = "/?#\\" if special else "/?#"
-    end = prefix.end()
+    end = start
     while end < len(text) and text[end] not in terminators:
         end += 1
-    at = text.rfind("@", prefix.end(), end)
+    at = text.rfind("@", start, end)
     if at < 0:
         return value
-    safe = text[: prefix.end()] + text[at + 1 :]
+    safe = text[:start] + text[at + 1 :]
     return safe.encode("latin-1") if binary else safe
 
 
