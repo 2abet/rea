@@ -79,6 +79,8 @@ def authority_start(text, base_scheme=None):
         if prefix is None:
             return None
         start = prefix.end()
+        if base_scheme == "file":
+            return start, True
     while start < len(text) and text[start] in "/\\":
         start += 1
     return start, True

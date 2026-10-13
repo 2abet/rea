@@ -148,6 +148,15 @@ class TransportUserinfoTests(unittest.TestCase):
         self.assertEqual(sidecar["state"], "redacted")
         self.assertEqual(len(redactions), 1)
 
+    def test_file_base_keeps_paths_after_the_fixed_network_boundary(self):
+        for value in [b"///u@h", b"////u@h"]:
+            with self.subTest(value=value):
+                text, sidecar, redactions = location(value, b"file")
+                self.assertEqual(text, value.decode("ascii"))
+                self.assertEqual(sidecar["state"], "retained")
+                self.assertIsNotNone(sidecar["content_base64"])
+                self.assertEqual(redactions, [])
+
     def test_file_urls_keep_path_text(self):
         self.assertEqual(capture.without_userinfo("file:///a@b"), "file:///a@b")
 
