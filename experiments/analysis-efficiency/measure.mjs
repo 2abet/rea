@@ -523,7 +523,115 @@ const inspectEvmTarget = async () => {
   };
 };
 
+const pcapObservation = (evidence) => {
+  const value = normalized(evidence);
+  return {
+    evidence_id: evidence.evidence_id,
+    limitations: evidence.limitations,
+    ...Object.fromEntries(
+      [
+        "kind",
+        "view",
+        "parent_evidence_id",
+        "coverage",
+        "limitations",
+        "unknowns",
+      ]
+        .filter((key) => Object.hasOwn(value, key) && key !== "limitations")
+        .map((key) => [key, value[key]]),
+    ),
+    ...(Object.hasOwn(value, "limitations")
+      ? { normalized_limitations: value.limitations }
+      : {}),
+  };
+};
+const inspectPcapTarget = async () => {
+  const input = {
+    path: values.path,
+    ...(values.delivery === "summary" ? { detail: "summary" } : {}),
+  };
+  const definition = catalogDefinitions.get("inspect_pcap_capture");
+  const ajv = new Ajv2020({ strict: false, validateFormats: false });
+  if (
+    !definition ||
+    !ajv.validateSchema(definition.inputSchema) ||
+    !ajv.validate(definition.inputSchema, input)
+  )
+    throw new Error("Selected PCAP request is not advertised by this runtime");
+  const inspected = await call("inspect_pcap_capture", input);
+  const n = normalized(inspected);
+  const observations = [pcapObservation(inspected)];
+  let capture, uris;
+  if (values.delivery === "summary") {
+    if (n.kind !== "summary" || n.parent_operation !== "inspect_pcap_capture")
+      throw new Error("Runtime returned no requested PCAP summary");
+    capture = n.summary;
+    const selected = await call("inspect_analysis_view", {
+      source: { kind: "retained-evidence", evidence_id: n.parent_evidence_id },
+      view: { kind: "pcap", facet: "http-uris", offset: 0, limit: 2 },
+    });
+    const page = normalized(selected);
+    if (
+      page.parent_evidence_id !== n.parent_evidence_id ||
+      page.parent_operation !== "inspect_pcap_capture" ||
+      page.kind !== "pcap" ||
+      page.page.facet !== "http-uris" ||
+      page.source_coverage !== capture.coverage ||
+      page.coverage.total !== capture.retained_counts.http_request_uris ||
+      page.coverage.examined !== page.page.items.length ||
+      page.artifact.path !== capture.target.path ||
+      page.artifact.sha256 !== capture.target.sha256
+    )
+      throw new Error(
+        "PCAP page identity, scope or coverage differs from its parent",
+      );
+    uris = page.page.items;
+    observations.push(pcapObservation(selected));
+  } else {
+    const {
+      endpoints,
+      dns_queries,
+      tls_sni_values,
+      protocol_distribution,
+      http_request_uris,
+      unattributed_dns_addresses,
+      diagnostics,
+      ...metadata
+    } = n;
+    capture = {
+      ...metadata,
+      retained_counts: {
+        endpoints: endpoints.length,
+        dns_queries: dns_queries.length,
+        tls_sni_values: tls_sni_values.length,
+        protocol_distribution: protocol_distribution.length,
+        http_request_uris: http_request_uris.length,
+        unattributed_dns_addresses: unattributed_dns_addresses.length,
+      },
+      diagnostics_code_units:
+        diagnostics === undefined
+          ? null
+          : {
+              tshark: diagnostics.tshark_stderr.length,
+              capinfos: diagnostics.capinfos_stderr.length,
+            },
+    };
+    uris = http_request_uris.slice(0, 2);
+  }
+  if (uris.length !== Math.min(2, capture.retained_counts.http_request_uris))
+    throw new Error("Runtime did not return the requested retained URI prefix");
+  return {
+    artifact_sha256: targetSha(inspected),
+    capture,
+    http_request_uris_first2: uris,
+    delivery_observations: observations,
+    evidence_ids: observations.map((item) => item.evidence_id),
+  };
+};
+
 const workflows = {
+  "wireshark-http.cap": inspectPcapTarget,
+  "wireshark-http_redirects.pcapng": inspectPcapTarget,
   "qgis-world-map.gpkg": async () => {
     const columns = ["fid", "NAME", "ISO_A3"];
     const input = {

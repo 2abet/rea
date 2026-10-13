@@ -67,9 +67,28 @@ def scope_with_verified_counts(value, expected_scope, returned_counts):
     return scope, checks
 
 
+def pcap_observation_fields(value):
+    """Equivalent explicit labels are accepted; conflicting duplicates remain failures."""
+    if not isinstance(value, dict):
+        return value
+    result = dict(value)
+    for label, canonical in {
+        'outer_limitations': 'limitations', 'normalized_kind': 'kind',
+        'normalized_view': 'view', 'normalized_parent_evidence_id': 'parent_evidence_id',
+        'normalized_coverage': 'coverage', 'normalized_unknowns': 'unknowns',
+        'normalized_source_coverage': 'source_coverage',
+    }.items():
+        if label not in result:
+            continue
+        if canonical in result and json.dumps(result[label], sort_keys=True) != json.dumps(result[canonical], sort_keys=True):
+            return {**result, 'conflicting_fields': [label, canonical]}
+        result[canonical] = result.pop(label)
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--domain', choices=['wasm', 'evm', 'android', 'flutter-aot', 'sqlite', 'managed', 'managed-nonempty', 'firmware', 'inventory', 'javascript', 'native', 'browser'], required=True)
+    parser.add_argument('--domain', choices=['wasm', 'evm', 'android', 'flutter-aot', 'sqlite', 'pcap', 'managed', 'managed-nonempty', 'firmware', 'inventory', 'javascript', 'native', 'browser'], required=True)
     parser.add_argument('--trial', type=Path, required=True)
     parser.add_argument('--reference', type=Path)
     parser.add_argument('--resource-log', type=Path, required=True)
@@ -138,6 +157,54 @@ def main():
             # Missing is not SQL/JSON null; booleans are not numeric counters.
             check(key, (key in answer, json.dumps(answer.get(key), sort_keys=True)),
                   (True, json.dumps(reference[key], sort_keys=True)))
+    elif domain == 'pcap':
+        check('capture', ('capture' in answer, json.dumps(answer.get('capture'), sort_keys=True)),
+              (True, json.dumps(reference['capture'], sort_keys=True)))
+        prefix = answer.get('http_request_uris_first2')
+        records = {value['evidence_id']: value for values in producer_results.values()
+                   for value in values if isinstance(value, dict) and 'evidence_id' in value}
+        if isinstance(prefix, dict):
+            checks['pcap_prefix_fields_supported'] = set(prefix) <= {'items', 'coverage', 'source_coverage'} and 'items' in prefix
+            if 'source_coverage' in prefix:
+                check('pcap_prefix_source_coverage', prefix['source_coverage'], reference['capture']['coverage'])
+            if 'coverage' in prefix:
+                page_coverages = [value['normalized_result']['coverage'] for value in records.values()
+                                  if value['normalized_result'].get('kind') == 'pcap'
+                                  and value['normalized_result']['page'].get('facet') == 'http-uris'
+                                  and value['normalized_result']['page'].get('items') == prefix.get('items')]
+                checks['pcap_prefix_coverage_observed'] = any(json.dumps(prefix['coverage'], sort_keys=True) == json.dumps(value, sort_keys=True) for value in page_coverages)
+            prefix = prefix.get('items')
+        check('http_request_uris_first2', ('http_request_uris_first2' in answer, json.dumps(prefix, sort_keys=True)),
+              (True, json.dumps(reference['http_request_uris_first2'], sort_keys=True)))
+        observations = answer.get('delivery_observations')
+        canonical_observations = [pcap_observation_fields(value) for value in observations] if isinstance(observations, list) else observations
+        expected_observations = []
+        if isinstance(canonical_observations, list):
+            for observation in canonical_observations:
+                record = records.get(observation.get('evidence_id')) if isinstance(observation, dict) else None
+                if record is None:
+                    expected_observations.append(None)
+                    continue
+                value = record['normalized_result']
+                expected = {'evidence_id': record['evidence_id'], 'limitations': record['limitations']}
+                for key in ['kind', 'view', 'parent_evidence_id', 'coverage', 'unknowns']:
+                    if key in value:
+                        expected[key] = value[key]
+                if 'limitations' in value:
+                    expected['normalized_limitations'] = value['limitations']
+                if 'source_coverage' in observation and 'source_coverage' in value:
+                    expected['source_coverage'] = value['source_coverage']
+                expected_observations.append(expected)
+        checks['pcap_delivery_observations_nonempty'] = isinstance(observations, list) and bool(observations)
+        check('pcap_original_delivery_observations', json.dumps(canonical_observations, sort_keys=True),
+              json.dumps(expected_observations, sort_keys=True))
+        if isinstance(canonical_observations, list) and all(isinstance(x, dict) for x in canonical_observations):
+            check('pcap_requested_delivery_chain', [x.get('kind', 'complete') for x in canonical_observations],
+                  [x.get('kind', 'complete') for x in reference['delivery_observations']])
+            checks['pcap_observations_have_reported_ids'] = {x.get('evidence_id') for x in canonical_observations} <= reported_ids
+        else:
+            checks['pcap_requested_delivery_chain'] = False
+            checks['pcap_observations_have_reported_ids'] = False
     elif domain == 'flutter-aot':
         for key in ['target', 'abi', 'libapp', 'string_pool', 'coverage', 'limitations']:
             check(key, answer.get(key), reference[key])

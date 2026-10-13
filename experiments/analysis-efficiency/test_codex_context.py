@@ -38,6 +38,38 @@ class ManagedCoverageTests(unittest.TestCase):
         self.assertNotEqual(scope, expected)
 
 
+class PcapCoverageTests(unittest.TestCase):
+    def test_explicit_labels_preserve_original_nulls_and_source_scope(self):
+        canonical = runpy.run_path(str(Path(__file__).with_name('review-model.py')))['pcap_observation_fields']
+        original = {'outer_limitations': [], 'normalized_kind': 'pcap',
+                    'normalized_coverage': {'examined': 2, 'total': 23, 'next_offset': 2, 'exhausted': False},
+                    'normalized_source_coverage': 'partial', 'normalized_parent_evidence_id': None}
+        result = canonical(original)
+        self.assertEqual(result['limitations'], [])
+        self.assertEqual(result['source_coverage'], 'partial')
+        self.assertEqual(result['coverage']['total'], 23)
+        self.assertIsNone(result['parent_evidence_id'])
+        self.assertIn('outer_limitations', original)
+        self.assertNotIn('parent_evidence_id', canonical({}))
+
+    def test_conflicting_duplicates_and_json_type_substitutions_stay_failures(self):
+        canonical = runpy.run_path(str(Path(__file__).with_name('review-model.py')))['pcap_observation_fields']
+        for wrong in ['partial', None]:
+            result = canonical({'normalized_source_coverage': 'complete', 'source_coverage': wrong})
+            self.assertIn('conflicting_fields', result)
+            self.assertEqual(result['normalized_source_coverage'], 'complete')
+            self.assertEqual(result['source_coverage'], wrong)
+        result = canonical({'normalized_coverage': {'examined': 1}, 'coverage': {'examined': True}})
+        self.assertIn('conflicting_fields', result)
+        self.assertEqual(canonical({'outer_limitations': [], 'limitations': []}), {'limitations': []})
+
+    def test_unsupported_claims_are_retained_for_exact_producer_checking(self):
+        canonical = runpy.run_path(str(Path(__file__).with_name('review-model.py')))['pcap_observation_fields']
+        original = {'normalized_kind': 'pcap', 'unrecorded_traffic_absent': True}
+        self.assertIn('unrecorded_traffic_absent', canonical(original))
+        self.assertIsNone(canonical(None))
+
+
 class ContextCaptureTests(unittest.TestCase):
     def test_filters_ambient_account_and_nested_usage_state(self):
         with tempfile.TemporaryDirectory() as directory:
