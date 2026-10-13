@@ -137,6 +137,64 @@ it("keeps every translated root README and authored guide on the documentation l
   });
 });
 
+it.each([
+  "job-timings.mjs",
+  "job-timings-batch.mjs",
+  "test-report.mjs",
+  "test-timing-reporter.mjs",
+  "test-history.mjs",
+])(
+  "keeps portable CI reporter %s on static checks and portable tests",
+  async (name) => {
+    const { directory, base } = await fixture();
+    const head = await change(directory, [`scripts/ci/${name}`]);
+    const plan = await classify(directory, base, head);
+    const { CI_FLAGS } = await loadScopes();
+    expect(plan.code).toBe(true);
+    for (const flag of CI_FLAGS)
+      if (flag !== "code") expect(plan[flag]).toBe(false);
+  },
+);
+
+it("preserves a provider lane when a portable CI reporter changes with provider source", async () => {
+  const { directory, base } = await fixture();
+  const head = await change(directory, [
+    "scripts/ci/test-report.mjs",
+    "src/evm/Example.ts",
+  ]);
+  expect(await classify(directory, base, head)).toMatchObject({
+    code: true,
+    evm: true,
+    browser: false,
+    package: false,
+  });
+});
+
+it("keeps unknown CI scripts on complete qualification", async () => {
+  const { directory, base } = await fixture();
+  const head = await change(directory, ["scripts/ci/new-qualification.mjs"]);
+  const plan = await classify(directory, base, head);
+  const { CI_FLAGS } = await loadScopes();
+  for (const flag of CI_FLAGS) expect(plan[flag]).toBe(true);
+});
+
+it("emits an observational owner proposal without changing ordinary or full portable execution", async () => {
+  const { directory, base } = await fixture();
+  const head = await change(directory, ["src/evm/Example.ts"]);
+  expect(await classify(directory, base, head)).toMatchObject({
+    code: true,
+    testSelection: { mode: "candidate", owners: ["evm"] },
+  });
+  expect(
+    await classify(directory, base, head, "pull_request", true),
+  ).toMatchObject({
+    code: true,
+    testSelection: { mode: "full", owners: [] },
+  });
+  const output = await readFile(join(directory, "scope-output"), "utf8");
+  expect(output).toContain('test_selection={"version":1,"mode":"full"');
+});
+
 it("does not charge a documentation PR for unrelated implementation updates on main", async () => {
   const { directory, base } = await fixture();
   await git(directory, ["switch", "-c", "docs/change"]);
@@ -622,7 +680,9 @@ it.each([
   async (scope, name) => {
     const workflow = z
       .object({
-        on: z.object({ workflow_call: z.null() }).passthrough(),
+        on: z
+          .object({ workflow_call: z.object({}).passthrough().nullable() })
+          .passthrough(),
       })
       .parse(
         parse(
@@ -662,8 +722,16 @@ it("rejects skipped selected work while allowing unselected lanes to skip", asyn
   const command = fileURLToPath(
     new URL("../../../scripts/ci/required.mjs", import.meta.url),
   );
+  const { CI_FLAGS } = await loadScopes();
   const jobs = {
-    changes: { result: "success", outputs: { evm: "true" } },
+    changes: {
+      result: "success",
+      outputs: {
+        ...Object.fromEntries(CI_FLAGS.map((flag) => [flag, "false"])),
+        tier: "fast",
+        evm: "true",
+      },
+    },
     static: { result: "success" },
     test: { result: "success" },
     evm: { result: "success" },

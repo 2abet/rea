@@ -26,6 +26,15 @@ const workflow = async (filename = "ci.yml") =>
       ),
     );
 
+const scopeFlags = async () =>
+  z
+    .object({ CI_FLAGS: z.array(z.string()) })
+    .parse(
+      await import(
+        new URL("../../../scripts/ci/scopes.mjs", import.meta.url).href
+      ),
+    ).CI_FLAGS;
+
 it("binds SQLite compatibility jobs to the build's prepared runtime artifact and root layout", async () => {
   expect((await workflow()).jobs["sqlite-runtime"]?.if).toBe(
     "needs.changes.outputs.sqlite == 'true'",
@@ -57,13 +66,7 @@ it("binds SQLite compatibility jobs to the build's prepared runtime artifact and
 
 it("exports every canonical scope with read authority for admission and keeps telemetry outside the gate", async () => {
   const { jobs } = await workflow();
-  const { CI_FLAGS } = z
-    .object({ CI_FLAGS: z.array(z.string()) })
-    .parse(
-      await import(
-        new URL("../../../scripts/ci/scopes.mjs", import.meta.url).href
-      ),
-    );
+  const CI_FLAGS = await scopeFlags();
   const outputs = z.record(z.string(), z.string()).parse(jobs.changes?.outputs);
   expect(jobs.changes?.permissions).toEqual({
     contents: "read",
@@ -163,6 +166,115 @@ it("holds native and provider fan-out behind static validation while portable fe
     expect(job.if).not.toMatch(/always\(|cancelled\(/u);
   }
   expect(jobs["test-shard"]?.needs).not.toContain("static");
+});
+
+it("binds provider build reuse to the current run while keeping standalone dispatches independent", async () => {
+  const { jobs } = await workflow();
+  const consumers = [
+    "browser",
+    "binary_layout",
+    "evm",
+    "javascript_recovery",
+    "recorded_crash",
+    "web_network",
+    "web_runtime",
+    "web_source_map",
+  ];
+  const buildTerms = z
+    .string()
+    .parse(jobs.build?.if)
+    .split("||")
+    .map((term) => term.trim());
+  // Provider workflow edits select their lane without code=true. The build
+  // producer must still run, without selecting the portable test shards.
+  expect(new Set(buildTerms)).toEqual(
+    new Set(
+      ["code", ...consumers].map(
+        (scope) => `needs.changes.outputs.${scope} == 'true'`,
+      ),
+    ),
+  );
+  expect(jobs["test-shard"]?.if).toBe("needs.changes.outputs.code == 'true'");
+  for (const name of consumers) {
+    const caller = jobs[name];
+    expect(caller?.needs).toContain("build");
+    expect(caller?.with).toEqual({ build_cache_artifact: "rea-build-cache" });
+    const path = z.string().parse(caller?.uses);
+    const called = z
+      .object({
+        on: z.object({
+          workflow_call: z.object({
+            inputs: z.record(z.string(), z.unknown()),
+          }),
+          workflow_dispatch: z.unknown(),
+        }),
+        jobs: z.record(
+          z.string(),
+          z.object({
+            steps: z.array(
+              z.object({
+                uses: z.string().optional(),
+                with: z.record(z.string(), z.unknown()).optional(),
+              }),
+            ),
+          }),
+        ),
+      })
+      .parse(
+        parse(
+          await readFile(new URL(`../../../${path}`, import.meta.url), "utf8"),
+        ),
+      );
+    expect(called.on.workflow_call.inputs.build_cache_artifact).toMatchObject({
+      type: "string",
+      default: "",
+    });
+    expect(Object.hasOwn(called.on, "workflow_dispatch")).toBe(true);
+    for (const job of Object.values(called.jobs))
+      expect(
+        job.steps.find(
+          (step) => step.uses === "./.github/actions/portable-build-cache",
+        )?.with,
+      ).toEqual({ build_cache_artifact: "${{ inputs.build_cache_artifact }}" });
+  }
+  const action = z
+    .object({
+      runs: z.object({
+        steps: z.array(
+          z.object({
+            id: z.string().optional(),
+            uses: z.string().optional(),
+            if: z.string().optional(),
+            with: z.record(z.string(), z.unknown()).optional(),
+            "continue-on-error": z.boolean().optional(),
+          }),
+        ),
+      }),
+    })
+    .parse(
+      parse(
+        await readFile(
+          new URL(
+            "../../../.github/actions/portable-build-cache/action.yml",
+            import.meta.url,
+          ),
+          "utf8",
+        ),
+      ),
+    );
+  const download = action.runs.steps.find(
+    (step) => step.uses === "actions/download-artifact@v4",
+  );
+  expect(download?.with).toEqual({
+    name: "${{ inputs.build_cache_artifact }}",
+    path: ".turbo/cache/",
+  });
+  expect(download?.if).toBe("inputs.build_cache_artifact != ''");
+  expect(download?.["continue-on-error"]).not.toBe(true);
+  for (const step of action.runs.steps.filter(
+    (step) => step.id === "plan" || step.uses?.startsWith("actions/cache"),
+  ))
+    expect(step.if).toContain("inputs.build_cache_artifact == ''");
 });
 
 it("runs workflow validation inside required static checks when selected", async () => {
@@ -294,7 +406,14 @@ it.each([
       );
       needs.changes = {
         result: "success",
-        outputs: { code: "true", [scope]: selected },
+        outputs: {
+          ...Object.fromEntries(
+            (await scopeFlags()).map((flag) => [flag, "false"]),
+          ),
+          tier: "fast",
+          code: "true",
+          [scope]: selected,
+        },
       };
       if (result === "missing") delete needs[lane];
       else needs[lane] = { result };
@@ -319,3 +438,69 @@ it.each([
     }
   },
 );
+
+it("rejects incomplete or malformed classification even when available jobs succeeded", async () => {
+  const flags = await scopeFlags();
+  const valid = {
+    ...Object.fromEntries(flags.map((flag) => [flag, "false"])),
+    tier: "fast",
+  };
+  const run = (outputs: unknown) =>
+    executeWorkflowFixture(
+      process.execPath,
+      [
+        fileURLToPath(
+          new URL("../../../scripts/ci/required.mjs", import.meta.url),
+        ),
+      ],
+      {
+        env: {
+          ...process.env,
+          CI_JOBS: JSON.stringify({
+            changes: { result: "success", outputs },
+            static: { result: "success" },
+            test: { result: "success" },
+          }),
+          CI_QUALIFICATION_DIRECTORY: "",
+        },
+      },
+    );
+  await expect(run(valid)).resolves.toMatchObject({ stderr: "" });
+  // Metadata is not a scope, even when its string happens to be "true".
+  await expect(
+    run({ ...valid, qualification_run_id: "true" }),
+  ).resolves.toMatchObject({ stderr: "" });
+  for (const outputs of [
+    undefined,
+    null,
+    {},
+    { ...valid, tier: undefined },
+    { ...valid, tier: "" },
+    { ...valid, tier: "unknown" },
+  ]) {
+    await expect(run(outputs)).rejects.toMatchObject({
+      code: 1,
+      stderr: expect.stringContaining("valid tier"),
+    });
+  }
+  for (const flag of flags) {
+    await expect(run({ ...valid, [flag]: undefined })).rejects.toMatchObject({
+      code: 1,
+      stderr: expect.stringContaining(`scope outputs: ${flag}`),
+    });
+  }
+  for (const value of ["", "TRUE", "yes", true, false, 0, null, [], {}]) {
+    await expect(run({ ...valid, sqlite: value })).rejects.toMatchObject({
+      code: 1,
+      stderr: expect.stringContaining("scope outputs: sqlite"),
+    });
+  }
+  for (const tier of ["full", "reused"]) {
+    await expect(
+      run({ ...valid, tier, sqlite: undefined }),
+    ).rejects.toMatchObject({
+      code: 1,
+      stderr: expect.stringContaining("scope outputs: sqlite"),
+    });
+  }
+});

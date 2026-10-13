@@ -805,6 +805,27 @@ remain present and fail if classification fails. Every code change retains the
 complete six-shard Linux suite; individual test files are not selected by
 imports or filenames.
 
+Ordinary PRs also produce an **observational** test-selection plan. The candidate
+leaf-adapter ownership table lives in `scripts/ci/test-selection.mjs`, separately
+from provider-job scopes. It proposes keeping affected owners plus every unowned
+test, including all CLI/MCP, acceptance, composition, conformance, and process
+tests. Shared inputs, unknown paths, missing owner tests, and removed tests fall
+back to the complete inventory. Renames account for both paths. Main, scheduled,
+manual, and `ci:full` runs always propose the full suite.
+
+All six shards still execute the complete suite. The existing report merge
+compares the proposal with actual module outcomes and retains
+`.cache/ci-test-selection/report.json` in `test-results`, including selected and
+omitted paths, changed input paths, missed failures, unobserved files, scheduling weights, PR head and
+executed merge SHA. This adds no test reruns or runner jobs. Missing, duplicate,
+skipped, interrupted, or unhandled results cannot establish a complete comparison;
+even a complete passing comparison is not proof of ownership completeness.
+Before enabling omissions, review representative full-run comparisons and
+cross-owner consumers, including failures, and measure completed CI feedback and
+runner demand. There is no automatic promotion or switch to skip tests. The
+initial proposal measures only leaf producer-test omissions; it does not promise
+the savings of a broader affected-test planner.
+
 `scripts/ci/plan.mjs` selects lanes using the ownership table in
 `scripts/ci/scopes.mjs`. Provider implementation changes run their real-provider
 verifiers and the Linux x64 installed-package/Inspector baseline. The `apple`
@@ -826,8 +847,12 @@ scripts also select it. Unrelated code edits retain the complete portable suite
 on the pinned Node version without starting four additional compatibility jobs.
 Full qualification retains every SQLite version.
 Shared process/contract/CLI boundaries, dependencies, other packaging inputs,
-unknown paths, and changes to the planner select the full baseline. Package
-script-only edits select their owning verifier when its entrypoint is
+unknown paths, and changes to the planner select the full baseline.
+CI timing collection, timing history, and test-report helper edits retain static
+checks and the complete portable suite without selecting unrelated host/provider
+lanes. Classification, qualification, gate, release receipt, and unknown CI
+scripts keep the broad fallback.
+Package script-only edits select their owning verifier when its entrypoint is
 identifiable; unknown or shared script changes select everything. Android
 build-script edits retain the Linux suite and workflow validation; real Android
 verification stays manual. Renames account for both paths.
@@ -874,7 +899,10 @@ summary. Representative Git-diff cases live in
 `tests/boundary/filesystem/ciChangeScope.test.ts`.
 
 `CI required` always runs and checks classification and every selected lane,
-rejecting failed, cancelled, or unexpectedly skipped work. Branch protection
+rejecting failed, cancelled, or unexpectedly skipped work. It rejects missing or
+unknown tiers and requires every canonical scope to be explicitly `true` or
+`false`; incomplete classification cannot silently omit verification lanes.
+Branch protection
 should require this aggregate, `Static checks`, `Portable tests`, and
 `Conventional PR title`. Title validation runs separately on PR opening,
 reopening, commits, and edits; correcting a title refreshes only this lightweight
@@ -953,6 +981,16 @@ Missing or unusable history falls back to Vitest's default assignment. Only
 timing data is reused; live provider results are never cached. Turbo outputs are
 restored by task hash, with trusted default-branch runs as cache writers and PRs
 as restore-only consumers. npm caches hold downloads, not `node_modules`.
+
+The eight automatic browser, binary-layout, EVM, JavaScript-recovery,
+recorded-crash, and web provider lanes download `rea-build-cache` from their own
+run after the build and static jobs succeed. Their existing build commands still
+validate task hashes and rebuild mismatched inputs; provider observations always
+run. Provider-workflow-only edits also admit the build without enabling source
+test shards. Direct provider dispatches retain the cross-run restore-only cache.
+This removes repeated compilation on fresh source revisions, but adds the build
+as a prerequisite: a delayed build can delay provider admission. Compare queue
+and execution times before claiming an end-to-end speedup.
 
 These native baseline checks complement the Linux source-test shards and the
 separate Apple-artifact and real-provider lanes. Actual Hopper, Ghidra, IDA,
