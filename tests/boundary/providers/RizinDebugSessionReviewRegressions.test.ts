@@ -5,10 +5,12 @@ import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
 
 import { RizinDebugSessionManager } from "../../../src/rizin/RizinDebugSessionManager.js";
+import { evidenceSchema } from "../../../src/domain/evidence.js";
 import {
   createRizinTestManager,
   rizinTestInferiorTty,
 } from "./RizinTestInferiorTty.js";
+import { createInjectedProcess } from "./RizinDebugSessionCoverage.fixtures.js";
 
 let directory: string | undefined;
 const managers: Array<{ closeAll(): Promise<void> }> = [];
@@ -63,6 +65,35 @@ it("keeps persistent Rizin sessions unavailable on Windows", async () => {
     expect(rizin.error.message).toContain("Linux /proc descriptor readback");
   }
 });
+
+it.skipIf(process.platform === "win32")(
+  "rejects startup when Rizin exits immediately after its initial frame",
+  async () => {
+    const injected = createInjectedProcess({
+      startup: (control) => {
+        control.output(Buffer.from([0]));
+        control.exit();
+      },
+    });
+    const manager = createRizinTestManager(
+      { REA_RIZIN_COMMAND: "injected-rizin" },
+      { spawnProcess: injected.spawnProcess },
+    );
+    managers.push(manager);
+
+    const started = await manager.start({
+      path: "/tmp/fixture.bin",
+      inferior_tty: await rizinTestInferiorTty(),
+    });
+
+    expect(started.ok).toBe(false);
+    if (!started.ok) {
+      expect(started.error._tag).toBe("AnalysisCapabilityUnavailableError");
+      expect(started.error.message).toContain("exited");
+      expect(started.error.message).not.toContain("timed out");
+    }
+  },
+);
 
 it.skipIf(process.platform === "win32")(
   "preserves command parameters in Rizin observation evidence",
@@ -438,9 +469,12 @@ it.skipIf(process.platform === "win32")(
   async () => {
     directory = await mkdtemp(join(tmpdir(), "rea-rizin-command-exit-"));
     const provider = join(directory, "fake-rizin-command-exit.mjs");
+    const writerPidPath = join(directory, "writer.pid");
     await writeFile(
       provider,
       `#!/usr/bin/env node
+import { spawn } from "node:child_process";
+import { writeFileSync } from "node:fs";
 process.stdout.write("\\0");
 let input = "";
 process.stdin.setEncoding("utf8");
@@ -450,15 +484,35 @@ process.stdin.on("data", (chunk) => {
     const boundary = input.indexOf("\\n");
     if (boundary < 0) break;
     const line = input.slice(0, boundary); input = input.slice(boundary + 1);
-    if (line === "exit-now") process.stdout.write("partial-before-exit\\0second-partial\\0", () => process.exit(7));
+    if (line === "exit-now") {
+      const writer = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "inherit" });
+      writeFileSync(${JSON.stringify(writerPidPath)}, String(writer.pid));
+      process.stdout.write("partial-before-exit\\0second-partial\\0", () => process.exit(7));
+    }
   }
 });
 `,
     );
     await chmod(provider, 0o700);
-    const manager = createRizinTestManager({
-      REA_RIZIN_COMMAND: provider,
-    });
+    let writerObserved = false;
+    const manager = createRizinTestManager(
+      { REA_RIZIN_COMMAND: provider },
+      {
+        stopProcess: async () => {
+          const writerPid = Number(await readFile(writerPidPath, "utf8"));
+          try {
+            process.kill(writerPid, 0);
+            writerObserved = true;
+          } catch {
+            writerObserved = false;
+          }
+          return {
+            status: "incomplete",
+            reason: "owned output writer is still active",
+          };
+        },
+      },
+    );
     managers.push(manager);
     const started = await manager.start({
       path: "/tmp/fixture.bin",
@@ -469,34 +523,31 @@ process.stdin.on("data", (chunk) => {
 
     const exited = await manager.execute(started.value.session_id, "exit-now");
 
-    expect(exited.ok).toBe(true);
-    if (exited.ok) {
-      expect(exited.value.result).toMatchObject({
-        output: ["partial-before-exit", "second-partial"].join("\n"),
-        output_truncated: false,
-        output_scope: "command_and_interleaved_session_output",
-        completion_status: "unknown",
+    expect(exited.ok).toBe(false);
+    expect(writerObserved).toBe(true);
+    if (!exited.ok) {
+      expect(exited.error.cleanup).toEqual({
+        reason: "owned output writer is still active",
+        resources: [started.value.session_id],
       });
-      expect(exited.value.evidence.normalized_result).toMatchObject({
-        output: ["partial-before-exit", "second-partial"].join("\n"),
-        completion_status: "unknown",
+      expect(exited.error.partialObservation).toMatchObject({
+        normalized_result: {
+          output: ["partial-before-exit", "second-partial"].join("\n"),
+          completion_status: "unknown",
+        },
+        parameters: {
+          command: "exit-now",
+          session_id: started.value.session_id,
+        },
       });
-      expect(exited.value.evidence.raw_result).toMatchObject({
-        output: ["partial-before-exit", "second-partial"].join("\n"),
-      });
-      expect(exited.value.evidence.parameters).toMatchObject({
-        command: "exit-now",
-        session_id: started.value.session_id,
-      });
-      expect(exited.value.evidence.limitations.join(" ")).toContain(
+      const partialEvidence = evidenceSchema.parse(
+        exited.error.partialObservation,
+      );
+      expect(partialEvidence.limitations.join(" ")).toContain(
         "Rizin exited before the command-completion marker; retained frame output is partial and command completion is unknown.",
       );
-      expect(exited.value.evidence.limitations.join(" ")).toContain(
-        "The current debugger target identity is not established by the Rizin session identifier.",
-      );
-      expect(exited.value.evidence.limitations.join(" ")).toContain(
-        "The command is unrestricted and may access local files, the shell, network, or mutate the target.",
-      );
     }
+    const writerPid = Number(await readFile(writerPidPath, "utf8"));
+    process.kill(writerPid, "SIGKILL");
   },
 );

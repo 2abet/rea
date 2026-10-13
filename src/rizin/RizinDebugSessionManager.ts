@@ -143,7 +143,10 @@ class RizinProcessExitError extends Error {
 }
 
 class RizinCommandCancelledError extends AnalysisCancelledError {
-  constructor(readonly partialOutput: string, cause: unknown) {
+  constructor(
+    readonly partialOutput: string,
+    cause: unknown,
+  ) {
     super("rizin_debug_command", {
       cause,
       capturedOutput: {
@@ -395,8 +398,15 @@ export class RizinDebugSessionManager {
     });
     try {
       await waitForFrame(session, STARTUP_TIMEOUT_MS, signal);
+      // Let process and stream lifecycle notifications queued alongside the
+      // initial frame run before publishing the session as ready.
+      await new Promise<void>((resolve) => setImmediate(resolve));
       if (signal?.aborted)
         throw new AnalysisCancelledError("start_rizin_debug_session");
+      if (session.exited)
+        throw new RizinProcessExitError("Rizin exited during startup.");
+      if (session.protocolError !== undefined)
+        throw new Error(session.protocolError);
       session.ready = true;
       return ok({ session_id: id, backend: input.backend ?? null });
     } catch (cause) {
@@ -424,6 +434,27 @@ export class RizinDebugSessionManager {
             { cause },
           ),
         );
+      if (cause instanceof RizinProcessExitError) {
+        const output = session.supervisor.snapshot();
+        return err(
+          new AnalysisCapabilityUnavailableError(
+            "rizin",
+            "start_rizin_debug_session",
+            cause.message,
+            {
+              cause,
+              capturedOutput: {
+                stdout: output.stdout.text,
+                stderr: output.stderr.text,
+                truncated:
+                  output.diagnosticTruncated === true ||
+                  output.stdout.observedBytes > output.stdout.bytes ||
+                  output.stderr.observedBytes > output.stderr.bytes,
+              },
+            },
+          ),
+        );
+      }
       return err(
         new AnalysisTimeoutError(
           "start_rizin_debug_session",
@@ -615,48 +646,44 @@ export class RizinDebugSessionManager {
         const partialEvidence =
           partialOutput === undefined
             ? undefined
-            : createEvidence(
-                undefined,
-                RIZIN_DEBUGGER_PROVIDER_IDENTITY,
-                {
-                  predicateType: "rea.debugger.command-observation",
-                  operation: "rizin_debug_command",
-                  parameters: {
-                    session_id: sessionId,
-                    command,
-                    inferior_tty: session.inferiorTty,
-                  },
-                  result: {
-                    command,
-                    output: partialOutput,
-                    output_scope: "command_and_interleaved_session_output",
-                    output_truncated: false,
-                    completion_status: "unknown",
-                    backend: session.backend,
-                    ...(session.invalidUtf8Observed
-                      ? { output_invalid_utf8: true as const }
-                      : {}),
-                  },
-                  rawResult: {
-                    command,
-                    output: partialOutput,
-                    output_scope: "command_and_interleaved_session_output",
-                    output_truncated: false,
-                    completion_status: "unknown",
-                    backend: session.backend,
-                    ...(session.invalidUtf8Observed
-                      ? { output_invalid_utf8: true as const }
-                      : {}),
-                  },
-                  subjectUnavailableReason:
-                    "The current debugger target identity is not established by the Rizin session identifier.",
-                  limitations: [
-                    "The Rizin command was cancelled; collected frame output is partial and command completion is unknown.",
-                    "The owned debugger session was stopped because command output can no longer be correlated safely.",
-                    "The command is unrestricted and may access local files, the shell, network, or mutate the target.",
-                  ],
+            : createEvidence(undefined, RIZIN_DEBUGGER_PROVIDER_IDENTITY, {
+                predicateType: "rea.debugger.command-observation",
+                operation: "rizin_debug_command",
+                parameters: {
+                  session_id: sessionId,
+                  command,
+                  inferior_tty: session.inferiorTty,
                 },
-              );
+                result: {
+                  command,
+                  output: partialOutput,
+                  output_scope: "command_and_interleaved_session_output",
+                  output_truncated: false,
+                  completion_status: "unknown",
+                  backend: session.backend,
+                  ...(session.invalidUtf8Observed
+                    ? { output_invalid_utf8: true as const }
+                    : {}),
+                },
+                rawResult: {
+                  command,
+                  output: partialOutput,
+                  output_scope: "command_and_interleaved_session_output",
+                  output_truncated: false,
+                  completion_status: "unknown",
+                  backend: session.backend,
+                  ...(session.invalidUtf8Observed
+                    ? { output_invalid_utf8: true as const }
+                    : {}),
+                },
+                subjectUnavailableReason:
+                  "The current debugger target identity is not established by the Rizin session identifier.",
+                limitations: [
+                  "The Rizin command was cancelled; collected frame output is partial and command completion is unknown.",
+                  "The owned debugger session was stopped because command output can no longer be correlated safely.",
+                  "The command is unrestricted and may access local files, the shell, network, or mutate the target.",
+                ],
+              });
         session.protocolError =
           "A Rizin command was cancelled; the owned session was stopped because command output can no longer be correlated safely.";
         const stopped = await this.#stopDebuggerOnly(session, true);
@@ -767,6 +794,16 @@ export class RizinDebugSessionManager {
             ],
           },
         );
+        const stopped = await this.#stopDebuggerOnly(session, true);
+        if (stopped.status === "incomplete")
+          return err(
+            this.#retainCleanupFailure(
+              session,
+              "rizin_debug_command",
+              stopped.reason,
+              { cause, partialObservation: evidence },
+            ),
+          );
         return ok({ result, evidence });
       }
       session.protocolError =
@@ -850,6 +887,24 @@ export class RizinDebugSessionManager {
       );
     this.#sessions.delete(sessionId);
     return ok({ target_state: "unknown" });
+  }
+
+  async retryCleanupFailures(): Promise<Result<null, AnalysisError>> {
+    for (const session of this.#sessions.values()) {
+      if (session.cleanupFailures.size === 0) continue;
+      const stopped = await this.#stopDebuggerOnly(session);
+      if (stopped.status === "incomplete")
+        return err(
+          [...session.cleanupFailures].at(-1) ??
+            this.#retainCleanupFailure(
+              session,
+              "close_rizin_debug_session",
+              stopped.reason,
+            ),
+        );
+      this.#sessions.delete(session.id);
+    }
+    return ok(null);
   }
 
   async closeAll(): Promise<void> {

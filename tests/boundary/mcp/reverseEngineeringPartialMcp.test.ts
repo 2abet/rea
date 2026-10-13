@@ -363,7 +363,7 @@ it("preserves a partial MCP error without claiming failed Evidence retention", a
   ).not.toContain("retained-evidence");
 });
 
-it("delivers objdump Evidence and ordinary input errors through their named tools", async () => {
+it("delivers pathless objdump capability Evidence and input errors through its named tool", async () => {
   const { server, handler } = createReverseEngineeringMcpHarness();
   const service = new ReverseEngineeringService({
     run: async () => ({ stdout: "objdump output", stderr: "" }),
@@ -383,6 +383,12 @@ it("delivers objdump Evidence and ordinary input errors through their named tool
     { path: "package.json", operation: "file_headers" },
     context,
   )) as { readonly isError?: boolean };
+  const architectures = (await objdump(
+    { operation: "architectures" },
+    context,
+  )) as {
+    readonly isError?: boolean;
+  };
   const objdumpFailure = (await objdump({}, context)) as {
     readonly isError?: boolean;
   };
@@ -405,6 +411,7 @@ it("delivers objdump Evidence and ordinary input errors through their named tool
   )) as { readonly isError?: boolean };
 
   expect(success.isError).not.toBe(true);
+  expect(architectures.isError).not.toBe(true);
   expect(objdumpFailure.isError).toBe(true);
   expect(failure.isError).toBe(true);
   expect(cancelledObjdump.isError).toBe(true);

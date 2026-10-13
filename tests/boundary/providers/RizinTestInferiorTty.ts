@@ -56,10 +56,13 @@ export const createRizinTestManager = (
   environment: Readonly<NodeJS.ProcessEnv> = process.env,
   options: ConstructorParameters<typeof RizinDebugSessionManager>[1] = {},
 ): RizinDebugSessionManager =>
-  new RizinDebugSessionManager(environment, {
-    // These fake-provider tests model Linux protocol behavior independently of
-    // the host running the suite. Real-provider coverage checks the host platform.
-    platform: "linux",
-    stopProcess: stopFakeNoInferior,
-    ...options,
-  });
+  new RizinDebugSessionManager(
+    { ...process.env, ...environment },
+    {
+      // These fake-provider tests model Linux protocol behavior independently of
+      // the host running the suite. Real-provider coverage checks the host platform.
+      platform: "linux",
+      stopProcess: stopFakeNoInferior,
+      ...options,
+    },
+  );

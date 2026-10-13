@@ -75,6 +75,67 @@ const runObjdump = async (service: Partial<ReverseEngineeringService>) => {
   });
 };
 
+it("lists objdump architectures without inventing an artifact path", async () => {
+  const evidence = observation("complete");
+  const inspectWithObjdump = vi.fn(async (_input: unknown) => ok(evidence));
+  const commands = new Map<
+    string,
+    {
+      readonly args?: { safeParse(input: unknown): { success: boolean } };
+      run(input: { args?: unknown; options?: unknown }): Promise<unknown>;
+    }
+  >();
+  const cli = {
+    command: (_name: string, definition: unknown) => {
+      commands.set(
+        _name,
+        definition as {
+          readonly args?: {
+            safeParse(input: unknown): { success: boolean };
+          };
+          run(input: { args?: unknown; options?: unknown }): Promise<unknown>;
+        },
+      );
+      return cli;
+    },
+  } as unknown as CliInstance;
+  registerReverseEngineeringCommands(
+    cli,
+    pino({ enabled: false }),
+    {},
+    undefined,
+    () =>
+      ({
+        inspectWithObjdump,
+        close: vi.fn(async () => undefined),
+      }) as unknown as ReverseEngineeringService,
+  );
+  const command = commands.get(CLI_COMMANDS.listObjdumpArchitectures);
+  if (command === undefined)
+    throw new Error("architecture command was not registered");
+
+  const result = await command.run({});
+
+  expect(result).toEqual(evidence);
+  expect(inspectWithObjdump).toHaveBeenCalledWith(
+    { operation: "architectures" },
+    expect.objectContaining({ signal: expect.any(AbortSignal) }),
+  );
+  const artifactCommand = commands.get(CLI_COMMANDS.inspectWithObjdump);
+  expect(
+    artifactCommand?.args?.safeParse({
+      path: "/tmp/sample",
+      operation: "dwarf",
+    }).success,
+  ).toBe(true);
+  expect(
+    artifactCommand?.args?.safeParse({
+      path: "/tmp/sample",
+      operation: "architectures",
+    }).success,
+  ).toBe(false);
+});
+
 it("returns complete Evidence after a successful retry of cleanup-only failure", async () => {
   const evidence = observation("complete");
   const error = Object.assign(

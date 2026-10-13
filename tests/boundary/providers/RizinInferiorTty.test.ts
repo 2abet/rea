@@ -138,13 +138,12 @@ it.skipIf(process.platform === "win32")(
         path: "/tmp/injected",
         inferior_tty: await rizinTestInferiorTty(),
       });
-      expect(started.ok).toBe(true);
-      if (!started.ok) return;
       expect(forcedNonAdvancingBoundary).toBe(true);
-      const result = await manager.execute(started.value.session_id, "dr");
-      expect(result.ok).toBe(false);
-      if (!result.ok)
-        expect(result.error.message).toContain("Invalid analysis input");
+      expect(started.ok).toBe(false);
+      if (!started.ok)
+        expect(started.error.message).toContain(
+          "frame parser failed to advance past a NUL delimiter",
+        );
     } finally {
       indexOf.mockRestore();
     }

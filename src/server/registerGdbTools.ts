@@ -8,6 +8,7 @@ import { evidenceSchema } from "../domain/evidence.js";
 import { err } from "../domain/result.js";
 import { AnalysisInputError } from "../domain/analysisErrorCore.js";
 import {
+  runOwnedCleanupWithExternalMutationAdmission,
   runWithExternalMutationAdmission,
   type ExternalMutationAdmission,
 } from "./externalMutationAdmission.js";
@@ -15,10 +16,15 @@ import { logToolExecution } from "./toolLogging.js";
 import { toolRegistrationOptions } from "./toolRegistrationOptions.js";
 import type { ToolResultDelivery } from "./toolResult.js";
 
+export type GdbToolManager = Pick<
+  GdbSessionManager,
+  "start" | "execute" | "status" | "close" | "retryCleanupFailures"
+>;
+
 /** Register persistent GDB session operations on the existing REA MCP server. */
 export const registerGdbTools = (
   server: McpServer,
-  manager: GdbSessionManager,
+  manager: GdbToolManager,
   logger: Logger,
   delivery: ToolResultDelivery,
   recordEvidence?: EvidenceWriter["recordEvidence"],
@@ -78,6 +84,7 @@ export const registerGdbTools = (
         context.mcpReq.signal,
         execute,
         (value) => value.evidence,
+        () => manager.retryCleanupFailures(),
       );
       if (!result.ok) {
         const partial = result.error.partialObservation;
@@ -128,12 +135,15 @@ export const registerGdbTools = (
     close.name,
     toolRegistrationOptions(close),
     async (input, context: ServerContext) => {
-      const result = await runWithExternalMutationAdmission(
+      const result = await runOwnedCleanupWithExternalMutationAdmission(
         session,
         close.name,
         context.mcpReq.signal,
-        () => logToolExecution(logger, close.name, () => manager.close(input.session_id)),
-        undefined,
+        input.session_id,
+        () =>
+          logToolExecution(logger, close.name, () =>
+            manager.close(input.session_id),
+          ),
       );
       return result.ok
         ? delivery.toCallToolResult({ ok: true, value: result.value }, close)

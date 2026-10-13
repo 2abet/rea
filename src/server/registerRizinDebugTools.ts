@@ -7,6 +7,7 @@ import { AnalysisInputError } from "../domain/analysisErrorCore.js";
 import type { RizinDebugSessionManager } from "../rizin/RizinDebugSessionManager.js";
 import { evidenceSchema } from "../domain/evidence.js";
 import {
+  runOwnedCleanupWithExternalMutationAdmission,
   runWithExternalMutationAdmission,
   type ExternalMutationAdmission,
 } from "./externalMutationAdmission.js";
@@ -14,10 +15,15 @@ import { logToolExecution } from "./toolLogging.js";
 import { toolRegistrationOptions } from "./toolRegistrationOptions.js";
 import type { ToolResultDelivery } from "./toolResult.js";
 
+export type RizinDebugToolManager = Pick<
+  RizinDebugSessionManager,
+  "start" | "execute" | "status" | "close" | "retryCleanupFailures"
+>;
+
 /** Register persistent Rizin debugger operations on the existing REA MCP server. */
 export const registerRizinDebugTools = (
   server: McpServer,
-  manager: RizinDebugSessionManager,
+  manager: RizinDebugToolManager,
   logger: Logger,
   delivery: ToolResultDelivery,
   recordEvidence?: EvidenceWriter["recordEvidence"],
@@ -31,15 +37,25 @@ export const registerRizinDebugTools = (
     start.name,
     toolRegistrationOptions(start),
     async (input, context: ServerContext) => {
-      const result = await logToolExecution(logger, start.name, () =>
-        manager.start(
-          {
-            path: input.path,
-            inferior_tty: input.inferior_tty,
-            ...(input.backend === undefined ? {} : { backend: input.backend }),
-          },
-          context.mcpReq.signal,
-        ),
+      const result = await runWithExternalMutationAdmission(
+        session,
+        start.name,
+        context.mcpReq.signal,
+        () =>
+          logToolExecution(logger, start.name, () =>
+            manager.start(
+              {
+                path: input.path,
+                inferior_tty: input.inferior_tty,
+                ...(input.backend === undefined
+                  ? {}
+                  : { backend: input.backend }),
+              },
+              context.mcpReq.signal,
+            ),
+          ),
+        undefined,
+        () => manager.retryCleanupFailures(),
       );
       return result.ok
         ? delivery.toCallToolResult({ ok: true, value: result.value }, start)
@@ -63,6 +79,7 @@ export const registerRizinDebugTools = (
             ),
           ),
         (value) => value.evidence,
+        () => manager.retryCleanupFailures(),
       );
       if (!result.ok) {
         const partial = evidenceSchema.safeParse(
@@ -110,12 +127,15 @@ export const registerRizinDebugTools = (
     close.name,
     toolRegistrationOptions(close),
     async (input, context: ServerContext) => {
-      const result = await runWithExternalMutationAdmission(
+      const result = await runOwnedCleanupWithExternalMutationAdmission(
         session,
         close.name,
         context.mcpReq.signal,
-        () => logToolExecution(logger, close.name, () => manager.close(input.session_id)),
-        undefined,
+        input.session_id,
+        () =>
+          logToolExecution(logger, close.name, () =>
+            manager.close(input.session_id),
+          ),
       );
       return result.ok
         ? delivery.toCallToolResult({ ok: true, value: result.value }, close)

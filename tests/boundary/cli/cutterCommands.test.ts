@@ -1,4 +1,5 @@
 import { createServer } from "node:net";
+import { createHmac } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -83,21 +84,58 @@ describe("Cutter CLI commands", () => {
     directory = await mkdtemp(join(tmpdir(), "rea-cutter-cli-test-"));
     const token = "synthetic-cutter-cli-token-for-test";
     server = createServer((connection) => {
-      connection.once("data", () =>
-        connection.end(
-          `${JSON.stringify({
-            ok: true,
-            session_id: SESSION_ID,
-            output: { answer: 42 },
-            current_file: null,
-            document_generation: 0,
-            cutter_version: "Cutter fixture",
-            identity_status: "partial",
-            execution_state: "complete",
-            output_truncated: false,
-          })}\n`,
-        ),
-      );
+      connection.setEncoding("utf8");
+      let input = "";
+      let clientNonce = "";
+      let serverNonce = "";
+      connection.on("data", (chunk: string) => {
+        input += chunk;
+        const newline = input.indexOf("\n");
+        if (newline < 0) return;
+        const frame = JSON.parse(input.slice(0, newline)) as Record<
+          string,
+          unknown
+        >;
+        input = input.slice(newline + 1);
+        if (frame.kind === "rea-auth-v1") {
+          clientNonce = String(frame.nonce);
+          serverNonce = "b".repeat(64);
+          connection.write(
+            `${JSON.stringify({ session_id: SESSION_ID, nonce: serverNonce, proof: createHmac("sha256", token).update(`rea-cutter-server-v1:${SESSION_ID}:${clientNonce}:${serverNonce}`).digest("hex") })}\n`,
+          );
+          return;
+        }
+        const requestBytes = String(frame.request);
+        const request = JSON.parse(requestBytes) as Record<string, unknown>;
+        if (
+          frame.proof !==
+          createHmac("sha256", token)
+            .update(
+              `rea-cutter-client-v1:${SESSION_ID}:${clientNonce}:${serverNonce}:${requestBytes}`,
+            )
+            .digest("hex")
+        ) {
+          connection.destroy();
+          return;
+        }
+        const response = JSON.stringify({
+          ok: true,
+          session_id: request.session_id,
+          output: { answer: 42 },
+          current_file: null,
+          document_generation: 0,
+          cutter_version: "Cutter fixture",
+          identity_status: "partial",
+          execution_state: "complete",
+          output_truncated: false,
+        });
+        const proof = createHmac("sha256", token)
+          .update(
+            `rea-cutter-response-v1:${SESSION_ID}:${clientNonce}:${serverNonce}:${response}`,
+          )
+          .digest("hex");
+        connection.end(`${JSON.stringify({ response, proof })}\n`);
+      });
     });
     const port = await listen(server);
     await writeFile(

@@ -9,13 +9,23 @@ import { expect, it } from "vitest";
 import { z } from "zod";
 
 import { toolContract } from "../../../src/contracts/toolContracts.js";
-import { AnalysisTimeoutError } from "../../../src/domain/analysisErrorCore.js";
+import {
+  AnalysisCapabilityUnavailableError,
+  AnalysisTimeoutError,
+} from "../../../src/domain/analysisErrorCore.js";
 import { createEvidence } from "../../../src/domain/evidence.js";
+import { thinMach } from "../../../src/domain/binaryTarget.fixture.js";
 import { err, ok } from "../../../src/domain/result.js";
 import { GdbSessionManager } from "../../../src/gdb/GdbSessionManager.js";
 import { silentLogger } from "../../../src/logger.js";
 import { registerGdbTools } from "../../../src/server/registerGdbTools.js";
+import type { GdbToolManager } from "../../../src/server/registerGdbTools.js";
 import { createToolResultDelivery } from "../../../src/server/toolResult.js";
+import {
+  createBinarySessionTargets,
+  createCacheProvider,
+  createTestBinarySession,
+} from "../../fixtures/binarySession.js";
 import {
   validateDebuggerStatusResponse,
   waitForStartedFile,
@@ -245,7 +255,8 @@ it("records partial GDB Evidence from an MCP command error", async () => {
       ),
     status: () => undefined,
     close: async () => ok({ target_state: "unknown" as const }),
-  } as unknown as GdbSessionManager;
+    retryCleanupFailures: async () => ok(null),
+  } satisfies GdbToolManager;
   const recorded: string[] = [];
   const server = new McpServer({ name: "gdb-partial-evidence", version: "1" });
   registerGdbTools(
@@ -280,6 +291,81 @@ it("records partial GDB Evidence from an MCP command error", async () => {
     });
   } finally {
     await Promise.allSettled([client.close(), server.close()]);
+  }
+});
+
+it("recovers only the owning debugger cleanup and reopens admitted analysis", async () => {
+  const [fixture] = await createBinarySessionTargets();
+  const target = fixture.replace(/first\.hop$/u, "first.macho");
+  await writeFile(target, thinMach(0xfeedfacf, 0x0100000c));
+  const analysisSession = createTestBinarySession(createCacheProvider([]));
+  expect((await analysisSession.open(target)).ok).toBe(true);
+  const ownerId = "00000000-0000-4000-8000-000000000001";
+  const otherId = "00000000-0000-4000-8000-000000000002";
+  const closeCalls: string[] = [];
+  const retainedFailure = new AnalysisCapabilityUnavailableError(
+    "gdb",
+    "gdb_console",
+    "The owned debugger process could not be confirmed stopped.",
+    {
+      cleanup: { reason: "owned writer remains", resources: [ownerId] },
+    },
+  );
+  const manager = {
+    start: async () => ok({ session_id: ownerId, mi_version: "mi3" as const }),
+    execute: async () => err(retainedFailure),
+    status: () => undefined,
+    close: async (sessionId: string) => {
+      closeCalls.push(sessionId);
+      if (sessionId === ownerId) retainedFailure.resolveCleanup();
+      return ok({ target_state: "unknown" as const });
+    },
+    retryCleanupFailures: async () => ok(null),
+  } satisfies GdbToolManager;
+  const server = new McpServer({ name: "gdb-owned-cleanup", version: "1" });
+  registerGdbTools(
+    server,
+    manager,
+    silentLogger,
+    createToolResultDelivery(undefined),
+    undefined,
+    analysisSession,
+  );
+  const client = new Client({ name: "gdb-owned-cleanup", version: "1" });
+  const [clientTransport, serverTransport] =
+    InMemoryTransport.createLinkedPair();
+  try {
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+    const command = await client.callTool({
+      name: "gdb_console",
+      arguments: { session_id: ownerId, command: "shell writer" },
+    });
+    expect(command.isError).toBe(true);
+
+    const wrongOwner = await client.callTool({
+      name: "close_gdb_session",
+      arguments: { session_id: otherId },
+    });
+    expect(wrongOwner.isError).toBe(true);
+    expect(closeCalls).toEqual([]);
+    expect((await analysisSession.open(target)).ok).toBe(false);
+
+    const recovered = await client.callTool({
+      name: "close_gdb_session",
+      arguments: { session_id: ownerId },
+    });
+    expect(recovered.isError ?? false).toBe(false);
+    expect(closeCalls).toEqual([ownerId]);
+    expect(retainedFailure.cleanupIncomplete).toBe(false);
+    expect((await analysisSession.open(target)).ok).toBe(true);
+    expect(analysisSession.activeTarget()?.path).toBe(target);
+    expect(
+      (await analysisSession.execute("address_name", { address: "0x1" })).ok,
+    ).toBe(true);
+  } finally {
+    await Promise.allSettled([client.close(), server.close()]);
+    await analysisSession.close();
   }
 });
 
@@ -332,10 +418,12 @@ it("records partial GDB startup Evidence from an MCP start error", async () => {
           partialObservation: evidence,
         }),
       ),
-    execute: async () => ok(undefined),
+    execute: async () =>
+      err(new AnalysisCapabilityUnavailableError("gdb", "unused", "unused")),
     status: () => undefined,
     close: async () => ok({ target_state: "unknown" as const }),
-  } as unknown as GdbSessionManager;
+    retryCleanupFailures: async () => ok(null),
+  } satisfies GdbToolManager;
   const recorded: string[] = [];
   const server = new McpServer({
     name: "gdb-startup-partial-evidence",

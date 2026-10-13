@@ -17,10 +17,12 @@ export const runWithExternalMutationAdmission = async <Value>(
   signal: AbortSignal | undefined,
   operation: () => Promise<Result<Value, AnalysisError>>,
   evidenceOf: ((value: Value) => Evidence) | undefined,
-  cleanupRecovery?: () => Promise<Result<null, AnalysisError>>,
+  cleanupRecovery?: (
+    failure: AnalysisError | undefined,
+  ) => Promise<Result<null, AnalysisError>>,
 ): Promise<Result<Value, AnalysisError>> => {
   if (session === undefined) {
-    const recovered = await cleanupRecovery?.();
+    const recovered = await cleanupRecovery?.(undefined);
     if (recovered !== undefined && !recovered.ok) return recovered;
     return operation();
   }
@@ -53,4 +55,38 @@ export const runWithExternalMutationAdmission = async <Value>(
     cleanupRecovery,
   );
   return admitted.ok ? admitted.value : err(admitted.error);
+};
+
+/** Admit an owned close once, including when it is recovering its own blocker. */
+export const runOwnedCleanupWithExternalMutationAdmission = async <Value>(
+  session: ExternalMutationAdmission | undefined,
+  operationName: string,
+  signal: AbortSignal | undefined,
+  resourceId: string,
+  cleanup: () => Promise<Result<Value, AnalysisError>>,
+): Promise<Result<Value, AnalysisError>> => {
+  let completed: Result<Value, AnalysisError> | undefined;
+  const cleanupOnce = async (): Promise<Result<Value, AnalysisError>> => {
+    completed ??= await cleanup();
+    return completed;
+  };
+  const admitted = await runWithExternalMutationAdmission(
+    session,
+    operationName,
+    signal,
+    cleanupOnce,
+    undefined,
+    async (failure) => {
+      if (
+        failure === undefined ||
+        !failure.cleanup?.resources.includes(resourceId)
+      )
+        return failure === undefined
+          ? { ok: true, value: null }
+          : { ok: false, error: failure };
+      const recovered = await cleanupOnce();
+      return recovered.ok ? { ok: true, value: null } : recovered;
+    },
+  );
+  return admitted;
 };

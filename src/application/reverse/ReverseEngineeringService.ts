@@ -193,7 +193,7 @@ export class ReverseEngineeringService {
     return this.#observe(
       "inspect_with_objdump",
       command,
-      input.path,
+      input.operation === "architectures" ? undefined : input.path,
       input,
       options.signal,
     );
@@ -222,7 +222,7 @@ export class ReverseEngineeringService {
   #observe(
     operation: ReverseEngineeringOperation,
     profile: ReverseEngineeringProviderCommand,
-    path: string,
+    path: string | undefined,
     parameters: Readonly<Record<string, JsonValue>>,
     signal?: AbortSignal,
   ): Promise<Result<Evidence, AnalysisError>> {
@@ -283,7 +283,7 @@ export class ReverseEngineeringService {
   async #observeProvider(
     operation: ReverseEngineeringOperation,
     profile: ReverseEngineeringProviderCommand,
-    path: string,
+    path: string | undefined,
     parameters: Readonly<Record<string, JsonValue>>,
     signal?: AbortSignal,
   ): Promise<Result<Evidence, AnalysisError>> {
@@ -291,22 +291,23 @@ export class ReverseEngineeringService {
     if (signal?.aborted) return err(new AnalysisCancelledError(operation));
     const cleanup = await this.retryCleanup(operation);
     if (!cleanup.ok) return cleanup;
-    const providerCapability = parameters.operation === "architectures";
-    const absolutePath = resolve(path);
+    const absolutePath = path === undefined ? undefined : resolve(path);
     let digest: string | undefined;
     try {
-      if (!providerCapability)
+      if (absolutePath !== undefined)
         digest = await this.#digest(absolutePath, signal, this.#stat);
     } catch (cause) {
       const code = (cause as NodeJS.ErrnoException).code;
       if (signal?.aborted)
         return err(new AnalysisCancelledError(operation, { cause }));
-      if (code === "EACCES" || code === "EPERM")
+      if (code === "EACCES" || code === "EPERM") {
+        const deniedPath = absolutePath === undefined ? command : absolutePath;
         return err(
-          new AnalysisAccessDeniedError(operation, absolutePath, code, {
+          new AnalysisAccessDeniedError(operation, deniedPath, code, {
             cause,
           }),
         );
+      }
       if (code === "ETIMEDOUT")
         return err(
           new AnalysisTimeoutError(operation, DEFAULT_TIMEOUT_MS, { cause }),
@@ -326,6 +327,7 @@ export class ReverseEngineeringService {
     let completionStatus: "complete" | "unknown" = "complete";
     let failure: AnalysisError | undefined;
     let cleanupOwner: ProviderProcessSupervisor | undefined;
+    let earlyFailure: AnalysisError | undefined;
     try {
       const output = await this.#run(command, args, {
         env: {
@@ -350,122 +352,165 @@ export class ReverseEngineeringService {
         cause instanceof OwnedOutputFailure &&
         cause.capabilityError !== undefined
       )
-        return err(cause.capabilityError);
+        earlyFailure = new AnalysisCapabilityUnavailableError(
+          cause.capabilityError.providerId,
+          cause.capabilityError.operation,
+          cause.capabilityError.reason,
+          {
+            cause: cause.capabilityError,
+            ...(cause.capabilityError.diagnostics === undefined
+              ? {}
+              : { diagnostics: cause.capabilityError.diagnostics }),
+            ...(cause.capabilityError.capturedOutput === undefined
+              ? {}
+              : { capturedOutput: cause.capabilityError.capturedOutput }),
+            ...(cause.capabilityError.partialObservation === undefined
+              ? {}
+              : {
+                  partialObservation: cause.capabilityError.partialObservation,
+                }),
+            ...(cause.capabilityError.userMessage === undefined
+              ? {}
+              : { userMessage: cause.capabilityError.userMessage }),
+            retryable: cause.capabilityError.retryable,
+            ...ownedCleanupOptions(cause),
+          },
+        );
       const capture = execFileOutputFailure(cause);
       const code =
         capture?.code ?? (cause as NodeJS.ErrnoException).code ?? undefined;
-      if (code === "E2BIG")
-        return err(
-          new AnalysisResourceConstraintError(
-            operation,
-            "transport",
-            "The host rejected the provider command because its argument list exceeds the process launch limit.",
-            {
-              argument_bytes: args.reduce(
-                (bytes, argument, index) =>
-                  bytes + Buffer.byteLength(argument) + (index === 0 ? 0 : 1),
-                0,
-              ),
-            },
-            { cause },
-          ),
+      if (earlyFailure === undefined && code === "E2BIG")
+        earlyFailure = new AnalysisResourceConstraintError(
+          operation,
+          "transport",
+          "The host rejected the provider command because its argument list exceeds the process launch limit.",
+          {
+            argument_bytes: args.reduce(
+              (bytes, argument, index) =>
+                bytes + Buffer.byteLength(argument) + (index === 0 ? 0 : 1),
+              0,
+            ),
+          },
+          { cause, ...ownedCleanupOptions(cause) },
         );
       if (
-        capture === undefined ||
-        code === "ENOENT" ||
-        code === "ERR_PROVIDER_LAUNCH"
+        earlyFailure === undefined &&
+        (capture === undefined ||
+          code === "ENOENT" ||
+          code === "ERR_PROVIDER_LAUNCH")
       ) {
         if (signal?.aborted || code === "ABORT_ERR")
-          return err(new AnalysisCancelledError(operation, { cause }));
-        if (code === "ETIMEDOUT")
-          return err(
-            new AnalysisTimeoutError(operation, DEFAULT_TIMEOUT_MS, { cause }),
+          earlyFailure = new AnalysisCancelledError(operation, {
+            cause,
+            ...ownedCleanupOptions(cause),
+          });
+        else if (code === "ETIMEDOUT")
+          earlyFailure = new AnalysisTimeoutError(
+            operation,
+            DEFAULT_TIMEOUT_MS,
+            {
+              cause,
+              ...ownedCleanupOptions(cause),
+            },
           );
-        if (code === "EACCES" || code === "EPERM")
-          return err(
-            new AnalysisAccessDeniedError(operation, command, code, { cause }),
+        else if (code === "EACCES" || code === "EPERM")
+          earlyFailure = new AnalysisAccessDeniedError(
+            operation,
+            command,
+            code,
+            {
+              cause,
+              ...ownedCleanupOptions(cause),
+            },
           );
-        return err(
-          new AnalysisCapabilityUnavailableError(
+        else
+          earlyFailure = new AnalysisCapabilityUnavailableError(
             operation === "inspect_with_objdump" ? "objdump" : "rizin",
             operation,
             `Unable to run configured command (${String(code ?? "unknown error")})`,
-            { cause },
-          ),
-        );
-      }
-      stdout = capture.stdout;
-      stderr = capture.stderr;
-      stdoutBytes = capture.stdoutBytes ?? Buffer.byteLength(stdout);
-      stderrBytes = capture.stderrBytes ?? Buffer.byteLength(stderr);
-      exitCode = capture.code;
-      signalName = capture.signal;
-      outputTruncated = capture.outputTruncated;
-      if (capture.collectionFailure) {
-        exitCode = null;
-        completionStatus = "unknown";
-      }
-      const capturedOutput = {
-        stdout,
-        stderr,
-        truncated: outputTruncated,
-        stdout_bytes: stdoutBytes,
-        stderr_bytes: stderrBytes,
-        exit_code:
-          !capture.collectionFailure && typeof capture.code === "number"
-            ? capture.code
-            : null,
-        signal: capture.signal,
-      };
-      if (signal?.aborted || code === "ABORT_ERR")
-        failure = new AnalysisCancelledError(operation, {
-          cause,
-          capturedOutput,
-          ...ownedCleanupOptions(cause),
-        });
-      else if (code === "ETIMEDOUT")
-        failure = new AnalysisTimeoutError(operation, DEFAULT_TIMEOUT_MS, {
-          cause,
-          capturedOutput,
-          ...ownedCleanupOptions(cause),
-        });
-      else if (code === "EACCES" || code === "EPERM")
-        failure = new AnalysisAccessDeniedError(operation, command, code, {
-          cause,
-          capturedOutput,
-        });
-      if (cause instanceof OwnedOutputFailure && cause.cleanup !== undefined) {
-        cleanupIncomplete = true;
-        if (failure === undefined)
-          failure = new AnalysisOutputError(
-            operation,
-            "Provider process cleanup remains incomplete.",
-            { cause, capturedOutput, cleanup: cause.cleanup },
+            { cause, ...ownedCleanupOptions(cause) },
           );
       }
-      if (
-        failure === undefined &&
-        cause instanceof OwnedOutputFailure &&
-        cause.collectionFailure
-      )
-        failure = new AnalysisOutputError(
-          operation,
-          "Provider output collection failed.",
-          { cause, capturedOutput },
-        );
-      if (capture.signal !== null || typeof capture.code !== "number") {
-        exitCode = null;
-        completionStatus = "unknown";
-      }
-      if (cause instanceof OwnedOutputFailure) {
-        stdoutInvalidUtf8 = cause.stdoutInvalidUtf8;
-        stderrInvalidUtf8 = cause.stderrInvalidUtf8;
+      if (earlyFailure === undefined && capture !== undefined) {
+        stdout = capture.stdout;
+        stderr = capture.stderr;
+        stdoutBytes = capture.stdoutBytes ?? Buffer.byteLength(stdout);
+        stderrBytes = capture.stderrBytes ?? Buffer.byteLength(stderr);
+        exitCode = capture.code;
+        signalName = capture.signal;
+        outputTruncated = capture.outputTruncated;
+        if (capture.collectionFailure) {
+          exitCode = null;
+          completionStatus = "unknown";
+        }
+        const capturedOutput = {
+          stdout,
+          stderr,
+          truncated: outputTruncated,
+          stdout_bytes: stdoutBytes,
+          stderr_bytes: stderrBytes,
+          exit_code:
+            !capture.collectionFailure && typeof capture.code === "number"
+              ? capture.code
+              : null,
+          signal: capture.signal,
+        };
+        if (signal?.aborted || code === "ABORT_ERR")
+          failure = new AnalysisCancelledError(operation, {
+            cause,
+            capturedOutput,
+            ...ownedCleanupOptions(cause),
+          });
+        else if (code === "ETIMEDOUT")
+          failure = new AnalysisTimeoutError(operation, DEFAULT_TIMEOUT_MS, {
+            cause,
+            capturedOutput,
+            ...ownedCleanupOptions(cause),
+          });
+        else if (code === "EACCES" || code === "EPERM")
+          failure = new AnalysisAccessDeniedError(operation, command, code, {
+            cause,
+            capturedOutput,
+            ...ownedCleanupOptions(cause),
+          });
+        if (
+          cause instanceof OwnedOutputFailure &&
+          cause.cleanup !== undefined
+        ) {
+          cleanupIncomplete = true;
+          if (failure === undefined)
+            failure = new AnalysisOutputError(
+              operation,
+              "Provider process cleanup remains incomplete.",
+              { cause, capturedOutput, cleanup: cause.cleanup },
+            );
+        }
+        if (
+          failure === undefined &&
+          cause instanceof OwnedOutputFailure &&
+          cause.collectionFailure
+        )
+          failure = new AnalysisOutputError(
+            operation,
+            "Provider output collection failed.",
+            { cause, capturedOutput },
+          );
+        if (capture.signal !== null || typeof capture.code !== "number") {
+          exitCode = null;
+          completionStatus = "unknown";
+        }
+        if (cause instanceof OwnedOutputFailure) {
+          stdoutInvalidUtf8 = cause.stdoutInvalidUtf8;
+          stderrInvalidUtf8 = cause.stderrInvalidUtf8;
+        }
       }
     }
+    if (earlyFailure !== undefined)
+      return err(this.#registerCleanupFailure(earlyFailure, cleanupOwner));
     if (failure !== undefined && cleanupOwner !== undefined)
-      this.#pendingCleanup.get(cleanupOwner)?.failures.add(failure);
+      failure = this.#registerCleanupFailure(failure, cleanupOwner);
     let digestAfter: string | null = null;
-    if (providerCapability) {
+    if (absolutePath === undefined) {
       digestAfter = null;
     } else if (cleanupIncomplete) {
       completionStatus = "unknown";
@@ -491,11 +536,12 @@ export class ReverseEngineeringService {
       exitCode = null;
       completionStatus = "unknown";
     }
-    const artifactChanged = providerCapability
-      ? null
-      : digestAfter === null || digest === undefined
+    const artifactChanged =
+      absolutePath === undefined
         ? null
-        : digestAfter !== digest;
+        : digestAfter === null || digest === undefined
+          ? null
+          : digestAfter !== digest;
     const result = {
       stdout,
       stderr,
@@ -503,11 +549,11 @@ export class ReverseEngineeringService {
       signal: signalName,
       output_truncated: outputTruncated,
       completion_status: completionStatus,
-      artifact_sha256_after: providerCapability ? null : digestAfter,
-      artifact_changed: providerCapability ? null : artifactChanged,
+      artifact_sha256_after: absolutePath === undefined ? null : digestAfter,
+      artifact_changed: absolutePath === undefined ? null : artifactChanged,
     };
     const limitations = [
-      ...(providerCapability
+      ...(absolutePath === undefined
         ? [
             "The objdump version is not reported; the output lists BFD targets advertised by the installed tool and does not establish support for the selected artifact.",
           ]
@@ -551,7 +597,7 @@ export class ReverseEngineeringService {
         : [
             `Command completion is unknown because the operation failed with ${failure._tag}: ${failure.message}`,
           ]),
-      ...(providerCapability
+      ...(absolutePath === undefined
         ? [
             "This output lists BFD targets advertised by the installed objdump and is independent of the selected artifact.",
           ]
@@ -563,7 +609,7 @@ export class ReverseEngineeringService {
             "The provider command may have changed the artifact while analysis was running; pre-run and post-run digests are both reported.",
           ]
         : []),
-      ...(!providerCapability && digestAfter === null
+      ...(absolutePath !== undefined && digestAfter === null
         ? [
             cleanupIncomplete
               ? "The post-run artifact digest is unknown because owned provider cleanup is incomplete; a remaining process may still change the artifact."
@@ -574,7 +620,7 @@ export class ReverseEngineeringService {
         : []),
     ];
     const evidence = createEvidence(
-      providerCapability || digest === undefined
+      absolutePath === undefined || digest === undefined
         ? undefined
         : { path: absolutePath, sha256: digest, format: "unknown" },
       profile.identity,
@@ -582,14 +628,16 @@ export class ReverseEngineeringService {
         predicateType: "rea.reverse-engineering.command-observation",
         operation,
         parameters: {
-          ...(providerCapability ? { operation: "architectures" } : parameters),
+          ...(absolutePath === undefined
+            ? { operation: "architectures" }
+            : parameters),
           provider_executable: command,
           command_arguments: [...args],
         },
         rawResult: result,
         result,
         limitations,
-        ...(providerCapability
+        ...(absolutePath === undefined
           ? {}
           : {
               locations: [
@@ -601,6 +649,15 @@ export class ReverseEngineeringService {
     return failure === undefined
       ? ok(evidence)
       : err(failure.retainPartialObservation(evidence));
+  }
+
+  #registerCleanupFailure(
+    failure: AnalysisError,
+    cleanupOwner: ProviderProcessSupervisor | undefined,
+  ): AnalysisError {
+    if (cleanupOwner !== undefined && failure.cleanupIncomplete)
+      this.#pendingCleanup.get(cleanupOwner)?.failures.add(failure);
+    return failure;
   }
 }
 

@@ -1,7 +1,6 @@
 import { z } from "zod";
 
-/** Caller-selected static objdump facet. */
-export const objdumpInputSchema = z
+const objdumpArtifactInputSchema = z
   .object({
     path: z.string().min(1),
     operation: z.enum([
@@ -12,11 +11,16 @@ export const objdumpInputSchema = z
       "dwarf",
       "disassemble",
       "disassemble_all",
-      "architectures",
     ]),
     follow_debug_links: z.boolean().default(false),
   })
   .strict();
+
+/** Caller-selected artifact facet or pathless provider capability query. */
+export const objdumpInputSchema = z.discriminatedUnion("operation", [
+  objdumpArtifactInputSchema,
+  z.strictObject({ operation: z.literal("architectures") }),
+]);
 
 /** Caller-selected Rizin command against one local artifact. */
 export const rizinInputSchema = z

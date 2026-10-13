@@ -120,7 +120,6 @@ export const registerReverseEngineeringCommands = (
           "dwarf",
           "disassemble",
           "disassemble_all",
-          "architectures",
         ])
         .describe("GNU objdump inspection operation to run."),
     }),
@@ -146,6 +145,28 @@ export const registerReverseEngineeringCommands = (
           );
           return result.ok ? result.value : projectAnalysisError(result.error);
         }),
+      ),
+  });
+  cli.command(CLI_COMMANDS.listObjdumpArchitectures, {
+    description: "List BFD targets advertised by the installed GNU objdump",
+    args: z.object({}),
+    run: () =>
+      withCommandCancellation((signal) =>
+        logCliCommand(
+          logger,
+          CLI_COMMANDS.listObjdumpArchitectures,
+          async () => {
+            const result = await executeWithCleanup(service, () =>
+              service.inspectWithObjdump(
+                { operation: "architectures" },
+                { signal },
+              ),
+            );
+            return result.ok
+              ? result.value
+              : projectAnalysisError(result.error);
+          },
+        ),
       ),
   });
   cli.command(CLI_COMMANDS.executeRizinCommand, {

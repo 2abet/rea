@@ -1,4 +1,4 @@
-import { rm, truncate } from "node:fs/promises";
+import { rm } from "node:fs/promises";
 import type { Stats } from "node:fs";
 
 import { expect, it, vi } from "vitest";
@@ -25,9 +25,9 @@ import { REVERSE_ENGINEERING_TOOL_CONTRACTS } from "../../src/contracts/reverseE
 registerSharedReverseEngineeringEdgeCaseTests();
 registerOwnedRizinCommandEvidenceTests({ sweepTokenOwnedProcesses: true });
 
-it("records objdump architecture support as subjectless provider capability evidence", async () => {
+it("records pathless objdump architecture support as provider capability evidence", async () => {
   const { directory, path } = await createArtifact();
-  expect(objdumpCommand({ path, operation: "architectures" })).toEqual(["-i"]);
+  expect(objdumpCommand({ operation: "architectures" })).toEqual(["-i"]);
   const digest = vi.fn(async () => "a".repeat(64));
   const service = new CoreReverseEngineeringService({
     commands: createReverseEngineeringCommandPort(process.env),
@@ -36,26 +36,26 @@ it("records objdump architecture support as subjectless provider capability evid
   });
   try {
     const result = await service.inspectWithObjdump({
-      path,
       operation: "architectures",
     });
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.value.subject).toBeNull();
-      expect(result.value.parameters).not.toHaveProperty("path");
-      expect(result.value.parameters).not.toHaveProperty(
-        "artifact_sha256_before",
-      );
-      expect(result.value.normalized_result).toMatchObject({
-        artifact_sha256_after: null,
-        artifact_changed: null,
-      });
-      const contract = REVERSE_ENGINEERING_TOOL_CONTRACTS.find(
-        ({ name }) => name === "inspect_with_objdump",
-      );
-      expect(contract?.outputSchema.safeParse(result.value).success).toBe(true);
-    }
+    if (!result.ok) throw result.error;
+    expect(result.value.subject).toBeNull();
+    expect(result.value.parameters).not.toHaveProperty("path");
+    expect(result.value.parameters).not.toHaveProperty(
+      "artifact_sha256_before",
+    );
+    expect(result.value.normalized_result).toMatchObject({
+      artifact_sha256_after: null,
+      artifact_changed: null,
+    });
+    const contract = REVERSE_ENGINEERING_TOOL_CONTRACTS.find(
+      ({ name }) => name === "inspect_with_objdump",
+    );
+    expect(contract?.outputSchema.safeParse(result.value).success).toBe(true);
     expect(digest).not.toHaveBeenCalled();
+    expect(
+      await service.inspectWithObjdump({ path, operation: "architectures" }),
+    ).toMatchObject({ ok: false, error: { _tag: "AnalysisInputError" } });
     const ordinaryInspection = await service.inspectWithObjdump({
       path,
       operation: "file_headers",
@@ -759,6 +759,60 @@ it("releases a retained provider owner after cleanup succeeds", async () => {
   }
 });
 
+it("retains a capability failure when its injected owned runner also reports incomplete cleanup", async () => {
+  const { directory, path } = await createArtifact();
+  const capability = new AnalysisCapabilityUnavailableError(
+    "rizin",
+    "execute_rizin_command",
+    "Ownership inspection is unavailable.",
+    { diagnostics: { source: "owned-runner" } },
+  );
+  const cleanupOwner = {
+    stop: vi.fn(async () => ({ status: "verified-cleanup" as const })),
+  } as unknown as ProviderProcessSupervisor;
+  const runOwned = vi
+    .fn<typeof runOwnedCommand>()
+    .mockRejectedValueOnce(
+      new OwnedCommandFailure(
+        "process",
+        "Ownership inspection failed after launch.",
+        null,
+        "owned descendant remains",
+        { cause: capability },
+        ["run-id", "pid:42"],
+        cleanupOwner,
+      ),
+    )
+    .mockResolvedValue(providerSnapshot());
+  const service = new ReverseEngineeringService({ runOwned });
+
+  try {
+    const first = await service.executeRizinCommand({ path, command: "iI" });
+    if (first.ok) throw new Error("Expected the capability failure");
+    expect(first.error._tag).toBe("AnalysisCapabilityUnavailableError");
+    expect(first.error).toBeInstanceOf(AnalysisCapabilityUnavailableError);
+    expect(first.error.diagnostics).toEqual({ source: "owned-runner" });
+    expect(first.error.cleanupIncomplete).toBe(true);
+    expect(first.error.cleanup).toMatchObject({
+      reason: "owned descendant remains",
+      resources: ["run-id", "pid:42"],
+    });
+
+    const recovered = await service.executeRizinCommand({
+      path,
+      command: "iI",
+    });
+    if (!recovered.ok) throw recovered.error;
+
+    expect(cleanupOwner.stop).toHaveBeenCalledOnce();
+    expect(first.error.cleanupIncomplete).toBe(false);
+    expect(runOwned).toHaveBeenCalledTimes(2);
+  } finally {
+    await service.close().catch(() => undefined);
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 it("preserves a provider timeout when cancellation arrives during the final digest", async () => {
   const { directory, path } = await createArtifact();
   const controller = new AbortController();
@@ -811,20 +865,29 @@ it("preserves a provider timeout when cancellation arrives during the final dige
 
 it("classifies E2BIG as a provider command resource constraint", async () => {
   const { directory, path } = await createArtifact();
-  const service = new ReverseEngineeringService({
-    runOwned: async () => {
-      throw new OwnedCommandFailure(
+  const cleanupOwner = {
+    stop: vi.fn(async () => ({ status: "verified-cleanup" as const })),
+  } as unknown as ProviderProcessSupervisor;
+  const runOwned = vi
+    .fn<typeof runOwnedCommand>()
+    .mockRejectedValueOnce(
+      new OwnedCommandFailure(
         "process",
         "Command launch failed.",
         null,
-        null,
+        "owned descendant remains",
         {
           cause: Object.assign(new Error("argument list too long"), {
             code: "E2BIG",
           }),
         },
-      );
-    },
+        ["run-id", "pid:42"],
+        cleanupOwner,
+      ),
+    )
+    .mockResolvedValue(providerSnapshot());
+  const service = new ReverseEngineeringService({
+    runOwned,
   });
 
   try {
@@ -841,6 +904,20 @@ it("classifies E2BIG as a provider command resource constraint", async () => {
       expect(result.error.message).toContain(
         "The host rejected the provider command because its argument list exceeds the process launch limit.",
       );
+    if (!result.ok) {
+      expect(result.error.cleanupIncomplete).toBe(true);
+      expect(result.error.cleanup?.resources).toEqual(["run-id", "pid:42"]);
+      expect(result.error).toBeInstanceOf(AnalysisResourceConstraintError);
+      if (result.error instanceof AnalysisResourceConstraintError)
+        expect(result.error.reportedLimits).toMatchObject({
+          argument_bytes: expect.any(Number),
+        });
+    }
+    const retried = await service.executeRizinCommand({ path, command: "iI" });
+    expect(retried.ok).toBe(true);
+    if (!result.ok) expect(result.error.cleanupIncomplete).toBe(false);
+    expect(cleanupOwner.stop).toHaveBeenCalledOnce();
+    expect(runOwned).toHaveBeenCalledTimes(2);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

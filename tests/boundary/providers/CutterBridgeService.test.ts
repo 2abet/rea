@@ -29,21 +29,23 @@ it("retains uncertain command completion as Evidence without encouraging a retry
     command: "Ps /tmp/project.rzdb",
   });
 
-  expect(result.ok).toBe(true);
-  if (!result.ok) throw result.error;
-  expect(result.value.normalized_result).toMatchObject({
-    command: "Ps /tmp/project.rzdb",
-    output: null,
-    execution_state: "unknown",
-    error: "transport-response-missing",
-    message: expect.stringContaining("do not retry automatically"),
-    document_generation: 7,
-    cutter_version: "Cutter fixture version",
+  expect(result.ok).toBe(false);
+  if (result.ok) throw new Error("unknown command completion must fail");
+  expect(result.error.partialObservation).toMatchObject({
+    normalized_result: {
+      command: "Ps /tmp/project.rzdb",
+      output: null,
+      execution_state: "unknown",
+      error: "transport-response-missing",
+      message: expect.stringContaining("do not retry automatically"),
+      document_generation: 7,
+      cutter_version: "Cutter fixture version",
+    },
+    limitations: expect.arrayContaining([
+      "Command completion or its output could not be confirmed; do not retry automatically because the command may have produced partial or persistent effects.",
+    ]),
+    provider: { version: "Cutter fixture version" },
   });
-  expect(result.value.limitations).toContain(
-    "Command completion or its output could not be confirmed; do not retry automatically because the command may have produced partial or persistent effects.",
-  );
-  expect(result.value.provider.version).toBe("Cutter fixture version");
 });
 
 const cutterInput = {
@@ -136,4 +138,51 @@ it("preserves cancellation unless the bridge reports an ambiguous completion", a
     ok: false,
     error: { _tag: "AnalysisCapabilityUnavailableError" },
   });
+});
+
+it("retains the same cleanup failure until a live Cutter status probe succeeds", async () => {
+  let live = false;
+  const service = new CutterBridgeService({
+    listSessions: async () => ({
+      sessions: live
+        ? [
+            {
+              session_id: cutterInput.session_id,
+              pid: 42,
+              document_generation: cutterInput.expected_generation,
+              current_file: "/fixtures/sample.bin",
+              cutter_version: null,
+              identity_status: "partial" as const,
+            },
+          ]
+        : [],
+      bridge_directory: "/private/bridge",
+      discovery_status: live ? "sessions_found" : "no_live_bridge_found",
+      bridge_directory_security: "private_verified",
+    }),
+    execute: async () => ({
+      output: null,
+      currentFile: "/fixtures/sample.bin",
+      documentGeneration: cutterInput.expected_generation,
+      identityStatus: "partial",
+      cutterVersion: null,
+      executionState: "unknown",
+      error: "transport-response-missing",
+      message: "The command may have completed; do not retry automatically",
+      outputTruncated: false,
+    }),
+  });
+
+  const execution = await service.execute(cutterInput);
+  expect(execution.ok).toBe(false);
+  if (execution.ok) throw new Error("ambiguous completion must retain cleanup");
+  const failure = execution.error;
+  expect(failure.cleanupIncomplete).toBe(true);
+  const disconnected = await service.retryCleanup();
+  expect(disconnected).toMatchObject({ ok: false, error: failure });
+  expect(failure.cleanupIncomplete).toBe(true);
+
+  live = true;
+  expect(await service.retryCleanup()).toMatchObject({ ok: true, value: null });
+  expect(failure.cleanupIncomplete).toBe(false);
 });

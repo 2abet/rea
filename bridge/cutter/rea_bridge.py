@@ -8,6 +8,8 @@ per-process random token stored in a user-only descriptor file.
 from __future__ import annotations
 
 import json
+import hashlib
+import hmac
 import os
 import secrets
 import socket
@@ -475,28 +477,28 @@ class _BridgeServer(threading.Thread):
                 connection.settimeout(AUTH_FRAME_TIMEOUT_SECONDS)
                 authenticated = False
                 try:
-                    data = bytearray()
-                    frame_started = time.monotonic()
-                    while b"\n" not in data and len(data) <= MAX_FRAME_BYTES:
-                        remaining = AUTH_FRAME_TIMEOUT_SECONDS - (time.monotonic() - frame_started)
-                        if remaining <= 0:
-                            raise socket.timeout("authentication frame timed out")
-                        connection.settimeout(remaining)
-                        part = connection.recv(65536)
-                        if not part:
-                            break
-                        data.extend(part)
-                    if len(data) > MAX_FRAME_BYTES:
-                        self._send(connection, {"ok": False, "error": "frame-limit-exceeded"})
+                    hello = self._receive_frame(connection)
+                    if not isinstance(hello, dict) or hello.get("kind") != "rea-auth-v1" or not isinstance(hello.get("nonce"), str) or len(hello["nonce"]) != 64:
+                        self._send(connection, {"ok": False, "error": "authentication-failed"})
                         continue
-                    request = json.loads(bytes(data).split(b"\n", 1)[0])
-                    if not isinstance(request, dict) or request.get("token") != self.token:
+                    client_nonce = hello["nonce"]
+                    server_nonce = secrets.token_hex(32)
+                    server_proof = hmac.new(self.token.encode(), f"rea-cutter-server-v1:{self.session_id}:{client_nonce}:{server_nonce}".encode(), hashlib.sha256).hexdigest()
+                    self._send(connection, {"session_id": self.session_id, "nonce": server_nonce, "proof": server_proof})
+                    authenticated_frame = self._receive_frame(connection)
+                    request_bytes = authenticated_frame.get("request") if isinstance(authenticated_frame, dict) else None
+                    expected_proof = hmac.new(self.token.encode(), f"rea-cutter-client-v1:{self.session_id}:{client_nonce}:{server_nonce}:{request_bytes}".encode(), hashlib.sha256).hexdigest()
+                    if not isinstance(request_bytes, str) or not isinstance(authenticated_frame.get("proof"), str) or not hmac.compare_digest(authenticated_frame["proof"], expected_proof):
+                        self._send(connection, {"ok": False, "error": "authentication-failed"})
+                        continue
+                    request = json.loads(request_bytes)
+                    if not isinstance(request, dict) or request.get("session_id") != self.session_id:
                         self._send(connection, {"ok": False, "error": "authentication-failed"})
                         continue
                     authenticated = True
                     connection.settimeout(SOCKET_TIMEOUT_SECONDS)
-                    if self.poisoned:
-                        self._send(connection, {"ok": False, "error": "session-poisoned-after-ui-timeout"})
+                    if self.poisoned and request.get("kind") != "status":
+                        self._send_authenticated(connection, {"ok": False, "error": "session-poisoned-after-ui-timeout"}, client_nonce, server_nonce)
                         continue
                     request["session_id"] = self.session_id
                     event = threading.Event()
@@ -508,22 +510,22 @@ class _BridgeServer(threading.Thread):
                     if not event.wait(SOCKET_TIMEOUT_SECONDS):
                         cancelled.set()
                         self.poisoned = True
-                        self._send(connection, {
+                        self._send_authenticated(connection, {
                             "ok": False,
                             "error": "ui-thread-request-timeout",
                             "execution_state": "unknown",
                             "message": "The UI operation may still complete after this timeout; restart Cutter before issuing further commands.",
-                        })
+                        }, client_nonce, server_nonce)
                     else:
-                        self._send(connection, reply)
+                        self._send_authenticated(connection, reply, client_nonce, server_nonce)
                 except socket.timeout:
                     if authenticated:
-                        self._send(connection, {
+                        self._send_authenticated(connection, {
                             "ok": False,
                             "error": "request-timeout",
                             "execution_state": "unknown",
                             "message": "The command may have produced partial or persistent effects. Do not retry automatically.",
-                        })
+                        }, client_nonce, server_nonce)
                 except Exception as error:
                     self._send(connection, {"ok": False, "error": str(error)})
         self.server.close()
@@ -531,6 +533,88 @@ class _BridgeServer(threading.Thread):
             self.descriptor.unlink(missing_ok=True)
         except OSError:
             pass
+
+    @staticmethod
+    def _receive_frame(connection: socket.socket) -> dict[str, Any]:
+        data = bytearray()
+        deadline = time.monotonic() + AUTH_FRAME_TIMEOUT_SECONDS
+        while b"\n" not in data:
+            if len(data) >= MAX_FRAME_BYTES:
+                raise ValueError("frame-limit-exceeded")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise socket.timeout("authentication frame timed out")
+            connection.settimeout(remaining)
+            part = connection.recv(min(65536, MAX_FRAME_BYTES + 1 - len(data)))
+            if not part:
+                raise ValueError("incomplete authentication frame")
+            data.extend(part)
+        line, remainder = bytes(data).split(b"\n", 1)
+        if len(line) > MAX_FRAME_BYTES or remainder:
+            raise ValueError("invalid framed request")
+        value = json.loads(line)
+        return value if isinstance(value, dict) else {}
+
+    def _send_authenticated(self, connection: socket.socket, value: dict[str, Any], client_nonce: str, server_nonce: str) -> None:
+        encoded = self._encode_authenticated_response(value, client_nonce, server_nonce)
+        if encoded is None:
+            value = self._truncated_response(value)
+            encoded = self._encode_authenticated_response(value, client_nonce, server_nonce)
+        if encoded is None:
+            # This fixed-size fallback is checked through the same signed framing path.
+            value = {
+                "ok": False,
+                "error": "response-limit-exceeded",
+                "execution_state": value.get("execution_state", "unknown"),
+                "output": None,
+                "output_truncated": True,
+                "message": "The result exceeded the bridge frame limit; command completion state is preserved.",
+            }
+            encoded = self._encode_authenticated_response(value, client_nonce, server_nonce)
+        if encoded is None:
+            return
+        try:
+            connection.sendall(encoded)
+        except OSError:
+            pass
+
+    def _encode_authenticated_response(self, value: dict[str, Any], client_nonce: str, server_nonce: str) -> bytes | None:
+        if not _within_response_limit(value):
+            return None
+        prefix = b'{"response":"'
+        suffix = b'","proof":"' + (b"0" * 64) + b'"}\n'
+        frame_size = len(prefix) + len(suffix)
+        response_parts: list[bytes] = []
+        escaped_parts: list[bytes] = []
+        for fragment in json.JSONEncoder(ensure_ascii=False, separators=(",", ":")).iterencode(value):
+            raw = fragment.encode("utf-8")
+            escaped = json.dumps(fragment, ensure_ascii=False)[1:-1].encode("utf-8")
+            frame_size += len(escaped)
+            if frame_size > MAX_FRAME_BYTES:
+                return None
+            response_parts.append(raw)
+            escaped_parts.append(escaped)
+        proof = hmac.new(self.token.encode(), digestmod=hashlib.sha256)
+        proof.update(f"rea-cutter-response-v1:{self.session_id}:{client_nonce}:{server_nonce}:".encode())
+        for part in response_parts:
+            proof.update(part)
+        return prefix + b"".join(escaped_parts) + b'","proof":"' + proof.hexdigest().encode() + b'"}\n'
+
+    @staticmethod
+    def _truncated_response(value: dict[str, Any]) -> dict[str, Any]:
+        response: dict[str, Any] = {
+            "ok": value.get("ok") is True,
+            "output": None,
+            "execution_state": value.get("execution_state", "unknown"),
+            "output_truncated": True,
+            "message": "The command result exceeded the bridge frame limit; completion state is preserved and output was omitted.",
+        }
+        for key in ("current_file", "document_generation", "cutter_version", "identity_status"):
+            if key in value:
+                response[key] = value[key]
+        if value.get("ok") is not True and isinstance(value.get("error"), str):
+            response["error"] = value["error"]
+        return response
 
     @staticmethod
     def _send(connection: socket.socket, value: dict[str, Any]) -> None:

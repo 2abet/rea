@@ -1,4 +1,5 @@
 import { constants as fsConstants } from "node:fs";
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { createConnection } from "node:net";
 import { lstat, open, readdir } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -435,6 +436,9 @@ export class CutterBridgeClient {
       let payload = "";
       let settled = false;
       let requestSent = false;
+      let authenticated = false;
+      const clientNonce = randomBytes(32).toString("hex");
+      let serverNonce = "";
       const finish = (complete: () => void): void => {
         if (settled) return;
         settled = true;
@@ -458,9 +462,8 @@ export class CutterBridgeClient {
       if (signal?.aborted) onAbort();
       connection.setEncoding("utf8");
       connection.once("connect", () => {
-        requestSent = true;
         connection.write(
-          `${JSON.stringify({ ...request, token: descriptor.token })}\n`,
+          `${JSON.stringify({ kind: "rea-auth-v1", nonce: clientNonce })}\n`,
         );
       });
       connection.on("data", (chunk: string) => {
@@ -473,14 +476,73 @@ export class CutterBridgeClient {
           );
           return;
         }
-        const lineEnd = payload.indexOf("\n");
-        if (lineEnd < 0) return;
-        connection.end();
-        try {
-          const response: unknown = JSON.parse(payload.slice(0, lineEnd));
-          finish(() => resolve(response));
-        } catch {
-          rejectRequest("Cutter bridge returned malformed JSON");
+        for (;;) {
+          const lineEnd = payload.indexOf("\n");
+          if (lineEnd < 0) return;
+          const line = payload.slice(0, lineEnd);
+          payload = payload.slice(lineEnd + 1);
+          try {
+            const frame: unknown = JSON.parse(line);
+            if (!authenticated) {
+              const challenge = z
+                .object({
+                  session_id: z.string().uuid(),
+                  nonce: z.string().regex(/^[0-9a-f]{64}$/),
+                  proof: z.string().regex(/^[0-9a-f]{64}$/),
+                })
+                .parse(frame);
+              if (challenge.session_id !== descriptor.session_id)
+                throw new Error("unexpected peer session");
+              serverNonce = challenge.nonce;
+              const expected = createHmac("sha256", descriptor.token)
+                .update(
+                  `rea-cutter-server-v1:${descriptor.session_id}:${clientNonce}:${challenge.nonce}`,
+                )
+                .digest();
+              if (
+                !timingSafeEqual(expected, Buffer.from(challenge.proof, "hex"))
+              )
+                throw new Error("peer proof failed");
+              const requestBytes = JSON.stringify({
+                ...request,
+                session_id: descriptor.session_id,
+              });
+              const proof = createHmac("sha256", descriptor.token)
+                .update(
+                  `rea-cutter-client-v1:${descriptor.session_id}:${clientNonce}:${challenge.nonce}:${requestBytes}`,
+                )
+                .digest("hex");
+              authenticated = true;
+              requestSent = true;
+              connection.write(
+                `${JSON.stringify({ request: requestBytes, proof })}\n`,
+              );
+              continue;
+            }
+            const envelope = z
+              .object({
+                response: z.string(),
+                proof: z.string().regex(/^[0-9a-f]{64}$/),
+              })
+              .parse(frame);
+            const expected = createHmac("sha256", descriptor.token)
+              .update(
+                `rea-cutter-response-v1:${descriptor.session_id}:${clientNonce}:${serverNonce}:${envelope.response}`,
+              )
+              .digest();
+            if (!timingSafeEqual(expected, Buffer.from(envelope.proof, "hex")))
+              throw new Error("response proof failed");
+            const response: unknown = JSON.parse(envelope.response);
+            connection.end();
+            finish(() => resolve(response));
+            return;
+          } catch {
+            rejectRequest(
+              "Cutter bridge peer authentication or response failed",
+            );
+            connection.destroy();
+            return;
+          }
         }
       });
       connection.once("error", (cause) =>

@@ -10,7 +10,10 @@ import {
   AnalysisResourceConstraintError,
   AnalysisTimeoutError,
 } from "../domain/analysisErrorCore.js";
-import { AnalysisError } from "../domain/analysisErrorBase.js";
+import {
+  AnalysisError,
+  type AnalysisErrorOptions,
+} from "../domain/analysisErrorBase.js";
 import { createEvidence, type Evidence } from "../domain/evidence.js";
 import { err, ok, type Result } from "../domain/result.js";
 import {
@@ -218,7 +221,9 @@ const verifyGdbInferiorOutputSink = async (
   }
   const after = parseLinuxProcessStartTime(await readFile(statPath, "utf8"));
   if (after !== before)
-    throw new Error("The GDB inferior identity changed during descriptor readback.");
+    throw new Error(
+      "The GDB inferior identity changed during descriptor readback.",
+    );
 };
 
 class GdbCommandProcessExitError extends Error {
@@ -295,6 +300,10 @@ export class GdbSessionManager {
   readonly #platform: NodeJS.Platform;
   readonly #stopProcess: typeof stopOwnedDebuggerProcess;
   readonly #spawnProcess: typeof spawnOwnedProviderProcess;
+  readonly #verifyInferiorOutputSink: (
+    pid: string,
+    selectedTty: string,
+  ) => Promise<void>;
   readonly #maxSessions: number;
   readonly #maxCommandOutputBytes: number;
   #sessionReservations = 0;
@@ -309,6 +318,11 @@ export class GdbSessionManager {
       readonly platform?: NodeJS.Platform;
       readonly stopProcess?: typeof stopOwnedDebuggerProcess;
       readonly spawnProcess?: typeof spawnOwnedProviderProcess;
+      /** @internal Tests may replace only the /proc and TTY readback boundary. */
+      readonly verifyInferiorOutputSink?: (
+        pid: string,
+        selectedTty: string,
+      ) => Promise<void>;
       readonly maxSessions?: number;
       /** @internal Test seam; production callers should use the 16 MiB default. */
       readonly maxCommandOutputBytes?: number;
@@ -321,6 +335,8 @@ export class GdbSessionManager {
     this.#platform = options.platform ?? process.platform;
     this.#stopProcess = options.stopProcess ?? stopOwnedDebuggerProcess;
     this.#spawnProcess = options.spawnProcess ?? spawnOwnedProviderProcess;
+    this.#verifyInferiorOutputSink =
+      options.verifyInferiorOutputSink ?? verifyGdbInferiorOutputSink;
     this.#maxSessions = options.maxSessions ?? DEFAULT_MAX_SESSIONS;
     this.#maxCommandOutputBytes =
       options.maxCommandOutputBytes ?? MAX_COMMAND_OUTPUT_BYTES;
@@ -922,6 +938,16 @@ export class GdbSessionManager {
                   ],
                 },
               );
+              const stopped = await this.#stopDebuggerOnly(session);
+              if (stopped.status === "incomplete")
+                return err(
+                  this.#retainCleanupFailure(
+                    session,
+                    "gdb_console",
+                    stopped.reason,
+                    { cause, partialObservation: evidence },
+                  ),
+                );
               return ok({ result, evidence });
             }
             return err(
@@ -1003,8 +1029,8 @@ export class GdbSessionManager {
       const stopped = await this.#stopDebuggerOnly(session);
       if (stopped.status === "incomplete")
         return err(
-          new AnalysisCapabilityUnavailableError(
-            "gdb",
+          this.#retainCleanupFailure(
+            session,
             "close_gdb_session",
             stopped.reason,
           ),
@@ -1020,8 +1046,8 @@ export class GdbSessionManager {
             const stopped = await this.#stopDebuggerOnly(session);
             if (stopped.status === "incomplete")
               return err(
-                new AnalysisCapabilityUnavailableError(
-                  "gdb",
+                this.#retainCleanupFailure(
+                  session,
                   "close_gdb_session",
                   stopped.reason,
                 ),
@@ -1077,8 +1103,8 @@ export class GdbSessionManager {
           const stopped = await this.#stopDebuggerOnly(session);
           if (stopped.status === "incomplete")
             return err(
-              new AnalysisCapabilityUnavailableError(
-                "gdb",
+              this.#retainCleanupFailure(
+                session,
                 "close_gdb_session",
                 stopped.reason,
               ),
@@ -1093,6 +1119,24 @@ export class GdbSessionManager {
       if (cause instanceof AnalysisError) return err(cause);
       throw cause;
     }
+  }
+
+  async retryCleanupFailures(): Promise<Result<null, AnalysisError>> {
+    for (const session of this.#sessions.values()) {
+      if (session.cleanupFailures.size === 0) continue;
+      const stopped = await this.#stopDebuggerOnly(session);
+      if (stopped.status === "incomplete")
+        return err(
+          [...session.cleanupFailures].at(-1) ??
+            this.#retainCleanupFailure(
+              session,
+              "close_gdb_session",
+              stopped.reason,
+            ),
+        );
+      this.#sessions.delete(session.id);
+    }
+    return ok(null);
   }
 
   async closeAll(): Promise<void> {
@@ -1173,15 +1217,18 @@ export class GdbSessionManager {
       }
       session.promptTail = prompt.slice(-4);
     }
-    const lines: { readonly value: string; readonly invalidUtf8: boolean }[] = [];
+    const lines: { readonly value: string; readonly invalidUtf8: boolean }[] =
+      [];
     let offset = 0;
     while (offset < data.byteLength) {
       const newline = data.indexOf(0x0a, offset);
-      const piece = data.subarray(offset, newline < 0 ? data.byteLength : newline);
+      const piece = data.subarray(
+        offset,
+        newline < 0 ? data.byteLength : newline,
+      );
       session.bufferBytes += piece.byteLength;
       const lineBytes =
-        session.bufferBytes -
-        (newline >= 0 && piece.at(-1) === 0x0d ? 1 : 0);
+        session.bufferBytes - (newline >= 0 && piece.at(-1) === 0x0d ? 1 : 0);
       if (lineBytes > MAX_MI_LINE_BYTES) {
         this.#failProtocol(
           session,
@@ -1244,7 +1291,9 @@ export class GdbSessionManager {
         target: records.filter((record) => record.startsWith("@")).join("\n"),
         log: records.filter((record) => record.startsWith("&")).join("\n"),
         output_truncated: pending.outputTruncated,
-        ...(pending.outputInvalidUtf8 ? { output_invalid_utf8: true as const } : {}),
+        ...(pending.outputInvalidUtf8
+          ? { output_invalid_utf8: true as const }
+          : {}),
         completion_status: "complete",
       });
     }
@@ -1266,7 +1315,9 @@ export class GdbSessionManager {
           target: records.filter((line) => line.startsWith("@")).join("\n"),
           log: records.filter((line) => line.startsWith("&")).join("\n"),
           output_truncated: pending.outputTruncated,
-          ...(pending.outputInvalidUtf8 ? { output_invalid_utf8: true as const } : {}),
+          ...(pending.outputInvalidUtf8
+            ? { output_invalid_utf8: true as const }
+            : {}),
           completion_status: "unknown",
         }),
       );
@@ -1342,6 +1393,22 @@ export class GdbSessionManager {
     return attempt;
   }
 
+  #retainCleanupFailure(
+    session: GdbSession,
+    operation: string,
+    reason: string,
+    options: AnalysisErrorOptions = {},
+  ): AnalysisError {
+    const failure = new AnalysisCapabilityUnavailableError(
+      "gdb",
+      operation,
+      `The owned GDB process could not be confirmed stopped: ${reason}`,
+      { ...options, cleanup: { reason, resources: [session.id] } },
+    );
+    session.cleanupFailures.add(failure);
+    return failure;
+  }
+
   async #detachInferior(
     session: GdbSession,
   ): Promise<OwnedDebuggerDetachResult> {
@@ -1393,7 +1460,10 @@ export class GdbSessionManager {
       throw new Error(
         "GDB no longer reports the caller-selected inferior TTY; detachment cannot be confirmed safely.",
       );
-    await verifyGdbInferiorOutputSink(inferiorPids[0]!, session.inferiorTty!);
+    await this.#verifyInferiorOutputSink(
+      inferiorPids[0]!,
+      session.inferiorTty!,
+    );
     const detached = await this.#request(session, "-target-detach");
     if (
       detached.completion_status !== "complete" ||
@@ -1428,7 +1498,9 @@ export class GdbSessionManager {
           process_exit_code: code,
           process_exit_signal: signalCode,
           output_truncated: pending.outputTruncated,
-          ...(pending.outputInvalidUtf8 ? { output_invalid_utf8: true as const } : {}),
+          ...(pending.outputInvalidUtf8
+            ? { output_invalid_utf8: true as const }
+            : {}),
           completion_status: "unknown",
         }),
       );
@@ -1499,7 +1571,9 @@ export class GdbSessionManager {
             .join("\n"),
           log: pending.lines.filter((line) => line.startsWith("&")).join("\n"),
           output_truncated: pending.outputTruncated,
-          ...(pending.outputInvalidUtf8 ? { output_invalid_utf8: true as const } : {}),
+          ...(pending.outputInvalidUtf8
+            ? { output_invalid_utf8: true as const }
+            : {}),
           completion_status: "unknown",
         };
         const timeout = new AnalysisTimeoutError(
@@ -1619,7 +1693,9 @@ export class GdbSessionManager {
             .join("\n"),
           log: pending.lines.filter((line) => line.startsWith("&")).join("\n"),
           output_truncated: pending.outputTruncated,
-          ...(pending.outputInvalidUtf8 ? { output_invalid_utf8: true as const } : {}),
+          ...(pending.outputInvalidUtf8
+            ? { output_invalid_utf8: true as const }
+            : {}),
           completion_status: "unknown",
         };
         const evidence = createEvidence(undefined, GDB_PROVIDER_IDENTITY, {

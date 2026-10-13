@@ -7,18 +7,91 @@ import { McpServer } from "@modelcontextprotocol/server";
 import { expect, it } from "vitest";
 import { z } from "zod";
 
-import { RizinDebugSessionManager } from "../../../src/rizin/RizinDebugSessionManager.js";
+import { AnalysisCapabilityUnavailableError } from "../../../src/domain/analysisErrorCore.js";
+import { thinMach } from "../../../src/domain/binaryTarget.fixture.js";
+import { err, ok } from "../../../src/domain/result.js";
 import {
   createRizinTestManager,
   rizinTestInferiorTty,
 } from "../providers/RizinTestInferiorTty.js";
 import { silentLogger } from "../../../src/logger.js";
 import { registerRizinDebugTools } from "../../../src/server/registerRizinDebugTools.js";
+import type { RizinDebugToolManager } from "../../../src/server/registerRizinDebugTools.js";
 import { createToolResultDelivery } from "../../../src/server/toolResult.js";
+import {
+  createBinarySessionTargets,
+  createCacheProvider,
+  createTestBinarySession,
+} from "../../fixtures/binarySession.js";
 import {
   validateDebuggerStatusResponse,
   waitForStartedFile,
 } from "../../support/reverseDebuggerMcpTestHelpers.js";
+
+it("admits Rizin startup across a bound analysis session", async () => {
+  const [fixture] = await createBinarySessionTargets();
+  const target = fixture.replace(/first\.hop$/u, "first.macho");
+  await writeFile(target, thinMach(0xfeedfacf, 0x0100000c));
+  const baseProvider = createCacheProvider([]);
+  let clientsCreated = 0;
+  const provider = {
+    ...baseProvider,
+    createClient: (
+      ...arguments_: Parameters<typeof baseProvider.createClient>
+    ) => {
+      clientsCreated += 1;
+      return baseProvider.createClient(...arguments_);
+    },
+  };
+  const analysisSession = createTestBinarySession(provider);
+  expect((await analysisSession.open(target)).ok).toBe(true);
+  const initialRunId = z
+    .object({ analysis_run: z.object({ run_id: z.string() }) })
+    .parse(analysisSession.status()).analysis_run.run_id;
+  const manager = {
+    start: async () => ({
+      ok: true,
+      value: {
+        session_id: "00000000-0000-4000-8000-000000000001",
+        backend: null,
+      },
+    }),
+    execute: async () =>
+      err(new AnalysisCapabilityUnavailableError("rizin", "unused", "unused")),
+    status: () => undefined,
+    close: async () => ({ ok: true, value: { target_state: "unknown" } }),
+    retryCleanupFailures: async () => ok(null),
+  } satisfies RizinDebugToolManager;
+  const server = new McpServer({ name: "rizin-start-admission", version: "1" });
+  registerRizinDebugTools(
+    server,
+    manager,
+    silentLogger,
+    createToolResultDelivery(undefined),
+    undefined,
+    analysisSession,
+  );
+  const client = new Client({ name: "rizin-start-admission", version: "1" });
+  const [clientTransport, serverTransport] =
+    InMemoryTransport.createLinkedPair();
+  try {
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+    const started = await client.callTool({
+      name: "start_rizin_debug_session",
+      arguments: { path: target, inferior_tty: "/dev/null" },
+    });
+    expect(started.isError ?? false).toBe(false);
+    const currentRunId = z
+      .object({ analysis_run: z.object({ run_id: z.string() }) })
+      .parse(analysisSession.status()).analysis_run.run_id;
+    expect(currentRunId).not.toBe(initialRunId);
+    expect(analysisSession.activeTarget()?.path).toBe(target);
+  } finally {
+    await Promise.allSettled([client.close(), server.close()]);
+    await analysisSession.close();
+  }
+});
 
 it.skipIf(process.platform === "win32")(
   "propagates MCP cancellation into a running Rizin debugger command",

@@ -29,14 +29,22 @@ const managers: GdbSessionManager[] = [];
 it.each([
   ["empty list", "1^done,groups=[]", 0],
   ["one group", '1^done,groups=[{id="i1",pid="123"}]', 1],
-  ["multiple groups", '1^done,groups=[{id="i1",pid="123"},{id="i2",pid="456"}]', 2],
+  [
+    "multiple groups",
+    '1^done,groups=[{id="i1",pid="123"},{id="i2",pid="456"}]',
+    2,
+  ],
   ["group without a live pid", '1^done,groups=[{id="i1"}]', 0],
   [
     "nested group-like object",
     '1^done,groups=[{id="i1",pid="123",children=[{id="i2"}]}]',
     1,
   ],
-  ["quoted brackets", '1^done,groups=[{id="i1",pid="123",description="[{}]"}]', 1],
+  [
+    "quoted brackets",
+    '1^done,groups=[{id="i1",pid="123",description="[{}]"}]',
+    1,
+  ],
   [
     "escaped quote and backslash",
     '1^done,groups=[{id="i1",pid="123",description="\\\\\\\""}]',
@@ -529,7 +537,64 @@ it("reports process exit rather than protocol failure when stdin closes afterwar
       },
     },
   });
-  expect(stopCalls).toBe(0);
+  // Process-exit Evidence is returned only after the owned debugger stop is
+  // confirmed; stdin closing afterward must not bypass cleanup settlement.
+  expect(stopCalls).toBe(1);
+});
+
+it("retains partial GDB command Evidence while an inherited writer remains", async () => {
+  let writerActive = false;
+  const fake = createFakeSpawner((_child, _token, command) => {
+    if (command.includes("held-writer-command")) return;
+    _child.stdout.write(`${_token}^done\n`);
+  });
+  const manager = managerWithFakeSpawner(fake.spawnProcess, {
+    stopProcess: async () => ({
+      status: "incomplete",
+      reason: writerActive
+        ? "an inherited output writer remains active"
+        : "the owned GDB process was not confirmed stopped",
+    }),
+  });
+  const started = await expectGdbSessionStarted(manager);
+  const child = fake.children[0];
+  if (child === undefined || child.stdin === null) return;
+  const commandSent = new Promise<void>((resolve) =>
+    child.stdin!.once("data", () => resolve()),
+  );
+  const pending = manager.execute(
+    started.value.session_id,
+    "held-writer-command",
+  );
+  await commandSent;
+
+  writerActive = true;
+  child.stdout.write("~partial output from owned writer\n");
+  child.exitLeader(7);
+  const result = await pending;
+
+  expect(result).toMatchObject({
+    ok: false,
+    error: {
+      _tag: "AnalysisCapabilityUnavailableError",
+      cleanupIncomplete: true,
+      cleanup: {
+        reason: "an inherited output writer remains active",
+        resources: [started.value.session_id],
+      },
+      partialObservation: {
+        normalized_result: {
+          process_exit_observed: true,
+          completion_status: "unknown",
+        },
+        raw_result: { process_exit_observed: true },
+      },
+    },
+  });
+  expect(manager.status(started.value.session_id)?.state).toBe("closed");
+  child.stdout.write("~late writer output\n");
+  writerActive = false;
+  child.closeInheritedOutput();
 });
 
 it("converts non-Error queue cancellation failures into a tagged error", async () => {
@@ -600,7 +665,19 @@ it("reports incomplete stop if GDB exits while close waits in the serialized que
   await expect.poll(() => heldToken).not.toBe("");
   const closing = manager.close(started.value.session_id);
   fake.children[0]?.exitLeader(9);
-  expect((await active).ok).toBe(true);
+  const activeResult = await active;
+  expect(activeResult).toMatchObject({
+    ok: false,
+    error: {
+      _tag: "AnalysisCapabilityUnavailableError",
+      cleanupIncomplete: true,
+      partialObservation: expect.objectContaining({
+        normalized_result: expect.objectContaining({
+          process_exit_observed: true,
+        }),
+      }),
+    },
+  });
 
   const closed = await closing;
 
@@ -905,6 +982,7 @@ const managerWithFakeSpawner = (
   const manager = new GdbSessionManager({
     environment: { REA_GDB_COMMAND: "fake-gdb" },
     spawnProcess,
+    verifyInferiorOutputSink: async () => undefined,
     ...options,
   });
   managers.push(manager);

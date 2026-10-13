@@ -1,6 +1,7 @@
 import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
 import { chmod, writeFile } from "node:fs/promises";
 import { createServer as createNetServer } from "node:net";
+import { createHmac } from "node:crypto";
 import { join } from "node:path";
 import { expect, it, onTestFinished } from "vitest";
 
@@ -13,6 +14,48 @@ import { parseEvidence } from "../../../src/domain/evidence.js";
 import { createServer } from "../../../src/server/createServer.js";
 import { silentLogger } from "../../../src/logger.js";
 
+const assertUncertainEvidence = async (
+  client: Client,
+  session: ReturnType<typeof createTestBinarySession>,
+  sessionId: string,
+): Promise<void> => {
+  const uncertain = await client.callTool({
+    name: "cutter_command",
+    arguments: {
+      session_id: sessionId,
+      expected_generation: 3,
+      command: "Ps /tmp/uncertain.rzdb",
+    },
+  });
+  expect(uncertain.isError).toBe(true);
+  const uncertainText = uncertain.content
+    .filter(
+      (block): block is { type: "text"; text: string } => block.type === "text",
+    )
+    .map((block) => block.text)
+    .join("\n");
+  const uncertainError = JSON.parse(uncertainText) as {
+    error: { details: { partial_observation: { evidence_id: string } } };
+  };
+  const uncertainEvidence = session.evidenceById(
+    uncertainError.error.details.partial_observation.evidence_id,
+  );
+  expect(uncertainEvidence).toBeDefined();
+  if (uncertainEvidence === undefined)
+    throw new Error("partial Evidence missing");
+  expect(uncertainEvidence.normalized_result).toMatchObject({
+    execution_state: "unknown",
+    error: "transport-response-missing",
+    message: expect.stringContaining("do not retry automatically"),
+    document_generation: 3,
+  });
+  expect(uncertainEvidence.limitations).toContain(
+    "Command completion or its output could not be confirmed; " +
+      "do not retry automatically because the command may have produced " +
+      "partial or persistent effects.",
+  );
+};
+
 it("preserves live Cutter command Evidence and parity through the MCP boundary", async () => {
   const directory = await createTestTempDirectory("rea-cutter-mcp-");
   if (process.platform !== "win32") await chmod(directory, 0o700);
@@ -20,31 +63,62 @@ it("preserves live Cutter command Evidence and parity through the MCP boundary",
   const token = "synthetic-cutter-bridge-token-for-mcp-test";
   const bridge = createNetServer((connection) => {
     let payload = "";
+    let clientNonce = "";
+    let serverNonce = "";
     connection.setEncoding("utf8");
     connection.on("data", (chunk: string) => {
       payload += chunk;
       const newline = payload.indexOf("\n");
       if (newline < 0) return;
-      const request = JSON.parse(payload.slice(0, newline)) as Record<
+      const frame = JSON.parse(payload.slice(0, newline)) as Record<
         string,
         unknown
       >;
+      payload = payload.slice(newline + 1);
+      if (frame.kind === "rea-auth-v1") {
+        clientNonce = String(frame.nonce);
+        serverNonce = "c".repeat(64);
+        const proof = createHmac("sha256", token)
+          .update(
+            `rea-cutter-server-v1:${sessionId}:${clientNonce}:${serverNonce}`,
+          )
+          .digest("hex");
+        connection.write(
+          `${JSON.stringify({ session_id: sessionId, nonce: serverNonce, proof })}\n`,
+        );
+        return;
+      }
+      const requestBytes = String(frame.request);
+      const request = JSON.parse(requestBytes) as Record<string, unknown>;
+      const expected = createHmac("sha256", token)
+        .update(
+          `rea-cutter-client-v1:${sessionId}:${clientNonce}:${serverNonce}:${requestBytes}`,
+        )
+        .digest("hex");
+      if (frame.proof !== expected) {
+        connection.destroy();
+        return;
+      }
       if (request.command === "Ps /tmp/uncertain.rzdb") {
         connection.destroy();
         return;
       }
       const status = request.kind === "status";
-      connection.end(
-        `${JSON.stringify({
-          ok: request.token === token,
-          session_id: request.session_id,
-          output: status ? undefined : "synthetic Cutter command output",
-          current_file: "/fixtures/sample.bin",
-          document_generation: 3,
-          cutter_version: "Cutter fixture version",
-          identity_status: "partial",
-        })}\n`,
-      );
+      const response = JSON.stringify({
+        ok: true,
+        session_id: request.session_id,
+        output: status ? undefined : "synthetic Cutter command output",
+        current_file: "/fixtures/sample.bin",
+        document_generation: 3,
+        cutter_version: "Cutter fixture version",
+        identity_status: "partial",
+      });
+      const proof = createHmac("sha256", token)
+        .update(
+          `rea-cutter-response-v1:${sessionId}:${clientNonce}:${serverNonce}:${response}`,
+        )
+        .digest("hex");
+      connection.end(`${JSON.stringify({ response, proof })}\n`);
     });
   });
   await new Promise<void>((resolve) => bridge.listen(0, "127.0.0.1", resolve));
@@ -121,23 +195,5 @@ it("preserves live Cutter command Evidence and parity through the MCP boundary",
   });
   expect(session.evidenceById(evidence.evidence_id)).toEqual(evidence);
 
-  const uncertain = await client.callTool({
-    name: "cutter_command",
-    arguments: {
-      session_id: sessionId,
-      expected_generation: 3,
-      command: "Ps /tmp/uncertain.rzdb",
-    },
-  });
-  expect(uncertain.isError).not.toBe(true);
-  const uncertainEvidence = parseEvidence(uncertain.structuredContent);
-  expect(uncertainEvidence.normalized_result).toMatchObject({
-    execution_state: "unknown",
-    error: "transport-response-missing",
-    message: expect.stringContaining("do not retry automatically"),
-    document_generation: 3,
-  });
-  expect(uncertainEvidence.limitations).toContain(
-    "Command completion or its output could not be confirmed; do not retry automatically because the command may have produced partial or persistent effects.",
-  );
+  await assertUncertainEvidence(client, session, sessionId);
 });

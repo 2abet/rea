@@ -1,4 +1,5 @@
 import { createServer } from "node:net";
+import { createHmac } from "node:crypto";
 import { readFileSync } from "node:fs";
 import {
   chmod,
@@ -26,34 +27,103 @@ const listen = async (
   return address.port;
 };
 
+const authenticatedServer = (
+  token: string,
+  sessionId: string,
+  onRequest: (
+    request: Record<string, unknown>,
+    respond: (
+      value: unknown,
+      options?: { raw?: boolean; fragment?: boolean },
+    ) => void,
+    connection: import("node:net").Socket,
+  ) => void,
+): ReturnType<typeof createServer> =>
+  createServer((connection) => {
+    connection.setEncoding("utf8");
+    let input = "";
+    let clientNonce = "";
+    let serverNonce = "";
+    connection.on("data", (chunk: string) => {
+      input += chunk;
+      for (;;) {
+        const end = input.indexOf("\n");
+        if (end < 0) return;
+        const frame = JSON.parse(input.slice(0, end)) as Record<
+          string,
+          unknown
+        >;
+        input = input.slice(end + 1);
+        if (frame.kind === "rea-auth-v1") {
+          clientNonce = String(frame.nonce);
+          serverNonce = "e".repeat(64);
+          const proof = createHmac("sha256", token)
+            .update(
+              `rea-cutter-server-v1:${sessionId}:${clientNonce}:${serverNonce}`,
+            )
+            .digest("hex");
+          connection.write(
+            `${JSON.stringify({ session_id: sessionId, nonce: serverNonce, proof })}\n`,
+          );
+          continue;
+        }
+        const requestBytes = String(frame.request);
+        const expected = createHmac("sha256", token)
+          .update(
+            `rea-cutter-client-v1:${sessionId}:${clientNonce}:${serverNonce}:${requestBytes}`,
+          )
+          .digest("hex");
+        if (frame.proof !== expected) {
+          connection.destroy();
+          return;
+        }
+        const respond = (
+          value: unknown,
+          options: { raw?: boolean; fragment?: boolean } = {},
+        ): void => {
+          const response =
+            options.raw === true ? String(value) : JSON.stringify(value);
+          const responseProof = createHmac("sha256", token)
+            .update(
+              `rea-cutter-response-v1:${sessionId}:${clientNonce}:${serverNonce}:${response}`,
+            )
+            .digest("hex");
+          const frame = `${JSON.stringify({ response, proof: responseProof })}\n`;
+          if (options.fragment === true) {
+            connection.write(frame.slice(0, Math.floor(frame.length / 2)));
+            setImmediate(() =>
+              connection.end(frame.slice(Math.floor(frame.length / 2))),
+            );
+          } else connection.end(frame);
+        };
+        onRequest(
+          JSON.parse(requestBytes) as Record<string, unknown>,
+          respond,
+          connection,
+        );
+      }
+    });
+  });
+
 const statusServer = (
   token: string,
   currentFile: string | null,
   documentGeneration: number,
 ): ReturnType<typeof createServer> =>
-  createServer((connection) => {
-    connection.setEncoding("utf8");
-    let requestText = "";
-    connection.on("data", (chunk: string) => {
-      requestText += chunk;
-      const newline = requestText.indexOf("\n");
-      if (newline < 0) return;
-      const request = JSON.parse(requestText.slice(0, newline)) as Record<
-        string,
-        unknown
-      >;
-      connection.end(
-        `${JSON.stringify({
-          ok: request.token === token,
-          session_id: request.session_id,
-          current_file: currentFile,
-          document_generation: documentGeneration,
-          cutter_version: "Cutter fixture version",
-          identity_status: "partial",
-        })}\n`,
-      );
-    });
-  });
+  authenticatedServer(
+    token,
+    "27d3e3f1-f1e5-49ae-91ec-95af1f343a5a",
+    (request, respond) => {
+      respond({
+        ok: true,
+        session_id: request.session_id,
+        current_file: currentFile,
+        document_generation: documentGeneration,
+        cutter_version: "Cutter fixture version",
+        identity_status: "partial",
+      });
+    },
+  );
 
 const createStatusHarness = (
   token: string,
@@ -137,15 +207,14 @@ const verifyCutterCancellationAfterDispatch = async (): Promise<void> => {
   const dispatched = new Promise<void>((resolve) => {
     markDispatched = resolve;
   });
-  const server = createServer((connection) => {
-    connection.once("data", (chunk: Buffer) => {
-      const request = JSON.parse(chunk.toString("utf8")) as {
-        kind?: string;
-      };
+  const server = authenticatedServer(
+    token,
+    sessionId,
+    (request, _respond, connection) => {
       expect(request.kind).toBe("command");
       markDispatched?.();
-    });
-  });
+    },
+  );
   try {
     const port = await listen(server);
     await writeDescriptor(directory, sessionId, port, token);
@@ -200,10 +269,40 @@ describe("CutterBridgeClient: scenario group 1", () => {
     }).listSessions();
 
     expectDiscoveredSession(result, sessionId, 4, "/tmp/sample.bin");
-    expect(JSON.parse(harness.requestText())).toMatchObject({
+    expect(
+      JSON.parse(JSON.parse(harness.requestText().split("\n")[1]!).request),
+    ).toMatchObject({
       kind: "status",
       session_id: sessionId,
     });
+  });
+
+  it("does not disclose a client proof or command to a spoofed loopback peer", async () => {
+    directory = await mkdtemp(join(tmpdir(), "rea-cutter-spoofed-peer-"));
+    const sessionId = "27d3e3f1-f1e5-49ae-91ec-95af1f343a5a";
+    const token = "synthetic-cutter-bridge-token-for-test";
+    let received = "";
+    server = createServer((connection) => {
+      connection.setEncoding("utf8");
+      connection.once("data", (chunk: string) => {
+        received += chunk;
+        connection.end(
+          `${JSON.stringify({ session_id: sessionId, nonce: "a".repeat(64), proof: "0".repeat(64) })}\n`,
+        );
+      });
+    });
+    const port = await listen(server);
+    await writeDescriptor(directory, sessionId, port, token);
+    const result = createClient({ REA_CUTTER_BRIDGE_DIR: directory }).execute({
+      sessionId,
+      expectedGeneration: 0,
+      command: "write /tmp/secret",
+      json: false,
+    });
+    await expect(result).rejects.toThrow("peer authentication");
+    expect(received).toContain("rea-auth-v1");
+    expect(received).not.toContain(token);
+    expect(received).not.toContain("write /tmp/secret");
   });
 
   it("rejects a POSIX bridge directory that is accessible to other users", async () => {
@@ -225,8 +324,10 @@ describe("CutterBridgeClient: scenario group 1", () => {
   it("preserves unknown execution state when a live bridge closes after command dispatch", async () => {
     directory = await mkdtemp(join(tmpdir(), "rea-cutter-close-test-"));
     const sessionId = "27d3e3f1-f1e5-49ae-91ec-95af1f343a5a";
-    server = createServer((connection) =>
-      connection.on("data", () => connection.destroy()),
+    server = authenticatedServer(
+      "synthetic-cutter-bridge-token-for-test",
+      sessionId,
+      (_request, _respond, connection) => connection.destroy(),
     );
     const port = await listen(server);
     await writeDescriptor(
@@ -491,14 +592,11 @@ describe("CutterBridgeClient: scenario group 3", () => {
   it("uses descriptor status values when a live bridge omits optional fields", async () => {
     directory = await mkdtemp(join(tmpdir(), "rea-cutter-status-defaults-"));
     const sessionId = "27d3e3f1-f1e5-49ae-91ec-95af1f343a5a";
-    server = createServer((connection) => {
-      connection.setEncoding("utf8");
-      connection.once("data", () =>
-        connection.end(
-          `${JSON.stringify({ ok: true, session_id: sessionId })}\n`,
-        ),
-      );
-    });
+    server = authenticatedServer(
+      "synthetic-cutter-bridge-token-for-test",
+      sessionId,
+      (_request, respond) => respond({ ok: true, session_id: sessionId }),
+    );
     const port = await listen(server);
     await writeDescriptor(
       directory,
@@ -540,12 +638,9 @@ describe("CutterBridgeClient: scenario group 4", () => {
     const sessionId = "27d3e3f1-f1e5-49ae-91ec-95af1f343a5a";
     const token = "synthetic-cutter-bridge-token-for-test";
     let response: unknown = { ok: true };
-    server = createServer((connection) => {
-      connection.setEncoding("utf8");
-      connection.once("data", () =>
-        connection.end(`${JSON.stringify(response)}\n`),
-      );
-    });
+    server = authenticatedServer(token, sessionId, (_request, respond) =>
+      respond(response),
+    );
     const port = await listen(server);
     await writeDescriptor(directory, sessionId, port, token, "/tmp/input", 8);
     const client = createClient({ REA_CUTTER_BRIDGE_DIR: directory });
@@ -608,15 +703,11 @@ describe("CutterBridgeClient: scenario group 4", () => {
   it("returns unknown completion for invalid JSON and rejects a pre-aborted request", async () => {
     directory = await mkdtemp(join(tmpdir(), "rea-cutter-malformed-response-"));
     const sessionId = "27d3e3f1-f1e5-49ae-91ec-95af1f343a5a";
-    server = createServer((connection) => {
-      connection.setEncoding("utf8");
-      connection.once("data", (chunk: string) => {
-        const request = JSON.parse(chunk) as { kind?: string };
-        connection.end(
-          `${JSON.stringify(request.kind === "status" ? { ok: true, session_id: sessionId } : { ok: "invalid" })}\n`,
-        );
-      });
-    });
+    server = authenticatedServer(
+      "synthetic-cutter-bridge-token-for-test",
+      sessionId,
+      (_request, respond) => respond({ ok: "invalid" }),
+    );
     const port = await listen(server);
     await writeDescriptor(
       directory,
@@ -667,22 +758,14 @@ describe("CutterBridgeClient: scenario group 5", () => {
     directory = await mkdtemp(join(tmpdir(), "rea-cutter-framed-response-"));
     const sessionId = "27d3e3f1-f1e5-49ae-91ec-95af1f343a5a";
     let malformed = false;
-    server = createServer((connection) => {
-      connection.setEncoding("utf8");
-      connection.once("data", (chunk: string) => {
-        const request = JSON.parse(chunk) as { kind?: string };
-        const body =
-          request.kind === "status"
-            ? JSON.stringify({ ok: true, session_id: sessionId })
-            : malformed
-              ? "{"
-              : JSON.stringify({ ok: true, output: "split" });
-        if (request.kind === "command" && !malformed) {
-          connection.write(body);
-          setImmediate(() => connection.end("\n"));
-        } else connection.end(`${body}\n`);
-      });
-    });
+    server = authenticatedServer(
+      "synthetic-cutter-bridge-token-for-test",
+      sessionId,
+      (_request, respond) => {
+        if (malformed) respond("{", { raw: true });
+        else respond({ ok: true, output: "split" }, { fragment: true });
+      },
+    );
     const port = await listen(server);
     await writeDescriptor(
       directory,
@@ -720,15 +803,10 @@ describe("CutterBridgeClient: scenario group 5", () => {
     const dispatched = new Promise<void>((resolve) => {
       markDispatched = resolve;
     });
-    server = createServer((connection) =>
-      connection.once("data", (chunk: Buffer) => {
-        const request = JSON.parse(chunk.toString("utf8")) as { kind?: string };
-        if (request.kind === "status")
-          connection.end(
-            `${JSON.stringify({ ok: true, session_id: sessionId })}\n`,
-          );
-        else markDispatched?.();
-      }),
+    server = authenticatedServer(
+      "synthetic-cutter-bridge-token-for-test",
+      sessionId,
+      (_request, _respond) => markDispatched?.(),
     );
     const port = await listen(server);
     await writeDescriptor(
@@ -776,17 +854,12 @@ describe("CutterBridgeClient: scenario group 6", () => {
   it("rejects bridge frames that exceed the bounded response size", async () => {
     directory = await mkdtemp(join(tmpdir(), "rea-cutter-large-response-"));
     const sessionId = "27d3e3f1-f1e5-49ae-91ec-95af1f343a5a";
-    server = createServer((connection) => {
-      connection.setEncoding("utf8");
-      connection.once("data", (chunk: string) => {
-        const request = JSON.parse(chunk) as { kind?: string };
-        const payload =
-          request.kind === "status"
-            ? { ok: true, session_id: sessionId }
-            : { ok: true, output: "x".repeat(16 * 1024 * 1024 + 1) };
-        connection.end(`${JSON.stringify(payload)}\n`);
-      });
-    });
+    server = authenticatedServer(
+      "synthetic-cutter-bridge-token-for-test",
+      sessionId,
+      (_request, respond) =>
+        respond({ ok: true, output: "x".repeat(16 * 1024 * 1024 + 1) }),
+    );
     const port = await listen(server);
     await writeDescriptor(
       directory,

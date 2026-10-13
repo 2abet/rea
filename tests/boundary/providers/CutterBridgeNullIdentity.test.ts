@@ -1,4 +1,5 @@
 import { createServer } from "node:net";
+import { createHmac } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -41,24 +42,50 @@ const statusServer = (
   createServer((connection) => {
     connection.setEncoding("utf8");
     let input = "";
+    let clientNonce = "";
+    let serverNonce = "";
     connection.on("data", (chunk: string) => {
       input += chunk;
       const newline = input.indexOf("\n");
       if (newline < 0) return;
-      const request = JSON.parse(input.slice(0, newline)) as Record<
+      const frame = JSON.parse(input.slice(0, newline)) as Record<
         string,
         unknown
       >;
-      connection.end(
-        `${JSON.stringify({
-          ok: request.token === TOKEN,
-          session_id: request.session_id,
-          current_file: currentFile,
-          document_generation: documentGeneration,
-          cutter_version: "Cutter fixture version",
-          identity_status: "partial",
-        })}\n`,
-      );
+      input = input.slice(newline + 1);
+      if (frame.kind === "rea-auth-v1") {
+        clientNonce = String(frame.nonce);
+        serverNonce = "d".repeat(64);
+        connection.write(
+          `${JSON.stringify({ session_id: SESSION_ID, nonce: serverNonce, proof: createHmac("sha256", TOKEN).update(`rea-cutter-server-v1:${SESSION_ID}:${clientNonce}:${serverNonce}`).digest("hex") })}\n`,
+        );
+        return;
+      }
+      const requestBytes = String(frame.request);
+      const request = JSON.parse(requestBytes) as Record<string, unknown>;
+      const expected = createHmac("sha256", TOKEN)
+        .update(
+          `rea-cutter-client-v1:${SESSION_ID}:${clientNonce}:${serverNonce}:${requestBytes}`,
+        )
+        .digest("hex");
+      if (frame.proof !== expected) {
+        connection.destroy();
+        return;
+      }
+      const response = JSON.stringify({
+        ok: true,
+        session_id: request.session_id,
+        current_file: currentFile,
+        document_generation: documentGeneration,
+        cutter_version: "Cutter fixture version",
+        identity_status: "partial",
+      });
+      const proof = createHmac("sha256", TOKEN)
+        .update(
+          `rea-cutter-response-v1:${SESSION_ID}:${clientNonce}:${serverNonce}:${response}`,
+        )
+        .digest("hex");
+      connection.end(`${JSON.stringify({ response, proof })}\n`);
     });
   });
 

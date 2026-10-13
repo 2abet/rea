@@ -1542,6 +1542,7 @@ it("requires explicit close before an external mutation of an active Ghidra sess
       })),
   });
   expect((await session.open(target)).ok).toBe(true);
+  expect(session.providerIdentity().id).toBe("ghidra");
   const mutate = vi.fn(async () => resultOk("mutated"));
   const result = await session.withAdmittedExternalMutation(
     target,

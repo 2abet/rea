@@ -8,7 +8,11 @@ import {
 } from "./WindowsNativeLoader.js";
 
 const fixture = (
-  capabilities: { protocolStdin?: boolean; jobMemoryLimit?: unknown } = {},
+  capabilities: {
+    protocolStdin?: boolean;
+    jobMemoryLimit?: unknown;
+    privateBridgeDescriptorAccess?: unknown;
+  } = {},
 ) => {
   const bytes = Buffer.alloc(128);
   bytes.write("MZ");
@@ -202,31 +206,8 @@ describe("packaged Windows native admission", () => {
   });
 
   it("rejects Windows controls without handle-bound Cutter descriptor access", () => {
-    const value = fixture();
-    expect(
-      loadWindowsNativeAuthority({
-        ...value.host,
-        loadArtifact: () => ({
-          call: () => ({
-            abiVersion: 1,
-            nodeApiVersion: 8,
-            architecture: "x64",
-            filesystem: {
-              requestedPath: "D:\\fixture\\runtime",
-              finalPath: "\\\\?\\D:\\fixture\\runtime",
-              filesystem: "NTFS",
-              volumeSerial: "0123456789abcdef",
-              fileId: "0123456789abcdef0123456789abcdef",
-              size: 0,
-              directory: true,
-            },
-            privateDacl: true,
-            atomicJobAssignment: true,
-            killOnOwnerClose: true,
-          }),
-        }),
-      }),
-    ).toMatchObject({
+    const value = fixture({ privateBridgeDescriptorAccess: undefined });
+    expect(loadWindowsNativeAuthority(value.host)).toMatchObject({
       available: false,
       reason: expect.stringContaining("privateBridgeDescriptorAccess"),
     });

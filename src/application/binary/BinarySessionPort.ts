@@ -58,7 +58,9 @@ export interface BinarySessionPort
       error: AnalysisError,
     ) => AnalysisError,
     operationName?: string,
-    cleanupRecovery?: () => Promise<Result<null, AnalysisError>>,
+    cleanupRecovery?: (
+      failure: AnalysisError | undefined,
+    ) => Promise<Result<null, AnalysisError>>,
   ): Promise<Result<Result<Value, AnalysisError>, AnalysisError>>;
   open(
     path: string,
