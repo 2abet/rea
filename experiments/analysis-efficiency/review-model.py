@@ -238,6 +238,14 @@ def main():
                 and len(set(identities)) == len(identities)
             )
             cited = [records.get(identity) if isinstance(identity, str) else None for identity in identities]
+            checks['pcap_cited_subjects_match_artifact'] = bool(cited) and all(
+                isinstance(record, dict)
+                and isinstance(record.get('subject'), dict)
+                and isinstance(record['subject'].get('digest'), dict)
+                and record['subject']['digest'].get('sha256') == reference['artifact_sha256']
+                and record['subject'].get('local_path') == reference['capture']['target']['path']
+                for record in cited
+            )
             checks['pcap_cited_source_supports_uri_prefix'] = False
             checks['pcap_cited_capture'] = False
             if all(isinstance(record, dict) for record in cited):
@@ -267,6 +275,7 @@ def main():
                         and selected_page.get('facet') == 'http-uris'
                         and json.dumps(selected_page.get('items'), sort_keys=True) == json.dumps(prefix, sort_keys=True)
                         and page.get('source_coverage') == capture.get('coverage')
+                        and page.get('coverage') == reference['delivery_observations'][-1].get('coverage')
                         and page.get('artifact') == {key: capture['target'][key] for key in ['path', 'sha256']}
                     )
         else:
@@ -275,6 +284,7 @@ def main():
             checks['pcap_requested_views'] = False
             checks['pcap_cited_source_supports_uri_prefix'] = False
             checks['pcap_cited_capture'] = False
+            checks['pcap_cited_subjects_match_artifact'] = False
     elif domain == 'flutter-aot':
         for key in ['target', 'abi', 'libapp', 'string_pool', 'coverage', 'limitations']:
             check(key, answer.get(key), reference[key])

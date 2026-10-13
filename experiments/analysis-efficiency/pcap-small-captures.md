@@ -153,6 +153,17 @@ without writing an answer, and an unmodified real reply still passes. This
 checks receipt uniqueness before recording observations; it does not establish
 that a provider actually returned duplicate IDs.
 
+The page guard checks the complete expected coverage object, including status,
+continuation and exhaustion. Private actual-reply injections demonstrate that
+the preceding driver accepts inconsistent coverage, while the corrected driver
+rejects wrong status, next offset or exhaustion. Unmodified exhausted and
+continuable URI pages still pass. The grader also requires each cited receipt's
+subject digest and local path to identify the reference capture, and uses the
+reference page's verified coverage. Seventeen grading/context regressions pass,
+including missing or malformed subjects and faithful but inconsistent coverage;
+all four original model answers still pass factual regrading. Strict resource
+grades remain false where terminal whole-scope counters are unknown.
+
 **Decision: keep existing complete defaults; add no production optimization.**
 For these compact recordings and this question, summary/page costs more total
 input in both real-model pairs. No stable speed or CPU/memory benefit justifies

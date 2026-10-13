@@ -81,12 +81,13 @@ class PcapGraderWorkflowTests(unittest.TestCase):
                    'retained_counts': {'http_request_uris': 3}}
         prefix = ['http://example.test/one', 'http://example.test/two']
         coverage = {'status': 'page', 'examined': 2, 'total': 3, 'next_offset': 2, 'exhausted': False}
-        summary = {'evidence_id': summary_id, 'limitations': ['source', 'view'],
+        subject = {'digest': {'sha256': capture['target']['sha256']}, 'local_path': capture['target']['path']}
+        summary = {'evidence_id': summary_id, 'subject': copy.deepcopy(subject), 'limitations': ['source', 'view'],
                    'normalized_result': {'kind': 'summary', 'view': {'kind': 'summary'},
                        'parent_operation': 'inspect_pcap_capture', 'parent_evidence_id': parent,
                        'summary': capture, 'coverage': {'status': 'complete-within-view', 'examined': 1, 'total': 1, 'next_offset': None, 'exhausted': True},
                        'limitations': ['source', 'view'], 'unknowns': ['unrecorded traffic']}}
-        page = {'evidence_id': page_id, 'limitations': ['source', 'view'],
+        page = {'evidence_id': page_id, 'subject': copy.deepcopy(subject), 'limitations': ['source', 'view'],
                 'normalized_result': {'kind': 'pcap',
                     'view': {'kind': 'pcap', 'facet': 'http-uris', 'offset': 0, 'limit': 2},
                     'parent_operation': 'inspect_pcap_capture', 'parent_evidence_id': parent,
@@ -184,11 +185,18 @@ class PcapGraderWorkflowTests(unittest.TestCase):
         source.update({key: [] for key in capture['retained_counts']})
         source['http_request_uris'] = reference['http_request_uris_first2'] + ['http://example.test/three']
         source['diagnostics'] = {'tshark_stderr': '', 'capinfos_stderr': '\U0001f4a5'}
-        receipt = {'evidence_id': 'ev_' + 'a' * 64, 'limitations': ['source'], 'normalized_result': source}
+        receipt = {'evidence_id': 'ev_' + 'a' * 64, 'subject': copy.deepcopy(records[0]['subject']),
+                   'limitations': ['source'], 'normalized_result': source}
         reference['delivery_observations'] = [{'evidence_id': receipt['evidence_id'],
                                               'limitations': receipt['limitations'], 'coverage': source['coverage']}]
         answer = copy.deepcopy({**reference, 'evidence_ids': [receipt['evidence_id']]})
         self.assertTrue(self.grade(answer, [receipt], reference)['all_factual_checks_pass'])
+        for subject in [None, {'digest': {'sha256': 'e' * 64}, 'local_path': source['target']['path']}]:
+            changed = copy.deepcopy(receipt);changed['subject'] = subject
+            report = self.grade(answer, [changed], reference)
+            self.assertTrue(report['factual_checks']['pcap_cited_capture'])
+            self.assertFalse(report['factual_checks']['pcap_cited_subjects_match_artifact'])
+            self.assertFalse(report['all_factual_checks_pass'])
         mutations = [lambda x: x.__setitem__('packet_count', 4),
                      lambda x: x['client'].__setitem__('version', '2'),
                      lambda x: x.__setitem__('capture_start', 'changed'),
@@ -205,6 +213,34 @@ class PcapGraderWorkflowTests(unittest.TestCase):
         reference['capture']['diagnostics_code_units'] = None
         answer['capture']['diagnostics_code_units'] = None
         self.assertTrue(self.grade(answer, [receipt], reference)['all_factual_checks_pass'])
+
+    def test_cited_receipt_subjects_must_identify_the_reference_capture(self):
+        for index in [0, 1]:
+            for subject in [None, [], 'artifact', {}, {'digest': None},
+                            {'digest': {'sha256': 'e' * 64}, 'local_path': '/fixture/http.pcapng'},
+                            {'digest': {'sha256': 'd' * 64}, 'local_path': '/fixture/other.pcapng'}]:
+                with self.subTest(index=index, subject=subject):
+                    answer, records, reference = self.fixture()
+                    records[index]['subject'] = subject
+                    report = self.grade(answer, records, reference)
+                    self.assertTrue(report['factual_checks']['pcap_original_delivery_observations'])
+                    self.assertFalse(report['factual_checks']['pcap_cited_subjects_match_artifact'])
+                    self.assertFalse(report['all_factual_checks_pass'])
+            answer, records, reference = self.fixture();records[index].pop('subject')
+            self.assertFalse(self.grade(answer, records, reference)['all_factual_checks_pass'])
+
+    def test_faithful_inconsistent_page_coverage_does_not_support_the_prefix(self):
+        for field, wrong in [('status', 'complete-within-view'), ('next_offset', None), ('exhausted', True)]:
+            with self.subTest(field=field):
+                answer, records, reference = self.fixture()
+                records[-1]['normalized_result']['coverage'][field] = wrong
+                answer['delivery_observations'][-1] = self.observation(records[-1])
+                answer['http_request_uris_first2']['coverage'][field] = wrong
+                report = self.grade(answer, records, reference)
+                self.assertTrue(report['factual_checks']['pcap_original_delivery_observations'])
+                self.assertTrue(report['factual_checks']['pcap_prefix_coverage_observed'])
+                self.assertFalse(report['factual_checks']['pcap_cited_source_supports_uri_prefix'])
+                self.assertFalse(report['all_factual_checks_pass'])
 
     def test_reported_ids_are_only_the_ordered_unique_response_receipts(self):
         answer, records, reference = self.fixture()

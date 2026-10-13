@@ -572,6 +572,15 @@ const inspectPcapTarget = async () => {
       view,
     });
     const page = normalized(selected);
+    const total = capture.retained_counts.http_request_uris;
+    const examined = Math.min(view.limit, total);
+    const expectedCoverage = {
+      status: "page",
+      examined,
+      total,
+      next_offset: examined < total ? examined : null,
+      exhausted: examined >= total,
+    };
     if (
       page.parent_evidence_id !== n.parent_evidence_id ||
       page.parent_operation !== "inspect_pcap_capture" ||
@@ -579,8 +588,7 @@ const inspectPcapTarget = async () => {
       !isDeepStrictEqual(page.view, view) ||
       page.page.facet !== "http-uris" ||
       page.source_coverage !== capture.coverage ||
-      page.coverage.total !== capture.retained_counts.http_request_uris ||
-      page.coverage.examined !== page.page.items.length ||
+      !isDeepStrictEqual(page.coverage, expectedCoverage) ||
       page.artifact.path !== capture.target.path ||
       page.artifact.sha256 !== capture.target.sha256
     )
