@@ -1149,6 +1149,79 @@ describe("CutterBridgeClient: scenario group 9", () => {
     await expect(service.listSessions()).resolves.toBe(discovery);
   });
 
+  it("accepts only the exact completed-command receipt from status", async () => {
+    directory = await mkdtemp(join(tmpdir(), "rea-cutter-completion-receipt-"));
+    const sessionId = "27d3e3f1-f1e5-49ae-91ec-95af1f343a5a";
+    const staleId = "ede4bbfd-6348-46aa-963b-0de0e78ccbdc";
+    const token = "synthetic-cutter-bridge-token-for-test";
+    let completedRequestId: string | null = null;
+    server = createServer((connection) => {
+      connection.setEncoding("utf8");
+      let requestText = "";
+      connection.on("data", (chunk: string) => {
+        requestText += chunk;
+        const newline = requestText.indexOf("\n");
+        if (newline < 0) return;
+        const request = JSON.parse(requestText.slice(0, newline)) as {
+          kind?: string;
+          request_id?: string;
+          token?: string;
+        };
+        if (request.kind === "command") {
+          expect(request.request_id).toMatch(/^[0-9a-f-]{36}$/iu);
+          completedRequestId = request.request_id ?? null;
+          connection.end(
+            `${JSON.stringify({
+              ok: false,
+              session_id: sessionId,
+              execution_state: "unknown",
+              error: "ui-thread-request-timeout",
+            })}\n`,
+          );
+          return;
+        }
+        connection.end(
+          `${JSON.stringify({
+            ok: request.token === token,
+            session_id: sessionId,
+            current_file: "/tmp/input",
+            document_generation: 0,
+            completed_command:
+              completedRequestId === null
+                ? null
+                : {
+                    request_id: completedRequestId,
+                    execution_state: "complete",
+                  },
+          })}\n`,
+        );
+      });
+    });
+    const port = await listen(server);
+    await writeDescriptor(directory, sessionId, port, token);
+    const client = createClient({ REA_CUTTER_BRIDGE_DIR: directory });
+    const execution = await client.execute({
+      sessionId,
+      expectedGeneration: 0,
+      command: "pd 4",
+      json: false,
+    });
+    expect(execution.executionState).toBe("unknown");
+    expect(execution.requestId).toBe(completedRequestId);
+
+    expect(
+      await client.confirmCommandCompletion(sessionId, execution.requestId),
+    ).toEqual({ ok: true, value: true });
+    completedRequestId = null;
+    expect(
+      await client.confirmCommandCompletion(sessionId, execution.requestId),
+    ).toEqual({ ok: true, value: false });
+    completedRequestId = staleId;
+    expect(
+      await client.confirmCommandCompletion(sessionId, execution.requestId),
+    ).toEqual({ ok: true, value: false });
+  });
+
   it("records known completion and truncated command output", async () => {
     const service = new CutterBridgeService({
       listSessions: async () => ({
@@ -1158,6 +1231,7 @@ describe("CutterBridgeClient: scenario group 9", () => {
         bridge_directory_security: "private_verified",
       }),
       execute: async () => ({
+        requestId: "4b18ce4d-bf31-456e-ae31-e8c547b2f9db",
         output: "partial",
         currentFile: null,
         documentGeneration: 7,
