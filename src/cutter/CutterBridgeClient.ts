@@ -118,6 +118,7 @@ export class CutterBridgeClient {
   readonly #directory: string;
   readonly #platform: NodeJS.Platform;
   readonly #windowsPrivateReader: WindowsCutterDescriptorReader | undefined;
+  readonly #pendingAcknowledgements = new Map<string, Set<string>>();
 
   constructor(
     environment: Readonly<NodeJS.ProcessEnv> = process.env,
@@ -220,6 +221,8 @@ export class CutterBridgeClient {
   }): Promise<CutterBridgeExecution> {
     input.signal?.throwIfAborted();
     const descriptor = await this.#find(input.sessionId);
+    input.signal?.throwIfAborted();
+    await this.#retryPendingAcknowledgements(descriptor);
     input.signal?.throwIfAborted();
     const requestId = randomUUID();
     let rawResponse: unknown;
@@ -359,11 +362,40 @@ export class CutterBridgeClient {
   async #acknowledgeCompletion(
     descriptor: z.infer<typeof descriptorSchema>,
     requestId: string,
-  ): Promise<void> {
+  ): Promise<boolean> {
     try {
-      await this.#request(descriptor, { kind: "ack", request_id: requestId });
+      const raw = await this.#request(descriptor, {
+        kind: "ack",
+        request_id: requestId,
+      });
+      const acknowledged = responseSchema.safeParse(raw);
+      if (!acknowledged.success || !acknowledged.data.ok)
+        throw new Error("Cutter did not confirm the completion receipt acknowledgement.");
+      const pending = this.#pendingAcknowledgements.get(descriptor.session_id);
+      pending?.delete(requestId);
+      if (pending?.size === 0)
+        this.#pendingAcknowledgements.delete(descriptor.session_id);
+      return true;
     } catch {
-      // Receipt acknowledgement is best-effort; the bounded producer retains it.
+      const pending = this.#pendingAcknowledgements.get(descriptor.session_id) ?? new Set<string>();
+      pending.add(requestId);
+      this.#pendingAcknowledgements.set(descriptor.session_id, pending);
+      return false;
+    }
+  }
+
+  async #retryPendingAcknowledgements(
+    descriptor: z.infer<typeof descriptorSchema>,
+  ): Promise<void> {
+    const pending = this.#pendingAcknowledgements.get(descriptor.session_id);
+    if (pending === undefined) return;
+    for (const requestId of pending) {
+      if (!(await this.#acknowledgeCompletion(descriptor, requestId)))
+        throw new AnalysisCapabilityUnavailableError(
+          "cutter",
+          "cutter_command",
+          "A retained Cutter completion receipt could not be acknowledged; no new command was sent.",
+        );
     }
   }
 
