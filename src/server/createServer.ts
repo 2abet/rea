@@ -464,6 +464,7 @@ export const createServer = (
     session === undefined
       ? undefined
       : (evidence) => session.recordEvidence(evidence),
+    session,
   );
   registerGdbTools(
     server,
@@ -483,6 +484,7 @@ export const createServer = (
     session === undefined
       ? undefined
       : (evidence) => session.recordEvidence(evidence),
+    session,
   );
   const previousOnclose = server.server.onclose;
   server.server.onclose = () => {

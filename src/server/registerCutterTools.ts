@@ -5,6 +5,11 @@ import type { CutterBridgeService } from "../cutter/CutterBridgeService.js";
 import type { EvidenceWriter } from "../application/investigation/InvestigationRecordPort.js";
 import { toolContract } from "../contracts/toolContracts.js";
 import { ok } from "../domain/result.js";
+import { evidenceSchema } from "../domain/evidence.js";
+import {
+  runWithExternalMutationAdmission,
+  type ExternalMutationAdmission,
+} from "./externalMutationAdmission.js";
 import { logToolExecution } from "./toolLogging.js";
 import { toolRegistrationOptions } from "./toolRegistrationOptions.js";
 import type { ToolResultDelivery } from "./toolResult.js";
@@ -16,6 +21,7 @@ export const registerCutterTools = (
   logger: Logger,
   delivery: ToolResultDelivery,
   recordEvidence?: EvidenceWriter["recordEvidence"],
+  session?: ExternalMutationAdmission,
 ): void => {
   const list = toolContract("list_cutter_sessions");
   const command = toolContract("cutter_command");
@@ -36,10 +42,32 @@ export const registerCutterTools = (
     command.name,
     toolRegistrationOptions(command),
     async (input, context) => {
-      const result = await logToolExecution(logger, command.name, () =>
-        service.execute(input, { signal: context.mcpReq.signal }),
+      const result = await runWithExternalMutationAdmission(
+        session,
+        command.name,
+        context.mcpReq.signal,
+        () =>
+          logToolExecution(logger, command.name, () =>
+            service.execute(input, { signal: context.mcpReq.signal }),
+          ),
+        (value) => value,
       );
-      if (!result.ok) return delivery.toCallToolResult(result, command);
+      if (!result.ok) {
+        const partial = evidenceSchema.safeParse(
+          result.error.partialObservation,
+        );
+        if (partial.success) {
+          const recorded = recordEvidence?.(partial.data);
+          if (recorded !== undefined)
+            return delivery.toRecordedPartialErrorToolResult(
+              result.error,
+              partial.data.evidence_id,
+              recorded,
+              command.returnsTargetContent,
+            );
+        }
+        return delivery.toCallToolResult(result, command);
+      }
       return delivery.toEvidenceToolResult(
         result.value,
         command,

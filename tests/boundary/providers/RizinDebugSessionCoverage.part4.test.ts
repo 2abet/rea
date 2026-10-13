@@ -1,4 +1,5 @@
 import { afterEach, expect, it } from "vitest";
+import { evidenceSchema } from "../../../src/domain/evidence.js";
 import { RizinDebugSessionManager } from "../../../src/rizin/RizinDebugSessionManager.js";
 import {
   createRizinTestManager,
@@ -127,10 +128,15 @@ it.skipIf(process.platform === "win32")(
       stopProcess: incompleteStop,
     });
     const result = await manager.execute(sessionId, "slow");
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.value.result.completion_status).toBe("unknown");
-      expect(result.value.evidence.limitations.join(" ")).toContain(
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.cleanupIncomplete).toBe(true);
+      expect(result.error.cleanupResources).toEqual([sessionId]);
+      const evidence = evidenceSchema.parse(result.error.partialObservation);
+      expect(evidence.normalized_result).toMatchObject({
+        completion_status: "unknown",
+      });
+      expect(evidence.limitations.join(" ")).toContain(
         "injected stop uncertainty",
       );
     }
@@ -160,10 +166,15 @@ process.stdin.on("data", (chunk) => {
       stopProcess: incompleteStop,
     });
     const result = await manager.execute(sessionId, "many");
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.value.result.completion_status).toBe("unknown");
-      expect(result.value.evidence.limitations.join(" ")).toContain(
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.cleanupIncomplete).toBe(true);
+      expect(result.error.cleanupResources).toEqual([sessionId]);
+      const evidence = evidenceSchema.parse(result.error.partialObservation);
+      expect(evidence.normalized_result).toMatchObject({
+        completion_status: "unknown",
+      });
+      expect(evidence.limitations.join(" ")).toContain(
         "injected stop uncertainty",
       );
     }

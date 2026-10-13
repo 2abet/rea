@@ -17,6 +17,7 @@ import {
   parseRizinProcStartTime,
   RizinDebugSessionManager,
 } from "../../../src/rizin/RizinDebugSessionManager.js";
+import { evidenceSchema } from "../../../src/domain/evidence.js";
 import { TOOL_EFFECTS } from "../../../src/contracts/toolEffects.js";
 import { spawnOwnedProviderProcess } from "../../../src/process/ProviderProcess.js";
 import {
@@ -397,10 +398,15 @@ it.skipIf(process.platform !== "linux")(
         if (watchdog !== undefined) clearTimeout(watchdog);
       });
 
-    expect(completed.ok).toBe(true);
-    if (!completed.ok) return;
-    expect(completed.value.result.output_truncated).toBe(true);
-    expect(completed.value.evidence.limitations.join(" ")).toContain(
+    expect(completed.ok).toBe(false);
+    if (completed.ok) return;
+    expect(completed.error.cleanupIncomplete).toBe(true);
+    expect(completed.error.cleanupResources).toEqual([sessionId]);
+    const evidence = evidenceSchema.parse(completed.error.partialObservation);
+    expect(evidence.normalized_result).toMatchObject({
+      output_truncated: true,
+    });
+    expect(evidence.limitations.join(" ")).toContain(
       "The owned debugger session remains retained because cleanup could not be verified",
     );
     expect(manager!.status(sessionId)?.state).toBe("closed");

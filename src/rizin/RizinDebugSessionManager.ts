@@ -12,7 +12,10 @@ import {
   AnalysisResourceConstraintError,
   AnalysisTimeoutError,
 } from "../domain/analysisErrorCore.js";
-import type { AnalysisError } from "../domain/analysisErrorBase.js";
+import type {
+  AnalysisError,
+  AnalysisErrorOptions,
+} from "../domain/analysisErrorBase.js";
 import { createEvidence, type Evidence } from "../domain/evidence.js";
 import { err, ok, type Result } from "../domain/result.js";
 import {
@@ -112,6 +115,7 @@ interface RizinDebugSession {
   readonly detachInferior: () => Promise<OwnedDebuggerDetachResult>;
   cleanupCommandTurnHeld: boolean;
   stopAttempt: ReturnType<typeof stopOwnedDebuggerProcess> | undefined;
+  readonly cleanupFailures: Set<AnalysisError>;
   pendingCommandCount: number;
   invalidUtf8Observed: boolean;
   closing: boolean;
@@ -331,6 +335,7 @@ export class RizinDebugSessionManager {
           : this.#detachInferior(session),
       cleanupCommandTurnHeld: false,
       stopAttempt: undefined,
+      cleanupFailures: new Set(),
       pendingCommandCount: 0,
       invalidUtf8Observed: false,
       closing: false,
@@ -386,10 +391,10 @@ export class RizinDebugSessionManager {
       if (stopped.status !== "incomplete") this.#sessions.delete(id);
       if (stopped.status === "incomplete")
         return err(
-          new AnalysisCapabilityUnavailableError(
-            "rizin",
+          this.#retainCleanupFailure(
+            session,
             "start_rizin_debug_session",
-            `Rizin startup failed and its owned process could not be confirmed stopped: ${stopped.reason}`,
+            stopped.reason,
             { cause },
           ),
         );
@@ -476,11 +481,7 @@ export class RizinDebugSessionManager {
           "Unsolicited Rizin frames arrived before a command; command output can no longer be safely correlated.";
         this.#failProtocol(session, message);
         return err(
-          new AnalysisCapabilityUnavailableError(
-            "rizin",
-            "rizin_debug_command",
-            message,
-          ),
+          await this.#stopAfterProtocolFailure(session, undefined, true),
         );
       }
       const marker = `__REA_COMMAND_COMPLETE_${randomUUID().replaceAll("-", "")}__`;
@@ -576,6 +577,17 @@ export class RizinDebugSessionManager {
           ],
         },
       );
+      if (cleanupFailure !== undefined)
+        return err(
+          this.#retainCleanupFailure(
+            session,
+            "rizin_debug_command",
+            cleanupFailure,
+            {
+              partialObservation: evidence,
+            },
+          ),
+        );
       return ok({ result, evidence });
     } catch (cause) {
       if (signal?.aborted || cause instanceof AnalysisCancelledError) {
@@ -588,10 +600,10 @@ export class RizinDebugSessionManager {
         const stopped = await this.#stopDebuggerOnly(session, true);
         if (stopped.status === "incomplete")
           return err(
-            new AnalysisCapabilityUnavailableError(
-              "rizin",
+            this.#retainCleanupFailure(
+              session,
               "rizin_debug_command",
-              `Cancellation was requested, but the owned Rizin process could not be confirmed stopped: ${stopped.reason}`,
+              stopped.reason,
               { cause: new AnalysisCancelledError("rizin_debug_command") },
             ),
           );
@@ -623,6 +635,18 @@ export class RizinDebugSessionManager {
           session.inferiorTty,
           stopped.status === "incomplete" ? stopped.reason : undefined,
         );
+        if (stopped.status === "incomplete")
+          return err(
+            this.#retainCleanupFailure(
+              session,
+              "rizin_debug_command",
+              stopped.reason,
+              {
+                cause,
+                partialObservation: evidence,
+              },
+            ),
+          );
         return ok({ result, evidence });
       }
       if (cause instanceof RizinProcessExitError) {
@@ -670,10 +694,10 @@ export class RizinDebugSessionManager {
       const stopped = await this.#stopDebuggerOnly(session, true);
       if (stopped.status === "incomplete")
         return err(
-          new AnalysisCapabilityUnavailableError(
-            "rizin",
+          this.#retainCleanupFailure(
+            session,
             "rizin_debug_command",
-            `Rizin command output could not be correlated and its owned process could not be confirmed stopped: ${stopped.reason}`,
+            stopped.reason,
             { cause },
           ),
         );
@@ -741,6 +765,7 @@ export class RizinDebugSessionManager {
           "rizin",
           "close_rizin_debug_session",
           stopped.reason,
+          { cleanup: { reason: stopped.reason, resources: [session.id] } },
         ),
       );
     this.#sessions.delete(sessionId);
@@ -892,6 +917,14 @@ export class RizinDebugSessionManager {
           platform: this.#platform,
         }),
       )
+      .then((stopped) => {
+        if (stopped.status !== "incomplete") {
+          for (const failure of session.cleanupFailures)
+            failure.resolveCleanup();
+          session.cleanupFailures.clear();
+        }
+        return stopped;
+      })
       .finally(() => {
         session.stopAttempt = undefined;
       });
@@ -1015,20 +1048,41 @@ export class RizinDebugSessionManager {
     return captured.output;
   }
 
+  #retainCleanupFailure(
+    session: RizinDebugSession,
+    operation: string,
+    reason: string,
+    options: AnalysisErrorOptions = {},
+  ): AnalysisError {
+    const failure = new AnalysisCapabilityUnavailableError(
+      "rizin",
+      operation,
+      `The owned Rizin process could not be confirmed stopped: ${reason}`,
+      { ...options, cleanup: { reason, resources: [session.id] } },
+    );
+    session.cleanupFailures.add(failure);
+    return failure;
+  }
+
   async #stopAfterProtocolFailure(
     session: RizinDebugSession,
     cause: unknown,
     commandTurnHeld = false,
   ): Promise<AnalysisError> {
     const stopped = await this.#stopDebuggerOnly(session, commandTurnHeld);
-    return new AnalysisCapabilityUnavailableError(
-      "rizin",
-      "rizin_debug_command",
-      stopped.status === "incomplete"
-        ? `${session.protocolError} The owned process could not be confirmed stopped: ${stopped.reason}`
-        : session.protocolError!,
-      { cause },
-    );
+    return stopped.status === "incomplete"
+      ? this.#retainCleanupFailure(
+          session,
+          "rizin_debug_command",
+          stopped.reason,
+          { cause },
+        )
+      : new AnalysisCapabilityUnavailableError(
+          "rizin",
+          "rizin_debug_command",
+          session.protocolError!,
+          { cause },
+        );
   }
 }
 

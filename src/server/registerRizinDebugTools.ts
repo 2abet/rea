@@ -5,6 +5,11 @@ import type { EvidenceWriter } from "../application/investigation/InvestigationR
 import { toolContract } from "../contracts/toolContracts.js";
 import { AnalysisInputError } from "../domain/analysisErrorCore.js";
 import type { RizinDebugSessionManager } from "../rizin/RizinDebugSessionManager.js";
+import { evidenceSchema } from "../domain/evidence.js";
+import {
+  runWithExternalMutationAdmission,
+  type ExternalMutationAdmission,
+} from "./externalMutationAdmission.js";
 import { logToolExecution } from "./toolLogging.js";
 import { toolRegistrationOptions } from "./toolRegistrationOptions.js";
 import type { ToolResultDelivery } from "./toolResult.js";
@@ -16,6 +21,7 @@ export const registerRizinDebugTools = (
   logger: Logger,
   delivery: ToolResultDelivery,
   recordEvidence?: EvidenceWriter["recordEvidence"],
+  session?: ExternalMutationAdmission,
 ): void => {
   const start = toolContract("start_rizin_debug_session");
   const command = toolContract("rizin_debug_command");
@@ -44,10 +50,36 @@ export const registerRizinDebugTools = (
     command.name,
     toolRegistrationOptions(command),
     async (input, context: ServerContext) => {
-      const result = await logToolExecution(logger, command.name, () =>
-        manager.execute(input.session_id, input.command, context.mcpReq.signal),
+      const result = await runWithExternalMutationAdmission(
+        session,
+        command.name,
+        context.mcpReq.signal,
+        () =>
+          logToolExecution(logger, command.name, () =>
+            manager.execute(
+              input.session_id,
+              input.command,
+              context.mcpReq.signal,
+            ),
+          ),
+        (value) => value.evidence,
       );
-      if (!result.ok) return delivery.toCallToolResult(result, command);
+      if (!result.ok) {
+        const partial = evidenceSchema.safeParse(
+          result.error.partialObservation,
+        );
+        if (partial.success) {
+          const recorded = recordEvidence?.(partial.data);
+          if (recorded !== undefined)
+            return delivery.toRecordedPartialErrorToolResult(
+              result.error,
+              partial.data.evidence_id,
+              recorded,
+              command.returnsTargetContent,
+            );
+        }
+        return delivery.toCallToolResult(result, command);
+      }
       return delivery.toEvidenceToolResult(
         result.value.evidence,
         command,
