@@ -161,7 +161,7 @@ export const parseZcodeFallbackConfiguration = (
         ? {}
         : requireObject(document.mcpServers, "ZCode fallback mcpServers"),
     serversPath: ["mcpServers"],
-    dialect: "json",
+    dialect: "zcode_fallback",
     legacyServers: {},
   };
 };
@@ -177,6 +177,7 @@ export const parseClientConfiguration = (
   if (format === undefined || format === "unsupported")
     throw new TypeError("client does not have a supported MCP config format");
   // DeepSeek Harness stores a Cordis patch list, not a server table.
+  if (format === "zcode_fallback") return parseZcodeFallbackConfiguration(text);
   if (format === "dsh") return parseDshCordisDocument(text);
   const document = parseDocument(text, format);
   const serversKey = clientConfigurationServersKey(format);

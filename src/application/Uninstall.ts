@@ -227,7 +227,7 @@ export const systemUninstallHost = (
                 {
                   ...client,
                   configPath: client.zcodeFallbackPath,
-                  format: "json" as const,
+                  format: "zcode_fallback" as const,
                 },
               ]),
         ]),

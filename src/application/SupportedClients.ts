@@ -40,6 +40,7 @@ export interface SetupClient {
     | "omp"
     | "pi"
     | "hermes"
+    | "zcode_fallback"
     | "zcode"
     | "dsh"
     | "unsupported";

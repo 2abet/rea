@@ -269,6 +269,32 @@ describe("ZCode fallback uninstall", () => {
     return text;
   };
 
+  it.each(["comment", "trailing-comma", "bom"])(
+    "fails closed on strict fallback syntax: %s",
+    async (mode) => {
+      const { home } = await zcodeClient();
+      const valid = await writeFallback(home, {
+        rea: owned,
+        other: { command: "other-server" },
+      });
+      const original =
+        mode === "comment"
+          ? `// unsupported comment\n${valid}`
+          : mode === "bom"
+            ? `\uFEFF${valid}`
+            : valid.replace(/}\s*$/u, ",}");
+      await writeFile(fallbackPath(home), original);
+      const result = await runUninstall(false, systemUninstallHost(home));
+      expect(result.items).toContainEqual(
+        expect.objectContaining({ name: "zcode", status: "failed" }),
+      );
+      expect(await readFile(fallbackPath(home), "utf8")).toBe(original);
+      await expect(
+        readFile(`${fallbackPath(home)}.rea.backup`),
+      ).rejects.toMatchObject({ code: "ENOENT" });
+    },
+  );
+
   it("removes the REA-owned fallback entry with the native registration", async () => {
     const { home, client } = await zcodeClient();
     await writeFile(
