@@ -41,6 +41,35 @@ class BoundedReader:
         return self.handle.read(count)
 
 
+SPECIAL_SCHEMES = {"ftp", "file", "http", "https", "ws", "wss"}
+URL_PREFIX = r"^([\x00-\x20]*(?:([a-z][a-z0-9+.-]*):)?//)"
+
+
+def without_userinfo(value):
+    """Remove an authority's userinfo using the WHATWG authority boundary.
+
+    Special schemes (and scheme-relative references) also end the authority
+    at a backslash, so later path text containing "@" is not userinfo. This
+    matches src/domain/recordedTransportUrl.ts.
+    """
+    binary = isinstance(value, bytes)
+    text = value.decode("latin-1") if binary else value
+    prefix = re.match(URL_PREFIX, text, flags=re.I)
+    if prefix is None:
+        return value
+    scheme = prefix.group(2)
+    special = scheme is None or scheme.lower() in SPECIAL_SCHEMES
+    terminators = "/?#\\" if special else "/?#"
+    end = prefix.end()
+    while end < len(text) and text[end] not in terminators:
+        end += 1
+    at = text.rfind("@", prefix.end(), end)
+    if at < 0:
+        return value
+    safe = text[: prefix.end()] + text[at + 1 :]
+    return safe.encode("latin-1") if binary else safe
+
+
 def project_record(state, secrets):
     binaries, numbers, redactions = [], [], []
     byte_secrets = []
@@ -62,10 +91,8 @@ def project_record(state, secrets):
         if not (transport_url or re.fullmatch(r"/(?:backup/)*request/(?:path|authority)", path)):
             return value, False
         binary = isinstance(value, bytes)
-        pattern = rb"^([\x00-\x20]*(?:[a-z][a-z0-9+.-]*:)?//)[^/?#]*@" if binary else r"^([\x00-\x20]*(?:[a-z][a-z0-9+.-]*:)?//)[^/?#]*@"
-        replacement = rb"\1" if binary else r"\1"
         separator = b"@" if binary else "@"
-        safe_url = re.sub(pattern, replacement, value, flags=re.I)
+        safe_url = without_userinfo(value)
         if path.endswith("/authority") and separator in safe_url:
             safe_url = safe_url.rsplit(separator, 1)[1]
         changed = safe_url != value
