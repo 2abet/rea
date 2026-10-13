@@ -43,7 +43,9 @@ class BoundedReader:
 
 SPECIAL_SCHEMES = {"ftp", "file", "http", "https", "ws", "wss"}
 SCHEME_PREFIX = r"^[\x00-\x20]*([a-z][a-z0-9+.-]*):"
-URL_PREFIX = r"^([\x00-\x20]*(?:([a-z][a-z0-9+.-]*):)?//)"
+NETWORK_PREFIX = r"^[\x00-\x20]*[/\\]{2}"
+URL_IGNORABLE_CONTROLS = "\t\n\r"
+URL_CONTROL_TRANSLATION = {ord(char): None for char in URL_IGNORABLE_CONTROLS}
 
 
 def authority_start(text, base_scheme=None):
@@ -64,11 +66,13 @@ def authority_start(text, base_scheme=None):
             return None
         start = scheme.end()
     else:
-        prefix = re.match(URL_PREFIX, text, flags=re.I)
+        if scheme is not None:
+            if text[scheme.end():scheme.end() + 2] != "//":
+                return None
+            return scheme.end() + 2, name in SPECIAL_SCHEMES
+        prefix = re.match(NETWORK_PREFIX, text)
         if prefix is None:
             return None
-        if prefix.group(2) is not None:
-            return prefix.end(), prefix.group(2).lower() in SPECIAL_SCHEMES
         start = prefix.end()
     while start < len(text) and text[start] in "/\\":
         start += 1
@@ -83,19 +87,32 @@ def without_userinfo(value, base_scheme=None):
     """
     binary = isinstance(value, bytes)
     text = value.decode("latin-1") if binary else value
-    located = authority_start(text, base_scheme)
+    # WHATWG removes these controls before interpreting scheme/separators.
+    # Keep that parse view separate from the exact source spelling and bytes.
+    parsed_text = text.translate(URL_CONTROL_TRANSLATION)
+    located = authority_start(parsed_text, base_scheme)
     if located is None:
         return value
     start, special = located
     terminators = "/?#\\" if special else "/?#"
     end = start
-    while end < len(text) and text[end] not in terminators:
+    while end < len(parsed_text) and parsed_text[end] not in terminators:
         end += 1
-    at = text.rfind("@", start, end)
+    at = parsed_text.rfind("@", start, end)
     if at < 0:
         return value
-    safe = text[:start] + text[at + 1 :]
-    return safe.encode("latin-1") if binary else safe
+    parsed_offset = 0
+    raw_start = 0
+    for raw_offset, char in enumerate(text):
+        if char in URL_IGNORABLE_CONTROLS:
+            continue
+        if parsed_offset == start:
+            raw_start = raw_offset
+        if parsed_offset == at:
+            safe = text[:raw_start] + text[raw_offset + 1 :]
+            return safe.encode("latin-1") if binary else safe
+        parsed_offset += 1
+    raise CaptureFailure("decoder", "Normalized URL authority could not be bound to its source.")
 
 
 def project_record(state, secrets):

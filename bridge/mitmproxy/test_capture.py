@@ -44,6 +44,24 @@ def location(value, scheme=None):
 
 
 class TransportUserinfoTests(unittest.TestCase):
+    def test_ignorable_controls_cannot_hide_authority_credentials(self):
+        for control in [b"\t", b"\n", b"\r"]:
+            for value in [b"https://" + control + b"/user:pass@host/path", b"ht" + control + b"tps://user:" + control + b"pass@host/path"]:
+                with self.subTest(value=value):
+                    text, sidecar, redactions = location(value, b"https")
+                    self.assertNotIn("user", text)
+                    self.assertNotIn("pass", text)
+                    self.assertEqual(sidecar["state"], "redacted")
+                    self.assertEqual(len(redactions), 1)
+
+    def test_mixed_network_separators_remove_credentials(self):
+        for prefix in [b"\\\\", b"/\\", b"\\/"]:
+            with self.subTest(prefix=prefix):
+                text, sidecar, redactions = location(prefix + b"user:pass@host/path", b"https")
+                self.assertEqual(text, prefix.decode("ascii") + "host/path")
+                self.assertEqual(sidecar["state"], "redacted")
+                self.assertEqual(len(redactions), 1)
+
     def test_same_scheme_locations_preserve_relative_path_text_and_bytes(self):
         for value in [b"https:invoice@customer", b"https:/invoice@customer", b"https:\\invoice@customer"]:
             with self.subTest(value=value):
