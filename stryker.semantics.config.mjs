@@ -1,4 +1,4 @@
-import { mutationRange } from "./scripts/lib/reverse-tools-mutation-targets.mjs";
+import { mutationRanges } from "./scripts/lib/reverse-tools-mutation-targets.mjs";
 
 const config = {
   $schema: "./node_modules/@stryker-mutator/core/schema/stryker-schema.json",
@@ -13,7 +13,6 @@ const config = {
     prioritizePerformanceOverAccuracy: true,
   },
   coverageAnalysis: "off",
-  mutate: [],
   thresholds: {
     high: 100,
     low: 100,
@@ -27,21 +26,29 @@ const config = {
 export default {
   ...config,
   mutate: [
-    ...config.mutate,
-    mutationRange("src/cutter/CutterBridgeClient.ts", {
-      expression: "status.data.current_file === undefined",
-    }),
-    mutationRange("src/cutter/CutterBridgeClient.ts", {
-      expression: "response.current_file === undefined",
-    }),
-    mutationRange("src/rizin/RizinDebugSessionManager.ts", {
-      declaration: "isRizinCommandDeadlineExpired",
-    }),
-    mutationRange("src/rizin/RizinDebugSessionManager.ts", {
-      declaration: "createRizinCommandTimeoutError",
-    }),
-    mutationRange("src/rizin/RizinDebugSessionManager.ts", {
-      declaration: "createRizinCommandTimeoutEvidence",
-    }),
+    ...mutationRanges("src/cutter/CutterBridgeClient.ts", [
+      {
+        kind: "expression",
+        text: "status.data.current_file === undefined",
+      },
+      {
+        kind: "expression",
+        text: "response.current_file === undefined",
+      },
+    ]),
+    ...mutationRanges("src/rizin/RizinDebugSessionManager.ts", [
+      {
+        kind: "declaration",
+        name: "isRizinCommandDeadlineExpired",
+      },
+      {
+        kind: "declaration",
+        name: "createRizinCommandTimeoutError",
+      },
+      {
+        kind: "declaration",
+        name: "createRizinCommandTimeoutEvidence",
+      },
+    ]),
   ],
 };

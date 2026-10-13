@@ -1,4 +1,4 @@
-import { mutationRange } from "./scripts/lib/reverse-tools-mutation-targets.mjs";
+import { mutationRanges } from "./scripts/lib/reverse-tools-mutation-targets.mjs";
 
 const config = {
   $schema: "./node_modules/@stryker-mutator/core/schema/stryker-schema.json",
@@ -17,36 +17,6 @@ const config = {
     prioritizePerformanceOverAccuracy: true,
   },
   coverageAnalysis: "perTest",
-  mutate: [
-    "src/application/reverse/ReverseEngineeringService.ts:209-211",
-    "src/application/reverse/ReverseEngineeringService.ts:154-180",
-    "src/application/reverse/ReverseEngineeringService.ts:176-207",
-    "src/application/reverse/ReverseEngineeringService.ts:226-240",
-    "src/application/reverse/ReverseEngineeringService.ts:288-292",
-    "src/application/reverse/ReverseEngineeringService.ts:294-303",
-    "src/application/reverse/ReverseEngineeringService.ts:343-361",
-    "src/application/reverse/ReverseEngineeringService.ts:369-369",
-    "src/application/reverse/ReverseEngineeringService.ts:377-377",
-    "src/application/reverse/ReverseEngineeringService.ts:381-417",
-    "src/process/ExecFileOutput.ts:101-101",
-    "src/server/providerEnvironment.ts:4-8",
-    "src/server/registerReverseEngineeringTools.ts:21-54",
-    "src/server/registerReverseEngineeringTools.ts:57-78",
-    "src/gdb/GdbSessionManager.ts:68-69",
-    "src/gdb/GdbSessionManager.ts:71-73",
-    "src/gdb/GdbSessionManager.ts:32-32",
-    "src/gdb/GdbSessionManager.ts:960-980",
-    "src/gdb/GdbSessionManager.ts:216-230",
-    "src/gdb/GdbSessionManager.ts:390-390",
-    "src/gdb/GdbSessionManager.ts:392-392",
-    "src/gdb/GdbSessionManager.ts:418-435",
-    "src/process/ownedDebuggerSession.ts:28-51",
-    "src/process/ownedDebuggerSession.ts:58-82",
-    "src/rizin/RizinDebugSessionManager.ts:461-485",
-    "src/rizin/RizinDebugSessionManager.ts:677-677",
-    "src/cli/reverseEngineeringCommands.ts:211-211",
-    "src/cli/reverseEngineeringCommands.ts:223-223",
-  ],
   thresholds: {
     high: 100,
     low: 100,
@@ -60,15 +30,221 @@ const config = {
 export default {
   ...config,
   mutate: [
-    ...config.mutate,
-    mutationRange("src/cutter/CutterBridgeClient.ts", {
-      expression: "status.data.current_file === undefined",
-    }),
-    mutationRange("src/cutter/CutterBridgeClient.ts", {
-      expression: "response.current_file === undefined",
-    }),
-    mutationRange("src/application/reverse/ReverseEngineeringService.ts", {
-      expression: "snapshot.signal !== null && snapshot.signal !== undefined",
-    }),
+    ...mutationRanges("src/application/reverse/ReverseEngineeringService.ts", [
+      {
+        kind: "method",
+        owner: "ReverseEngineeringService",
+        name: "inspectWithObjdump",
+      },
+      {
+        kind: "method",
+        owner: "ReverseEngineeringService",
+        name: "executeRizinCommand",
+      },
+      {
+        kind: "method",
+        owner: "ReverseEngineeringService",
+        name: "#observe",
+      },
+      {
+        kind: "method",
+        owner: "ReverseEngineeringService",
+        name: "retryCleanup",
+      },
+      {
+        kind: "guard",
+        owner: "ReverseEngineeringService",
+        method: "#observeProvider",
+        condition: "signal?.aborted",
+        direct: true,
+      },
+      {
+        kind: "guard",
+        owner: "ReverseEngineeringService",
+        method: "#observeProvider",
+        condition: "!cleanup.ok",
+      },
+      {
+        kind: "declaration",
+        owner: "ReverseEngineeringService",
+        method: "#observeProvider",
+        name: "providerCapability",
+      },
+      {
+        kind: "declaration",
+        owner: "ReverseEngineeringService",
+        method: "#observeProvider",
+        name: "absolutePath",
+      },
+      {
+        kind: "declaration",
+        owner: "ReverseEngineeringService",
+        method: "#observeProvider",
+        name: "cleanup",
+      },
+      {
+        kind: "try",
+        owner: "ReverseEngineeringService",
+        method: "#observeProvider",
+        assignment: "digest",
+      },
+      {
+        kind: "try",
+        owner: "ReverseEngineeringService",
+        method: "#observeProvider",
+        callee: "this.#run",
+      },
+      {
+        kind: "expression",
+        text: "snapshot.signal !== null && snapshot.signal !== undefined",
+      },
+    ]),
+    ...mutationRanges("src/process/ExecFileOutput.ts", [
+      {
+        kind: "declaration",
+        name: "execFileOutputFailure",
+      },
+    ]),
+    ...mutationRanges("src/server/providerEnvironment.ts", [
+      {
+        kind: "declaration",
+        name: "captureProviderEnvironment",
+      },
+    ]),
+    ...mutationRanges("src/server/registerReverseEngineeringTools.ts", [
+      {
+        kind: "declaration",
+        name: "registerReverseEngineeringTools",
+      },
+    ]),
+    ...mutationRanges("src/gdb/GdbSessionManager.ts", [
+      {
+        kind: "constructor",
+        owner: "GdbCommandTimeoutError",
+      },
+      {
+        kind: "constructor",
+        owner: "GdbCommandProcessExitError",
+      },
+      {
+        kind: "constructor",
+        owner: "GdbSessionManager",
+      },
+      {
+        kind: "declaration",
+        name: "DEFAULT_MAX_SESSIONS",
+      },
+      {
+        kind: "declaration",
+        owner: "GdbSessionManager",
+        method: "#startProtocol",
+        name: "session",
+      },
+      {
+        kind: "declaration",
+        owner: "GdbSessionManager",
+        method: "#startProtocol",
+        name: "stdoutSettled",
+      },
+      {
+        kind: "call",
+        owner: "GdbSessionManager",
+        method: "#startProtocol",
+        callee: "launched.process.stdout?.setEncoding",
+      },
+      {
+        kind: "call",
+        owner: "GdbSessionManager",
+        method: "#startProtocol",
+        callee: "launched.process.stdout?.on",
+        event: "data",
+      },
+      {
+        kind: "call",
+        owner: "GdbSessionManager",
+        method: "#startProtocol",
+        callee: "launched.process.stdin?.on",
+        event: "error",
+      },
+      {
+        kind: "call",
+        owner: "GdbSessionManager",
+        method: "#startProtocol",
+        callee: "launched.process.stdin?.once",
+        event: "close",
+      },
+      {
+        kind: "call",
+        owner: "GdbSessionManager",
+        method: "#startProtocol",
+        callee: "launched.process.once",
+        event: "exit",
+      },
+      {
+        kind: "guard",
+        owner: "GdbSessionManager",
+        method: "#startProtocol",
+        condition: "launched.process.stdout === null",
+      },
+      {
+        kind: "method",
+        owner: "GdbSessionManager",
+        name: "close",
+      },
+    ]),
+    ...mutationRanges("src/process/ownedDebuggerSession.ts", [
+      {
+        kind: "declaration",
+        name: "waitForInferiorDetach",
+      },
+    ]),
+    ...mutationRanges("src/rizin/RizinDebugSessionManager.ts", [
+      {
+        kind: "guard",
+        owner: "RizinDebugSessionManager",
+        method: "execute",
+        condition: "captured.outputTruncated",
+      },
+      {
+        kind: "declaration",
+        owner: "RizinDebugSessionManager",
+        method: "execute",
+        name: "result",
+        withinBlockWithBinding: "captured",
+      },
+      {
+        kind: "declaration",
+        owner: "RizinDebugSessionManager",
+        method: "execute",
+        name: "evidence",
+        withinBlockWithBinding: "captured",
+      },
+      {
+        kind: "declaration",
+        owner: "RizinDebugSessionManager",
+        method: "#receive",
+        name: "nextOffset",
+      },
+    ]),
+    ...mutationRanges("src/cli/reverseEngineeringCommands.ts", [
+      {
+        kind: "command-handler",
+        command: "debugWithGdb",
+      },
+      {
+        kind: "command-handler",
+        command: "debugWithRizin",
+      },
+    ]),
+    ...mutationRanges("src/cutter/CutterBridgeClient.ts", [
+      {
+        kind: "expression",
+        text: "status.data.current_file === undefined",
+      },
+      {
+        kind: "expression",
+        text: "response.current_file === undefined",
+      },
+    ]),
   ],
 };

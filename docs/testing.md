@@ -272,7 +272,11 @@ timeout-evidence, and process-exit handling. A second exhaustive pass runs the
 focused Cutter and Rizin timeout semantics tests against every compilable
 selected mutant to avoid relying on per-test mutation coverage associations;
 Stryker reports compile-error mutants separately because those cannot execute
-tests. Both passes exclude unrelated pre-existing feature logic. The focused
+tests. Both passes resolve named syntax owners, scoped declarations, guards,
+callbacks, and reviewed expressions from the current TypeScript source; no
+hand-maintained line ranges select mutations. Missing, ambiguous, or malformed
+source targets stop configuration before mutation generation. The selections
+retain their review scope rather than expanding to whole source files. The focused
 suite also exercises affected MCP routes. Unchanged server registrations,
 contracts, and the Python Cutter bridge remain covered by their existing
 contract, integration, and real-provider lanes.
