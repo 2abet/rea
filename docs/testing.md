@@ -268,18 +268,17 @@ invalid mutation configuration, and runner failures still fail the check.
 Mutation targets cover reviewed production behavior, including signal-terminated
 commands, Cutter descriptor identity, debugger cleanup ownership, GDB command
 exit and cancellation, and Rizin startup, timeout Evidence, and process exit.
-A second exhaustive pass runs the
-focused Cutter and Rizin timeout semantics tests against every compilable
+A second exhaustive pass runs the focused Cutter and Rizin timeout semantics tests against every compilable
 selected mutant to avoid relying on per-test mutation coverage associations;
 Stryker reports compile-error mutants separately because those cannot execute
 tests. Both passes resolve named syntax owners, scoped declarations, guards,
 callbacks, and reviewed expressions from the current TypeScript source; no
 hand-maintained line ranges select mutations. Missing, ambiguous, or malformed
 source targets stop configuration before mutation generation. The selections
-retain their review scope rather than expanding to whole source files. The focused
-suite also exercises affected MCP routes. Unchanged server registrations,
-contracts, and the Python Cutter bridge remain covered by their existing
-contract, integration, and real-provider lanes.
+retain their review scope rather than expanding to whole source files. The
+focused suite also exercises affected MCP routes and the Python Cutter bridge.
+Contract, integration, and real-provider lanes complement these focused tests;
+simulated providers do not establish real-provider behavior.
 
 CI runs six native Vitest shards without retries. Each shard emits a blob
 report; the merge job produces JUnit and JSON diagnostics, a module timing
