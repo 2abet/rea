@@ -262,8 +262,8 @@ it("binds provider build reuse to the current run while keeping standalone dispa
         ),
       ),
     );
-  const download = action.runs.steps.find(
-    (step) => step.uses === "actions/download-artifact@v4",
+  const download = action.runs.steps.find((step) =>
+    step.uses?.startsWith("actions/download-artifact@"),
   );
   expect(download?.with).toEqual({
     name: "${{ inputs.build_cache_artifact }}",
@@ -365,7 +365,9 @@ it("keeps fast feedback separate from complete qualification and release proof",
   expect(ci.concurrency["cancel-in-progress"]).toBe(
     "${{ github.event_name == 'pull_request' && inputs.source_sha == '' && !contains(github.event.pull_request.labels.*.name, 'ci:full') }}",
   );
-  expect(ci.jobs.required?.if).toBe("${{ always() }}");
+  // Failed dependencies still reach the gate, but superseded PR runs must
+  // release their concurrency slot without waiting for another runner.
+  expect(ci.jobs.required?.if).toBe("${{ !cancelled() }}");
   const shards = ci.jobs["test-shard"]?.steps ?? [];
   const fast = shards.find((step) => step.run?.includes("npm run test:run"));
   const full = shards.find((step) => step.run?.includes("test:ci:shard:run"));

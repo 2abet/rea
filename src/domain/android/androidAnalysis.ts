@@ -40,7 +40,15 @@ export const androidInputSchemas = {
       .min(1)
       .optional()
       .describe(
-        "Omit for class references; ambiguous overloaded methods are unsupported",
+        "Omit for class references; select ambiguous methods with overload_index",
+      ),
+    overload_index: z
+      .number()
+      .int()
+      .nonnegative()
+      .optional()
+      .describe(
+        "Index among same-name methods from inspect_android_class; requires method_name",
       ),
   }),
 } as const;
@@ -102,7 +110,7 @@ const method = z.strictObject({
   reported_signature: z.string(),
   overload_index: z.number().int().nonnegative(),
   is_constructor: z.boolean(),
-  dex_descriptor: z.null(),
+  dex_descriptor: dexDescriptorSchema,
 });
 const engine = z.strictObject({
   name: z.string().min(1),
@@ -166,6 +174,9 @@ export const androidResultSchemas = {
     ...common,
     class_name: z.string(),
     method_name: z.string().nullable(),
+    overload_index: z.number().int().nonnegative().nullable(),
+    reported_signature: z.string().nullable(),
+    dex_descriptor: dexDescriptorSchema.nullable(),
     total: z.number().int().nonnegative(),
     references: z.array(
       z.strictObject({
@@ -176,8 +187,23 @@ export const androidResultSchemas = {
         top_class: z.string(),
         source_line: z.null(),
         dex_offset: z.null(),
+        /** false means transport-bounded instruction evidence; null/omitted is unknown. */
+        direct_invokes_exhaustive: z.boolean().nullable().default(null),
+        /** Raw direct invoke instructions inside this using node, when available. */
+        direct_invokes: z
+          .array(
+            z.strictObject({
+              dex_entry: z.string().min(1),
+              source_raw_method_id: z.string().min(1),
+              dex_code_unit_offset: z.number().int().nonnegative(),
+              dex_method_index: z.number().int().nonnegative(),
+              opcode: z.string().regex(/^INVOKE_/u),
+            }),
+          )
+          .nullable(),
       }),
     ),
     coverage: z.literal("complete"),
+    reference_unit: z.literal("using_node"),
   }),
 } as const;
