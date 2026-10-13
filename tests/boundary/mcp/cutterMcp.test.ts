@@ -56,6 +56,37 @@ const assertUncertainEvidence = async (
   );
 };
 
+const assertNotStartedEvidenceAndAdmission = async (
+  client: Client,
+  sessionId: string,
+): Promise<void> => {
+  const rejected = await client.callTool({
+    name: "cutter_command",
+    arguments: {
+      session_id: sessionId,
+      expected_generation: 3,
+      command: "Ps /tmp/not-started.rzdb",
+    },
+  });
+  expect(rejected.isError, JSON.stringify(rejected)).not.toBe(true);
+  expect(
+    parseEvidence(rejected.structuredContent).normalized_result,
+  ).toMatchObject({
+    execution_state: "not_started",
+    error: "session-poisoned-after-ui-timeout",
+  });
+
+  const admitted = await client.callTool({
+    name: "cutter_command",
+    arguments: {
+      session_id: sessionId,
+      expected_generation: 3,
+      command: "iI",
+    },
+  });
+  expect(admitted.isError).not.toBe(true);
+};
+
 it("preserves live Cutter command Evidence and parity through the MCP boundary", async () => {
   const directory = await createTestTempDirectory("rea-cutter-mcp-");
   if (process.platform !== "win32") await chmod(directory, 0o700);
@@ -103,9 +134,16 @@ it("preserves live Cutter command Evidence and parity through the MCP boundary",
         connection.destroy();
         return;
       }
+      const notStarted = request.command === "Ps /tmp/not-started.rzdb";
       const status = request.kind === "status";
       const response = JSON.stringify({
-        ok: true,
+        ok: !notStarted,
+        ...(notStarted
+          ? {
+              execution_state: "not_started",
+              error: "session-poisoned-after-ui-timeout",
+            }
+          : {}),
         session_id: request.session_id,
         output: status ? undefined : "synthetic Cutter command output",
         current_file: "/fixtures/sample.bin",
@@ -195,5 +233,6 @@ it("preserves live Cutter command Evidence and parity through the MCP boundary",
   });
   expect(session.evidenceById(evidence.evidence_id)).toEqual(evidence);
 
+  await assertNotStartedEvidenceAndAdmission(client, sessionId);
   await assertUncertainEvidence(client, session, sessionId);
 });

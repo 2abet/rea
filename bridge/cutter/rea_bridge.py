@@ -37,6 +37,7 @@ MAX_FRAME_BYTES = 16 * 1024 * 1024
 SOCKET_TIMEOUT_SECONDS = 20
 AUTH_FRAME_TIMEOUT_SECONDS = 1
 MAX_DESCRIPTOR_BYTES = 64 * 1024
+MAX_COMPLETION_RECEIPTS = 64
 
 
 def _windows_api() -> tuple[Any, Any]:
@@ -321,7 +322,8 @@ class _RequestDispatcher(QObject):
         super().__init__()
         self.dispatch.connect(self._handle)
         self.generation = 0
-        self.completed_command: dict[str, str] | None = None
+        self.completed_commands: dict[str, str] = {}
+        self._receipt_lock = threading.Lock()
         self.current_file = self._read_current_file()
         try:
             self.cutter_version = str(cutter.core().getVersionInformation())
@@ -339,7 +341,7 @@ class _RequestDispatcher(QObject):
     def _handle(self, request: dict[str, Any], reply: dict[str, Any]) -> None:
         kind = request.get("kind")
         request_id = request.get("request_id")
-        if kind == "command":
+        if kind in ("command", "ack"):
             try:
                 valid_request_id = (
                     isinstance(request_id, str)
@@ -355,6 +357,12 @@ class _RequestDispatcher(QObject):
                 })
                 request["_event"].set()
                 return
+        if kind == "ack":
+            with self._receipt_lock:
+                acknowledged = self.completed_commands.pop(request_id, None) is not None
+            reply.update({"ok": True, "acknowledged": acknowledged})
+            request["_event"].set()
+            return
         if request["_cancelled"].is_set():
             reply.update({
                 "ok": False,
@@ -367,6 +375,11 @@ class _RequestDispatcher(QObject):
             return
         self._refresh_document_identity()
         if kind == "status":
+            with self._receipt_lock:
+                completed_commands = [
+                    {"request_id": receipt_id, "execution_state": state}
+                    for receipt_id, state in self.completed_commands.items()
+                ]
             reply.update({
                 "ok": True,
                 "session_id": request.get("session_id"),
@@ -374,7 +387,7 @@ class _RequestDispatcher(QObject):
                 "document_generation": self.generation,
                 "cutter_version": self.cutter_version,
                 "identity_status": "partial",
-                "completed_command": self.completed_command,
+                "completed_commands": completed_commands,
             })
             request["_event"].set()
             return
@@ -429,10 +442,13 @@ class _RequestDispatcher(QObject):
     def _record_command_completion(
         self, request_id: str, execution_state: str
     ) -> None:
-        self.completed_command = {
-            "request_id": request_id,
-            "execution_state": execution_state,
-        }
+        with self._receipt_lock:
+            if request_id in self.completed_commands or len(self.completed_commands) < MAX_COMPLETION_RECEIPTS:
+                self.completed_commands[request_id] = execution_state
+
+    def can_accept_command(self) -> bool:
+        with self._receipt_lock:
+            return len(self.completed_commands) < MAX_COMPLETION_RECEIPTS
 
     def _refresh_document_identity(self) -> None:
         current_file = self._read_current_file()
@@ -539,10 +555,21 @@ class _BridgeServer(threading.Thread):
                         continue
                     authenticated = True
                     connection.settimeout(SOCKET_TIMEOUT_SECONDS)
-                    if self.poisoned and request.get("kind") != "status":
+                    if self.poisoned and request.get("kind") not in ("status", "ack"):
                         self._send_authenticated(connection, {
                             "ok": False,
                             "error": "session-poisoned-after-ui-timeout",
+                            "execution_state": "not_started",
+                        }, client_nonce, server_nonce)
+                        continue
+                    if (
+                        request.get("kind") == "command"
+                        and not self.dispatcher.can_accept_command()
+                    ):
+                        self._send_authenticated(connection, {
+                            "ok": False,
+                            "error": "completion-receipt-capacity-exceeded",
+                            "execution_state": "not_started",
                         }, client_nonce, server_nonce)
                         continue
                     request["session_id"] = self.session_id

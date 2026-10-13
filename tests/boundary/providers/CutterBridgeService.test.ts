@@ -135,6 +135,110 @@ it("clears a poisoned command only after its exact UI-dispatcher receipt", async
   expect(dispatches).toBe(2);
 });
 
+it("recovers canceled command A after B and does not retain poisoned B", async () => {
+  const requestA = "4b18ce4d-bf31-456e-ae31-e8c547b2f9db";
+  const requestB = "8ca93d11-107d-41ed-8b40-31dd53cd26a6";
+  const receipts = new Set<string>();
+  let dispatches = 0;
+  const confirmCommandCompletion = vi.fn(
+    async (_session: string, id: string) =>
+      receipts.delete(id)
+        ? { ok: true as const, value: true }
+        : { ok: true as const, value: false },
+  );
+  const execute = async () => {
+    dispatches += 1;
+    if (dispatches === 1) {
+      receipts.add(requestA);
+      return {
+        requestId: requestA,
+        output: null,
+        currentFile: "/fixtures/sample.bin",
+        documentGeneration: 7,
+        identityStatus: "partial" as const,
+        cutterVersion: null,
+        executionState: "unknown" as const,
+        error: "transport-response-missing",
+        message: "cancelled after dispatch",
+        outputTruncated: false,
+      };
+    }
+    if (dispatches === 2)
+      return {
+        requestId: requestB,
+        output: "B complete",
+        currentFile: "/fixtures/sample.bin",
+        documentGeneration: 7,
+        identityStatus: "partial" as const,
+        cutterVersion: null,
+        executionState: "complete" as const,
+        error: null,
+        message: null,
+        outputTruncated: false,
+      };
+    if (dispatches === 3)
+      return {
+        requestId: requestB,
+        output: null,
+        currentFile: "/fixtures/sample.bin",
+        documentGeneration: 7,
+        identityStatus: "partial" as const,
+        cutterVersion: null,
+        executionState: "not_started" as const,
+        error: "session-poisoned-after-ui-timeout",
+        message: null,
+        outputTruncated: false,
+      };
+    return {
+      requestId: "c31130c6-fc6c-46ad-949e-586724d8fd84",
+      output: "recovered",
+      currentFile: "/fixtures/sample.bin",
+      documentGeneration: 7,
+      identityStatus: "partial" as const,
+      cutterVersion: null,
+      executionState: "complete" as const,
+      error: null,
+      message: null,
+      outputTruncated: false,
+    };
+  };
+  const client = {
+    listSessions: async () => ({
+      sessions: [],
+      bridge_directory: "/private/bridge",
+      discovery_status: "no_live_bridge_found" as const,
+      bridge_directory_security: "private_verified" as const,
+    }),
+    confirmCommandCompletion,
+    execute,
+  };
+  const callerA = new CutterBridgeService(client);
+  const callerB = new CutterBridgeService(client);
+
+  const cancelledA = await callerA.execute(cutterInput);
+  expect(cancelledA).toMatchObject({
+    ok: false,
+    error: { cleanupIncomplete: true },
+  });
+  expect(await callerB.execute(cutterInput)).toMatchObject({ ok: true });
+  expect(receipts.has(requestA)).toBe(true);
+
+  const poisonedB = await callerA.execute(cutterInput);
+  expect(poisonedB).toMatchObject({
+    ok: true,
+    value: { normalized_result: { execution_state: "not_started" } },
+  });
+  expect(confirmCommandCompletion).toHaveBeenCalledTimes(1);
+  expect(confirmCommandCompletion).toHaveBeenCalledWith(
+    cutterInput.session_id,
+    requestA,
+  );
+
+  expect(await callerA.execute(cutterInput)).toMatchObject({ ok: true });
+  expect(confirmCommandCompletion).toHaveBeenCalledTimes(1);
+  expect(dispatches).toBe(4);
+});
+
 it("rejects malformed Cutter commands and pre-aborted calls", async () => {
   const service = new CutterBridgeService({
     listSessions: async () => ({

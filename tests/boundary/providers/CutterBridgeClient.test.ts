@@ -1231,11 +1231,11 @@ describe("CutterBridgeClient: scenario group 9", () => {
     const sessionId = "27d3e3f1-f1e5-49ae-91ec-95af1f343a5a";
     const staleId = "ede4bbfd-6348-46aa-963b-0de0e78ccbdc";
     const token = "synthetic-cutter-bridge-token-for-test";
-    let completedRequestId: string | null = null;
+    const completedRequestIds = new Set<string>();
     server = authenticatedServer(token, sessionId, (request, respond) => {
       if (request.kind === "command") {
         expect(request.request_id).toMatch(/^[0-9a-f-]{36}$/iu);
-        completedRequestId = String(request.request_id);
+        completedRequestIds.add(String(request.request_id));
         respond({
           ok: false,
           session_id: sessionId,
@@ -1244,18 +1244,22 @@ describe("CutterBridgeClient: scenario group 9", () => {
         });
         return;
       }
+      if (request.kind === "ack") {
+        respond({
+          ok: true,
+          acknowledged: completedRequestIds.delete(String(request.request_id)),
+        });
+        return;
+      }
       respond({
         ok: true,
         session_id: sessionId,
         current_file: "/tmp/input",
         document_generation: 0,
-        completed_command:
-          completedRequestId === null
-            ? null
-            : {
-                request_id: completedRequestId,
-                execution_state: "complete",
-              },
+        completed_commands: [...completedRequestIds].map((request_id) => ({
+          request_id,
+          execution_state: "complete",
+        })),
       });
     });
     const port = await listen(server);
@@ -1268,16 +1272,15 @@ describe("CutterBridgeClient: scenario group 9", () => {
       json: false,
     });
     expect(execution.executionState).toBe("unknown");
-    expect(execution.requestId).toBe(completedRequestId);
+    expect(execution.requestId).toBeTruthy();
 
     expect(
       await client.confirmCommandCompletion(sessionId, execution.requestId),
     ).toEqual({ ok: true, value: true });
-    completedRequestId = null;
     expect(
       await client.confirmCommandCompletion(sessionId, execution.requestId),
     ).toEqual({ ok: true, value: false });
-    completedRequestId = staleId;
+    completedRequestIds.add(staleId);
     expect(
       await client.confirmCommandCompletion(sessionId, execution.requestId),
     ).toEqual({ ok: true, value: false });

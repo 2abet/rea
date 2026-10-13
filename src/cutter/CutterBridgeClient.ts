@@ -47,16 +47,22 @@ const responseSchema = z.object({
     .enum(["not_started", "running", "complete", "failed", "unknown"])
     .optional(),
   output_truncated: z.boolean().optional(),
-  completed_command: z
-    .object({
-      request_id: z.string().uuid(),
-      execution_state: z.enum(["not_started", "complete", "failed"]),
-    })
-    .nullable()
+  completed_commands: z
+    .array(
+      z.object({
+        request_id: z.string().uuid(),
+        execution_state: z.enum(["not_started", "complete", "failed"]),
+      }),
+    )
+    .max(64)
     .optional(),
 });
 const MAX_DESCRIPTOR_BYTES = 64 * 1024;
-export type CutterBridgeExecutionState = "complete" | "failed" | "unknown";
+export type CutterBridgeExecutionState =
+  | "not_started"
+  | "complete"
+  | "failed"
+  | "unknown";
 export interface CutterBridgeExecution {
   readonly requestId: string;
   readonly output: unknown;
@@ -261,6 +267,20 @@ export class CutterBridgeClient {
         outputTruncated: false,
       };
     const response = parsed.data;
+    const executionState: CutterBridgeExecutionState = response.ok
+      ? response.execution_state === undefined ||
+        response.execution_state === "complete"
+        ? "complete"
+        : response.execution_state === "not_started"
+          ? "not_started"
+          : "unknown"
+      : response.execution_state === "failed"
+        ? "failed"
+        : response.execution_state === "not_started"
+          ? "not_started"
+          : "unknown";
+    if (executionState !== "unknown")
+      await this.#acknowledgeCompletion(descriptor, requestId);
     if (response.error === "active-document-generation-changed")
       throw new Error(
         "Cutter's active document generation changed. List sessions again and select the current generation.",
@@ -276,14 +296,7 @@ export class CutterBridgeClient {
         response.document_generation ?? input.expectedGeneration,
       identityStatus: "partial",
       cutterVersion: response.cutter_version ?? descriptor.cutter_version,
-      executionState: response.ok
-        ? response.execution_state === undefined ||
-          response.execution_state === "complete"
-          ? "complete"
-          : "unknown"
-        : response.execution_state === "failed"
-          ? "failed"
-          : "unknown",
+      executionState,
       error: response.ok ? null : (response.error ?? "cutter-command-failed"),
       message: response.message ?? null,
       outputTruncated: response.output_truncated ?? false,
@@ -326,7 +339,11 @@ export class CutterBridgeClient {
             { cause: parsed.success ? undefined : parsed.error },
           ),
         );
-      return ok(parsed.data.completed_command?.request_id === requestId);
+      const completed = (parsed.data.completed_commands ?? []).some(
+        (receipt) => receipt.request_id === requestId,
+      );
+      if (completed) await this.#acknowledgeCompletion(descriptor, requestId);
+      return ok(completed);
     } catch (cause) {
       return err(
         new AnalysisCapabilityUnavailableError(
@@ -336,6 +353,17 @@ export class CutterBridgeClient {
           { cause },
         ),
       );
+    }
+  }
+
+  async #acknowledgeCompletion(
+    descriptor: z.infer<typeof descriptorSchema>,
+    requestId: string,
+  ): Promise<void> {
+    try {
+      await this.#request(descriptor, { kind: "ack", request_id: requestId });
+    } catch {
+      // Receipt acknowledgement is best-effort; the bounded producer retains it.
     }
   }
 

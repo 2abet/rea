@@ -60,6 +60,7 @@ class Dispatcher:
     def __init__(self):
         self.dispatch = self
         self.commands = []
+        self.completed_commands = {}
         self.lock = threading.Lock()
         self.command_started = threading.Event()
         self.finish_command = threading.Event()
@@ -67,6 +68,9 @@ class Dispatcher:
 
     def _read_current_file(self):
         return self.current_file
+
+    def can_accept_command(self):
+        return len(self.completed_commands) < bridge.MAX_COMPLETION_RECEIPTS
 
     def emit(self, request, reply):
         def run():
@@ -82,9 +86,16 @@ class Dispatcher:
                 if kind == "status":
                     reply.update({"ok": True, "session_id": request["session_id"], "document_generation": self.generation,
                                   "current_file": self.current_file, "cutter_version": self.cutter_version,
-                                  "identity_status": "partial"})
+                                  "identity_status": "partial", "completed_commands": [
+                                      {"request_id": request_id, "execution_state": state}
+                                      for request_id, state in self.completed_commands.items()
+                                  ]})
+                elif kind == "ack":
+                    reply.update({"ok": True, "acknowledged": self.completed_commands.pop(request["request_id"], None) is not None})
                 else:
                     reply.update({"ok": True, "execution_state": "complete"})
+                    if kind == "command" and isinstance(request.get("request_id"), str):
+                        self.completed_commands[request["request_id"]] = "complete"
                 request["_event"].set()
         threading.Thread(target=run, daemon=True).start()
 
@@ -98,6 +109,10 @@ class ServeDispatcher:
 
     def __init__(self):
         self.dispatch = self
+        self.completed_commands = {}
+
+    def can_accept_command(self):
+        return len(self.completed_commands) < bridge.MAX_COMPLETION_RECEIPTS
 
     def _read_current_file(self):
         return self.current_file
@@ -111,6 +126,15 @@ class ServeDispatcher:
                 "current_file": self.current_file,
                 "cutter_version": self.cutter_version,
                 "identity_status": "partial",
+                "completed_commands": [
+                    {"request_id": request_id, "execution_state": state}
+                    for request_id, state in self.completed_commands.items()
+                ],
+            })
+        elif request.get("kind") == "ack":
+            reply.update({
+                "ok": True,
+                "acknowledged": self.completed_commands.pop(request["request_id"], None) is not None,
             })
         else:
             reply.update({
@@ -122,6 +146,8 @@ class ServeDispatcher:
                 "identity_status": "partial",
                 "execution_state": "complete",
             })
+            if request.get("kind") == "command":
+                self.completed_commands[request["request_id"]] = "complete"
         request["_event"].set()
 
 
@@ -195,6 +221,73 @@ class ProtocolProducerTest(unittest.TestCase):
             request_bytes = json.dumps({"kind": "status", "session_id": "client-chosen-session"}, separators=(",", ":"))
             _send(connection, {"request": request_bytes, "proof": "0" * 64})
             self.assertEqual(_frame(connection)["error"], "authentication-failed")
+        self.assertEqual(self.dispatcher.commands, [])
+
+    def test_cancelled_command_receipt_survives_later_command_until_acknowledged(self):
+        dispatcher = object.__new__(bridge._RequestDispatcher)
+        dispatcher.generation = 4
+        dispatcher.current_file = "/tmp/sample.bin"
+        dispatcher.cutter_version = "test"
+        dispatcher.completed_commands = {}
+        dispatcher._receipt_lock = threading.Lock()
+        dispatcher._refresh_document_identity = lambda: None
+        bridge.cutter.cmd = lambda command: f"output:{command}"
+
+        def handle(value):
+            request = {
+                **value,
+                "_event": threading.Event(),
+                "_cancelled": threading.Event(),
+            }
+            reply = {}
+            bridge._RequestDispatcher._handle(dispatcher, request, reply)
+            self.assertTrue(request["_event"].is_set())
+            return reply
+
+        request_a = "4b18ce4d-bf31-456e-ae31-e8c547b2f9db"
+        request_b = "8ca93d11-107d-41ed-8b40-31dd53cd26a6"
+        for request_id, command in ((request_a, "A"), (request_b, "B")):
+            result = handle({
+                "kind": "command",
+                "request_id": request_id,
+                "expected_generation": 4,
+                "command": command,
+            })
+            self.assertTrue(result["ok"])
+
+        status = handle({"kind": "status"})
+        self.assertEqual(
+            {receipt["request_id"] for receipt in status["completed_commands"]},
+            {request_a, request_b},
+        )
+        acknowledged = handle({"kind": "ack", "request_id": request_a})
+        self.assertTrue(acknowledged["acknowledged"])
+        after_ack = handle({"kind": "status"})
+        self.assertEqual(
+            [receipt["request_id"] for receipt in after_ack["completed_commands"]],
+            [request_b],
+        )
+
+    def test_poisoned_rejection_is_definitively_not_started_without_dispatch(self):
+        self.server.poisoned = True
+        response, _ = self.exchange({
+            "kind": "command",
+            "session_id": self.server.session_id,
+            "request_id": "4b18ce4d-bf31-456e-ae31-e8c547b2f9db",
+        })
+        self.assertEqual(response["error"], "session-poisoned-after-ui-timeout")
+        self.assertEqual(response["execution_state"], "not_started")
+        self.assertEqual(self.dispatcher.commands, [])
+
+    def test_receipt_capacity_rejects_before_ui_dispatch(self):
+        self.dispatcher.can_accept_command = lambda: False
+        response, _ = self.exchange({
+            "kind": "command",
+            "session_id": self.server.session_id,
+            "request_id": "4b18ce4d-bf31-456e-ae31-e8c547b2f9db",
+        })
+        self.assertEqual(response["error"], "completion-receipt-capacity-exceeded")
+        self.assertEqual(response["execution_state"], "not_started")
         self.assertEqual(self.dispatcher.commands, [])
 
     def test_status_probe_recovers_only_after_timed_out_ui_operation_finishes(self):

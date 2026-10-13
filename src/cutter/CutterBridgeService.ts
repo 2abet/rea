@@ -132,11 +132,11 @@ export class CutterBridgeService {
       if (output.executionState === "unknown") {
         const failure = new AnalysisOutputError(
           "cutter_command",
-          "Cutter command completion is unknown; the bound binary remains unavailable until its bridge responds again.",
+          "Cutter command completion is unknown; the bound binary remains unavailable until the UI dispatcher confirms this request reached a terminal state.",
           {
             cleanup: {
               reason:
-                "The Cutter UI thread may still be running the dispatched command.",
+                "The exact UI dispatcher completion receipt has not arrived; the dispatched command may still be running.",
               resources: [`cutter-session:${input.session_id}`],
             },
             partialObservation: evidence,

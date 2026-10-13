@@ -33,7 +33,7 @@ export const cutterSessionSchema = z.strictObject({
 export const cutterCommandResultSchema = z.strictObject({
   command: z.string(),
   output: jsonValueSchema.nullable(),
-  execution_state: z.enum(["complete", "failed", "unknown"]),
+  execution_state: z.enum(["not_started", "complete", "failed", "unknown"]),
   error: z.string().nullable(),
   message: z.string().nullable(),
   output_truncated: z.boolean(),
