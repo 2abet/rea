@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { createConnection } from "node:net";
@@ -6,6 +7,12 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 
+import {
+  AnalysisCapabilityUnavailableError,
+  AnalysisOutputError,
+} from "../domain/analysisErrorCore.js";
+import type { AnalysisError } from "../domain/analysisErrorBase.js";
+import { err, ok, type Result } from "../domain/result.js";
 import { requireWindowsNativeAuthority } from "../windows/WindowsNativeLoader.js";
 
 const descriptorSchema = z.object({
@@ -40,10 +47,18 @@ const responseSchema = z.object({
     .enum(["not_started", "running", "complete", "failed", "unknown"])
     .optional(),
   output_truncated: z.boolean().optional(),
+  completed_command: z
+    .object({
+      request_id: z.string().uuid(),
+      execution_state: z.enum(["not_started", "complete", "failed"]),
+    })
+    .nullable()
+    .optional(),
 });
 const MAX_DESCRIPTOR_BYTES = 64 * 1024;
 export type CutterBridgeExecutionState = "complete" | "failed" | "unknown";
 export interface CutterBridgeExecution {
+  readonly requestId: string;
   readonly output: unknown;
   readonly currentFile: string | null;
   readonly documentGeneration: number;
@@ -200,12 +215,14 @@ export class CutterBridgeClient {
     input.signal?.throwIfAborted();
     const descriptor = await this.#find(input.sessionId);
     input.signal?.throwIfAborted();
+    const requestId = randomUUID();
     let rawResponse: unknown;
     try {
       rawResponse = await this.#request(
         descriptor,
         {
           kind: "command",
+          request_id: requestId,
           expected_generation: input.expectedGeneration,
           command: input.command,
           json: input.json,
@@ -216,6 +233,7 @@ export class CutterBridgeClient {
       if (!(cause instanceof CutterBridgeRequestFailure) || !cause.requestSent)
         throw cause;
       return {
+        requestId,
         output: null,
         currentFile: descriptor.current_file,
         documentGeneration: input.expectedGeneration,
@@ -230,6 +248,7 @@ export class CutterBridgeClient {
     const parsed = responseSchema.safeParse(rawResponse);
     if (!parsed.success)
       return {
+        requestId,
         output: null,
         currentFile: descriptor.current_file,
         documentGeneration: input.expectedGeneration,
@@ -247,6 +266,7 @@ export class CutterBridgeClient {
         "Cutter's active document generation changed. List sessions again and select the current generation.",
       );
     return {
+      requestId,
       output: response.output ?? null,
       currentFile:
         response.current_file === undefined
@@ -268,6 +288,55 @@ export class CutterBridgeClient {
       message: response.message ?? null,
       outputTruncated: response.output_truncated ?? false,
     };
+  }
+
+  /** Return only a typed receipt from the bridge's UI-thread dispatcher. */
+  async confirmCommandCompletion(
+    sessionId: string,
+    requestId: string,
+  ): Promise<Result<boolean, AnalysisError>> {
+    let descriptor: z.infer<typeof descriptorSchema>;
+    try {
+      descriptor = await this.#find(sessionId);
+    } catch (cause) {
+      return err(
+        new AnalysisCapabilityUnavailableError(
+          "cutter",
+          "cutter_command",
+          cause instanceof Error ? cause.message : "Cutter session unavailable",
+          { cause },
+        ),
+      );
+    }
+    try {
+      const raw = await this.#request(descriptor, {
+        kind: "status",
+        session_id: sessionId,
+      });
+      const parsed = responseSchema.safeParse(raw);
+      if (
+        !parsed.success ||
+        !parsed.data.ok ||
+        parsed.data.session_id !== sessionId
+      )
+        return err(
+          new AnalysisOutputError(
+            "cutter_command_status",
+            "The bridge status response did not contain a valid session identity.",
+            { cause: parsed.success ? undefined : parsed.error },
+          ),
+        );
+      return ok(parsed.data.completed_command?.request_id === requestId);
+    } catch (cause) {
+      return err(
+        new AnalysisCapabilityUnavailableError(
+          "cutter",
+          "cutter_command_status",
+          cause instanceof Error ? cause.message : "Cutter status failed",
+          { cause },
+        ),
+      );
+    }
   }
 
   async #find(sessionId: string): Promise<z.infer<typeof descriptorSchema>> {

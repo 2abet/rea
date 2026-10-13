@@ -33,6 +33,7 @@ it("propagates MCP cancellation into an active Cutter command and reports uncert
         );
       });
       return {
+        requestId: "4b18ce4d-bf31-456e-ae31-e8c547b2f9db",
         output: null,
         currentFile: null,
         documentGeneration: 1,

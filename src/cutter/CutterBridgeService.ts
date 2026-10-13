@@ -18,6 +18,10 @@ import { CUTTER_PROVIDER_IDENTITY } from "./CutterBridgeClient.js";
 
 interface CutterBridgePort {
   listSessions(): Promise<CutterBridgeDiscovery>;
+  confirmCommandCompletion?(
+    sessionId: string,
+    requestId: string,
+  ): Promise<Result<boolean, AnalysisError>>;
   execute(input: {
     readonly sessionId: string;
     readonly expectedGeneration: number;
@@ -29,18 +33,27 @@ interface CutterBridgePort {
 
 /** Shared Cutter bridge workflows used by the MCP adapter and CLI. */
 export class CutterBridgeService {
-  readonly #pendingCleanup = new Map<string, AnalysisOutputError>();
+  readonly #pendingCleanup = new Map<
+    string,
+    { readonly sessionId: string; readonly failure: AnalysisOutputError }
+  >();
 
   constructor(readonly client: CutterBridgePort = new CutterBridgeClient()) {}
 
-  /** A responsive status round-trip confirms the timed-out UI command has ended. */
+  /** Only the UI dispatcher's exact terminal receipt releases timed-out work. */
   async retryCleanup(): Promise<Result<null, AnalysisError>> {
-    for (const [sessionId, failure] of this.#pendingCleanup) {
-      const discovery = await this.client.listSessions();
-      if (!discovery.sessions.some((session) => session.session_id === sessionId))
-        return err(failure);
+    for (const [requestId, pending] of this.#pendingCleanup) {
+      const confirmCommandCompletion = this.client.confirmCommandCompletion;
+      if (confirmCommandCompletion === undefined) return err(pending.failure);
+      const receipt = await confirmCommandCompletion.call(
+        this.client,
+        pending.sessionId,
+        requestId,
+      );
+      if (!receipt.ok || !receipt.value) return err(pending.failure);
+      const { failure } = pending;
       failure.resolveCleanup();
-      this.#pendingCleanup.delete(sessionId);
+      this.#pendingCleanup.delete(requestId);
     }
     return ok(null);
   }
@@ -58,6 +71,8 @@ export class CutterBridgeService {
     if (options.signal?.aborted)
       return err(new AnalysisCancelledError("cutter_command"));
     const input = parsed.data;
+    const cleanup = await this.retryCleanup();
+    if (!cleanup.ok) return err(cleanup.error);
     try {
       const output = await this.client.execute({
         sessionId: input.session_id,
@@ -120,13 +135,17 @@ export class CutterBridgeService {
           "Cutter command completion is unknown; the bound binary remains unavailable until its bridge responds again.",
           {
             cleanup: {
-              reason: "The Cutter UI thread may still be running the dispatched command.",
+              reason:
+                "The Cutter UI thread may still be running the dispatched command.",
               resources: [`cutter-session:${input.session_id}`],
             },
             partialObservation: evidence,
           },
         );
-        this.#pendingCleanup.set(input.session_id, failure);
+        this.#pendingCleanup.set(output.requestId, {
+          sessionId: input.session_id,
+          failure,
+        });
         return err(failure);
       }
       return ok(evidence);

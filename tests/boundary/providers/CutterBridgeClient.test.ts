@@ -145,8 +145,10 @@ const writeDescriptor = async (
   sessionId: string,
   port: number,
   token: string,
-  currentFile: string | null = null,
-  documentGeneration = 0,
+  options: {
+    readonly currentFile?: string | null;
+    readonly documentGeneration?: number;
+  } = {},
 ): Promise<void> =>
   writeFile(
     join(directory, `cutter-${process.pid}-${sessionId}.json`),
@@ -156,8 +158,8 @@ const writeDescriptor = async (
       host: "127.0.0.1",
       port,
       token,
-      document_generation: documentGeneration,
-      current_file: currentFile,
+      document_generation: options.documentGeneration ?? 0,
+      current_file: options.currentFile ?? null,
       cutter_version: "Cutter fixture version",
       identity_status: "partial",
     }),
@@ -210,7 +212,7 @@ const verifyCutterCancellationAfterDispatch = async (): Promise<void> => {
   const server = authenticatedServer(
     token,
     sessionId,
-    (request, _respond, connection) => {
+    (request, _respond, _connection) => {
       expect(request.kind).toBe("command");
       markDispatched?.();
     },
@@ -603,8 +605,7 @@ describe("CutterBridgeClient: scenario group 3", () => {
       sessionId,
       port,
       "synthetic-cutter-bridge-token-for-test",
-      "/from-descriptor",
-      5,
+      { currentFile: "/from-descriptor", documentGeneration: 5 },
     );
     await expect(
       createClient({ REA_CUTTER_BRIDGE_DIR: directory }).listSessions(),
@@ -642,7 +643,10 @@ describe("CutterBridgeClient: scenario group 4", () => {
       respond(response),
     );
     const port = await listen(server);
-    await writeDescriptor(directory, sessionId, port, token, "/tmp/input", 8);
+    await writeDescriptor(directory, sessionId, port, token, {
+      currentFile: "/tmp/input",
+      documentGeneration: 8,
+    });
     const client = createClient({ REA_CUTTER_BRIDGE_DIR: directory });
     const run = () =>
       client.execute({
@@ -1222,6 +1226,63 @@ describe("CutterBridgeClient: scenario group 9", () => {
     await expect(service.listSessions()).resolves.toBe(discovery);
   });
 
+  it("accepts only the exact completed-command receipt from status", async () => {
+    directory = await mkdtemp(join(tmpdir(), "rea-cutter-completion-receipt-"));
+    const sessionId = "27d3e3f1-f1e5-49ae-91ec-95af1f343a5a";
+    const staleId = "ede4bbfd-6348-46aa-963b-0de0e78ccbdc";
+    const token = "synthetic-cutter-bridge-token-for-test";
+    let completedRequestId: string | null = null;
+    server = authenticatedServer(token, sessionId, (request, respond) => {
+      if (request.kind === "command") {
+        expect(request.request_id).toMatch(/^[0-9a-f-]{36}$/iu);
+        completedRequestId = String(request.request_id);
+        respond({
+          ok: false,
+          session_id: sessionId,
+          execution_state: "unknown",
+          error: "ui-thread-request-timeout",
+        });
+        return;
+      }
+      respond({
+        ok: true,
+        session_id: sessionId,
+        current_file: "/tmp/input",
+        document_generation: 0,
+        completed_command:
+          completedRequestId === null
+            ? null
+            : {
+                request_id: completedRequestId,
+                execution_state: "complete",
+              },
+      });
+    });
+    const port = await listen(server);
+    await writeDescriptor(directory, sessionId, port, token);
+    const client = createClient({ REA_CUTTER_BRIDGE_DIR: directory });
+    const execution = await client.execute({
+      sessionId,
+      expectedGeneration: 0,
+      command: "pd 4",
+      json: false,
+    });
+    expect(execution.executionState).toBe("unknown");
+    expect(execution.requestId).toBe(completedRequestId);
+
+    expect(
+      await client.confirmCommandCompletion(sessionId, execution.requestId),
+    ).toEqual({ ok: true, value: true });
+    completedRequestId = null;
+    expect(
+      await client.confirmCommandCompletion(sessionId, execution.requestId),
+    ).toEqual({ ok: true, value: false });
+    completedRequestId = staleId;
+    expect(
+      await client.confirmCommandCompletion(sessionId, execution.requestId),
+    ).toEqual({ ok: true, value: false });
+  });
+
   it("records known completion and truncated command output", async () => {
     const service = new CutterBridgeService({
       listSessions: async () => ({
@@ -1231,6 +1292,7 @@ describe("CutterBridgeClient: scenario group 9", () => {
         bridge_directory_security: "private_verified",
       }),
       execute: async () => ({
+        requestId: "4b18ce4d-bf31-456e-ae31-e8c547b2f9db",
         output: "partial",
         currentFile: null,
         documentGeneration: 7,

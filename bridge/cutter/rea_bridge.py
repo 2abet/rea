@@ -321,6 +321,7 @@ class _RequestDispatcher(QObject):
         super().__init__()
         self.dispatch.connect(self._handle)
         self.generation = 0
+        self.completed_command: dict[str, str] | None = None
         self.current_file = self._read_current_file()
         try:
             self.cutter_version = str(cutter.core().getVersionInformation())
@@ -336,12 +337,36 @@ class _RequestDispatcher(QObject):
             return None
 
     def _handle(self, request: dict[str, Any], reply: dict[str, Any]) -> None:
+        kind = request.get("kind")
+        request_id = request.get("request_id")
+        if kind == "command":
+            try:
+                valid_request_id = (
+                    isinstance(request_id, str)
+                    and str(uuid.UUID(request_id)) == request_id.lower()
+                )
+            except (ValueError, AttributeError):
+                valid_request_id = False
+            if not valid_request_id:
+                reply.update({
+                    "ok": False,
+                    "error": "invalid-command-request-id",
+                    "execution_state": "not_started",
+                })
+                request["_event"].set()
+                return
         if request["_cancelled"].is_set():
-            reply.update({"ok": False, "error": "request-cancelled-before-execution", "execution_state": "not_started"})
+            reply.update({
+                "ok": False,
+                "error": "request-cancelled-before-execution",
+                "execution_state": "not_started",
+            })
+            if kind == "command":
+                self._record_command_completion(request_id, "not_started")
             request["_event"].set()
             return
         self._refresh_document_identity()
-        if request.get("kind") == "status":
+        if kind == "status":
             reply.update({
                 "ok": True,
                 "session_id": request.get("session_id"),
@@ -349,16 +374,23 @@ class _RequestDispatcher(QObject):
                 "document_generation": self.generation,
                 "cutter_version": self.cutter_version,
                 "identity_status": "partial",
+                "completed_command": self.completed_command,
             })
+            request["_event"].set()
+            return
+        if kind != "command":
+            reply.update({"ok": False, "error": "unsupported-request-kind"})
             request["_event"].set()
             return
         if request.get("expected_generation") != self.generation:
             reply.update({"ok": False, "error": "active-document-generation-changed"})
+            self._record_command_completion(request_id, "not_started")
             request["_event"].set()
             return
         command = request.get("command")
         if not isinstance(command, str) or not command.strip():
             reply.update({"ok": False, "error": "invalid-command"})
+            self._record_command_completion(request_id, "not_started")
             request["_event"].set()
             return
         reply["execution_state"] = "running"
@@ -379,6 +411,7 @@ class _RequestDispatcher(QObject):
                 "identity_status": "partial",
                 "execution_state": "complete",
             })
+            self._record_command_completion(request_id, "complete")
         else:
             reply.update({
                 "ok": False,
@@ -390,7 +423,16 @@ class _RequestDispatcher(QObject):
                 "execution_state": "unknown",
                 "message": "The command raised an exception; it may have produced partial effects. Do not retry automatically.",
             })
+            self._record_command_completion(request_id, "failed")
         request["_event"].set()
+
+    def _record_command_completion(
+        self, request_id: str, execution_state: str
+    ) -> None:
+        self.completed_command = {
+            "request_id": request_id,
+            "execution_state": execution_state,
+        }
 
     def _refresh_document_identity(self) -> None:
         current_file = self._read_current_file()
@@ -498,7 +540,10 @@ class _BridgeServer(threading.Thread):
                     authenticated = True
                     connection.settimeout(SOCKET_TIMEOUT_SECONDS)
                     if self.poisoned and request.get("kind") != "status":
-                        self._send_authenticated(connection, {"ok": False, "error": "session-poisoned-after-ui-timeout"}, client_nonce, server_nonce)
+                        self._send_authenticated(connection, {
+                            "ok": False,
+                            "error": "session-poisoned-after-ui-timeout",
+                        }, client_nonce, server_nonce)
                         continue
                     request["session_id"] = self.session_id
                     event = threading.Event()
