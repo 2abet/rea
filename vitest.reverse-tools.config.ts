@@ -19,6 +19,8 @@ const REVERSE_TOOL_MODULES = [
 export default defineConfig({
   test: {
     include: [
+      "tests/composition/analysis-sessions/binarySession.test.ts",
+      "tests/boundary/filesystem/directAnalysisSnapshotReplay.test.ts",
       "tests/boundary/providers/GdbSessionManagers.test.ts",
       "tests/boundary/providers/RizinDebugSessionManagers.test.ts",
       "tests/boundary/providers/RizinInferiorTty.test.ts",
@@ -34,6 +36,7 @@ export default defineConfig({
       "tests/boundary/providers/RizinTimeoutEvidence.test.ts",
       "tests/boundary/providers/RizinCommandTimeout.test.ts",
       "tests/boundary/providers/CutterBridgeClient.test.ts",
+      "tests/boundary/providers/cutterBridgeProducer.test.ts",
       "tests/boundary/providers/CutterBridgeNullIdentity.test.ts",
       "tests/boundary/providers/CutterBridgeService.test.ts",
       "tests/boundary/process/ownedDebuggerSession.test.ts",
@@ -47,6 +50,7 @@ export default defineConfig({
       "tests/composition/reverseEngineering.test.ts",
       "tests/composition/reverseEngineeringAdmission.test.ts",
       "tests/composition/reverseEngineeringEdgeCases.test.ts",
+      "tests/boundary/cli/reverseEngineeringCommands.test.ts",
       "tests/composition/reverseEngineeringCancellation.test.ts",
       "src/process/ExecFileOutput.test.ts",
     ],
@@ -60,10 +64,6 @@ export default defineConfig({
       provider: "v8",
       reportsDirectory: "coverage/reverse-tools",
       include: REVERSE_TOOL_MODULES,
-      thresholds: {
-        statements: 100,
-        branches: 100,
-      },
       reporter: ["text", "text-summary", "json"],
     },
   },

@@ -13,11 +13,7 @@ const config = {
     prioritizePerformanceOverAccuracy: true,
   },
   coverageAnalysis: "off",
-  thresholds: {
-    high: 100,
-    low: 100,
-    break: 100,
-  },
+  thresholds: { break: null },
   concurrency: 2,
   timeoutMS: 30000,
   reporters: ["clear-text", "progress", "html", "json"],

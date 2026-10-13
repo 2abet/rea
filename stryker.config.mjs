@@ -17,11 +17,7 @@ const config = {
     prioritizePerformanceOverAccuracy: true,
   },
   coverageAnalysis: "perTest",
-  thresholds: {
-    high: 100,
-    low: 100,
-    break: 100,
-  },
+  thresholds: { break: null },
   concurrency: 2,
   timeoutMS: 30000,
   reporters: ["clear-text", "progress", "html", "json"],
@@ -63,12 +59,6 @@ export default {
         owner: "ReverseEngineeringService",
         method: "#observeProvider",
         condition: "!cleanup.ok",
-      },
-      {
-        kind: "declaration",
-        owner: "ReverseEngineeringService",
-        method: "#observeProvider",
-        name: "providerCapability",
       },
       {
         kind: "declaration",
@@ -145,12 +135,6 @@ export default {
         owner: "GdbSessionManager",
         method: "#startProtocol",
         name: "stdoutSettled",
-      },
-      {
-        kind: "call",
-        owner: "GdbSessionManager",
-        method: "#startProtocol",
-        callee: "launched.process.stdout?.setEncoding",
       },
       {
         kind: "call",

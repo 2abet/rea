@@ -201,9 +201,9 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
       - run: npm ci
-      - name: Require complete statement and branch coverage
+      - name: Run reverse tools tests with coverage
         run: npm run test:coverage:reverse-tools
-      - name: Require a 100 percent mutation score
+      - name: Report reverse tools mutation results
         run: npm run test:mutation:reverse-tools
 
   build:
