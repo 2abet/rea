@@ -71,7 +71,11 @@ Reproduce with `measure.mjs --artifact wireshark-http.cap` or
 `wireshark-http_redirects.pcapng`, pinned path/runtime/revision, explicit provider
 JSON, `--schemas selected`, and `--delivery complete|summary`. Use `compare.mjs`
 on completed output directories. Original replies, catalogs, comparison receipts
-and exact measured driver source stay private.
+and exact measured driver source stay private. Repeated deliveries in the same
+mode also compare the ordered receipt observations, including limitations, view
+parameters, coverage and unknowns; only receipt/parent IDs are invocation-specific.
+Comparator regressions run with `node --test experiments/analysis-efficiency/test_compare.mjs`
+using synthetic measurement directories; they do not establish provider behavior.
 
 ## Actual model tasks
 

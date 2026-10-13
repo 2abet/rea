@@ -72,8 +72,9 @@ for (const [side, answer] of [
 }
 // PCAP delivery observations preserve each actual receipt's identity, limitations
 // and view coverage. Summary/page scopes differ from complete source scope;
-// retain them as run-specific facts rather than equating page exhaustion with
-// capture coverage. The common capture facts and URI prefix still must match.
+// retain them separately rather than equating page exhaustion with capture
+// coverage. Repeated equivalent deliveries must also match every observation
+// field except the receipt and parent IDs, which identify their own invocations.
 if (
   ["wireshark-http.cap", "wireshark-http_redirects.pcapng"].includes(
     left.artifact,
@@ -93,7 +94,18 @@ if (
       path: ["delivery_observations"],
       value: answer.delivery_observations,
     });
-    delete answer.delivery_observations;
+    if (left.delivery === right.delivery) {
+      answer.delivery_observations = answer.delivery_observations.map(
+        (observation) =>
+          Object.fromEntries(
+            Object.entries(observation).filter(
+              ([key]) => key !== "evidence_id" && key !== "parent_evidence_id",
+            ),
+          ),
+      );
+    } else {
+      delete answer.delivery_observations;
+    }
   }
 }
 // Binwalk assigns a new opaque region UUID in each invocation. Preserve both
