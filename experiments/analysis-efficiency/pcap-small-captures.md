@@ -126,7 +126,7 @@ validated.
 Both real CLI complete results match full MCP normalized results, subjects,
 parameters, IDs and limitations. Portable CLI summary/URI views match MCP retained
 normalized facts and subjects; source forms/caller parameters remain distinct.
-Source bytes stay unchanged. Twenty-two context/grading regressions pass, including
+Source bytes stay unchanged. Twenty-three context/grading regressions pass, including
 cited complete metadata/counts/UTF-16 diagnostics and exact ordered response ID
 lists that reject parent lookups, duplicates and nested representations. URI
 prefix coverage must come from its cited page, even if an uncited page has the
@@ -159,7 +159,7 @@ the preceding driver accepts inconsistent coverage, while the corrected driver
 rejects wrong status, next offset or exhaustion. Unmodified exhausted and
 continuable URI pages still pass. The grader also requires each cited receipt's
 subject digest and local path to identify the reference capture, and uses the
-reference page's verified coverage. Twenty-two grading/context regressions pass,
+reference page's verified coverage. Twenty-three grading/context regressions pass,
 including missing or malformed subjects and faithful but inconsistent coverage;
 all four original model answers still pass factual regrading. Strict resource
 grades remain false where terminal whole-scope counters are unknown.
@@ -188,6 +188,12 @@ failed facts with a written report. Coverage uses type-sensitive JSON comparison
 to distinguish booleans, integers and floats. Receipt-identity conflict checks
 use the same type-sensitive rule, so a scalar type change cannot hide in a
 repeated ID. Existing PCAP scope-alias checks already preserve JSON types.
+Requested and cited URI views use the same type-sensitive JSON rule, rejecting
+boolean or floating-point offsets/limits even when an answer faithfully copies
+them. The observation producer rejects missing, null or malformed response IDs
+before recording either capture or page receipts. Private real-reply injections
+exercise these ID failures alongside normal complete/summary controls; they do
+not establish malformed provider behavior.
 Negative regressions reproduce
 prior crashes and false passes; all original real-model factual grades still
 pass without model reruns. The SDK workflow is unchanged by these grader fixes.

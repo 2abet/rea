@@ -524,6 +524,11 @@ const inspectEvmTarget = async () => {
 };
 
 const pcapObservation = (evidence) => {
+  if (
+    typeof evidence.evidence_id !== "string" ||
+    !/^ev_[a-f0-9]{64}$/.test(evidence.evidence_id)
+  )
+    throw new Error("PCAP Evidence lacks a valid receipt identity");
   const value = normalized(evidence);
   const target =
     value.kind === "summary"

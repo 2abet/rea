@@ -263,6 +263,18 @@ class PcapGraderWorkflowTests(unittest.TestCase):
                 self.assertTrue(report['factual_checks']['pcap_prefix_coverage_observed'])
                 self.assertFalse(report['all_factual_checks_pass'])
 
+    def test_cited_views_preserve_exact_json_scalar_types(self):
+        for field, wrong in [('offset', False), ('offset', 0.0), ('limit', 2.0), ('limit', True)]:
+            with self.subTest(field=field, wrong=wrong):
+                answer, records, reference = self.fixture()
+                records[-1]['normalized_result']['view'][field] = wrong
+                answer['delivery_observations'][-1] = self.observation(records[-1])
+                report = self.grade(answer, records, reference)
+                self.assertTrue(report['factual_checks']['pcap_original_delivery_observations'])
+                self.assertFalse(report['factual_checks']['pcap_requested_views'])
+                self.assertFalse(report['factual_checks']['pcap_cited_source_supports_uri_prefix'])
+                self.assertFalse(report['all_factual_checks_pass'])
+
     def test_malformed_receipt_envelopes_write_failed_facts_instead_of_crashing(self):
         tools = ['inspect_pcap_capture', 'inspect_analysis_view']
         for index in [0, 1]:

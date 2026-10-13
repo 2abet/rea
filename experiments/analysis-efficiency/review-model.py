@@ -246,8 +246,8 @@ def main():
         if isinstance(canonical_observations, list) and all(isinstance(x, dict) for x in canonical_observations):
             check('pcap_requested_delivery_chain', [x.get('kind', 'complete') for x in canonical_observations],
                   [x.get('kind', 'complete') for x in reference['delivery_observations']])
-            check('pcap_requested_views', [x.get('view') for x in canonical_observations],
-                  [x.get('view') for x in reference['delivery_observations']])
+            check('pcap_requested_views', json.dumps([x.get('view') for x in canonical_observations], sort_keys=True),
+                  json.dumps([x.get('view') for x in reference['delivery_observations']], sort_keys=True))
             identities = [x.get('evidence_id') for x in canonical_observations]
             checks['pcap_observations_have_reported_ids'] = (
                 isinstance(answer.get('evidence_ids'), list)
@@ -306,7 +306,7 @@ def main():
                         and isinstance(source.get('parent_evidence_id'), str)
                         and page.get('parent_evidence_id') == source['parent_evidence_id']
                         and page.get('parent_operation') == 'inspect_pcap_capture'
-                        and page.get('view') == {'kind': 'pcap', 'facet': 'http-uris', 'offset': 0, 'limit': 2}
+                        and json.dumps(page.get('view'), sort_keys=True) == json.dumps({'kind': 'pcap', 'facet': 'http-uris', 'offset': 0, 'limit': 2}, sort_keys=True)
                         and selected_page.get('facet') == 'http-uris'
                         and json.dumps(selected_page.get('items'), sort_keys=True) == json.dumps(prefix, sort_keys=True)
                         and page.get('source_coverage') == capture.get('coverage')
