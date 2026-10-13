@@ -201,6 +201,15 @@ const processEntry = async (
   const metadata = await readMetadata(absolute);
   if (isAborted(state.signal)) return { ok: false, error: cancelled() };
   if (!metadata.ok) {
+    for (const kind of ["directory", "file", "symlink", "other"] as const) {
+      const excluded = applyExclusion(state.shouldExclude, path, kind);
+      if (!excluded.ok)
+        return {
+          ok: false,
+          error: failure("io", "Reference source exclusion check failed"),
+        };
+      if (excluded.value) return { ok: true, value: undefined };
+    }
     state.entries.push(entryFailure(path, "unknown", "io", metadata.message));
     return { ok: true, value: undefined };
   }

@@ -111,7 +111,8 @@ const deriveInventoryState = (
       entry.limitations.length > 0 ||
       (entry.kind === "file" && entry.content_state !== "hashed") ||
       (entry.kind === "directory" && entry.tree_state !== "enumerated") ||
-      (entry.kind === "symlink" && entry.target_state !== "internal"),
+      (entry.kind === "symlink" && entry.target_state !== "internal") ||
+      entry.kind === "unknown",
   );
   if (partialEntry) return "partial";
   const partialRelationship = input.relationships.some(
