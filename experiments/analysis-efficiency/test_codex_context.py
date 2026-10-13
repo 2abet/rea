@@ -87,7 +87,8 @@ class PcapGraderWorkflowTests(unittest.TestCase):
                    'limitations': ['source', 'view'],
                    'normalized_result': {'kind': 'summary', 'view': {'kind': 'summary'},
                        'parent_operation': 'inspect_pcap_capture', 'parent_evidence_id': parent,
-                       'summary': capture, 'coverage': {'status': 'complete-within-view', 'examined': 1, 'total': 1, 'next_offset': None, 'exhausted': True},
+                       'summary': capture, 'artifact': copy.deepcopy(capture['target']),
+                       'coverage': {'status': 'complete-within-view', 'examined': 1, 'total': 1, 'next_offset': None, 'exhausted': True},
                        'limitations': ['source', 'view'], 'unknowns': ['unrecorded traffic']}}
         page = {'evidence_id': page_id, 'operation': 'inspect_analysis_view',
                 'subject': copy.deepcopy(subject), 'evidence_links': [parent],
@@ -353,6 +354,20 @@ class PcapGraderWorkflowTests(unittest.TestCase):
                 with self.subTest(index=index, nested=field, wrong=wrong):
                     answer, records, reference = self.fixture();records[index]['normalized_result'][field] = wrong
                     self.assertFalse(self.grade(answer, records, reference, tools)['all_factual_checks_pass'])
+
+    def test_summary_outer_artifact_must_identify_the_selected_capture(self):
+        for wrong in [None, {}, [], 'artifact',
+                      {'path': '/fixture/other.pcapng', 'sha256': 'd' * 64},
+                      {'path': '/fixture/http.pcapng', 'sha256': 'e' * 64}]:
+            with self.subTest(artifact=wrong):
+                answer, records, reference = self.fixture()
+                records[0]['normalized_result']['artifact'] = wrong
+                report = self.grade(answer, records, reference)
+                self.assertTrue(report['factual_checks']['pcap_original_delivery_observations'])
+                self.assertFalse(report['all_factual_checks_pass'])
+        answer, records, reference = self.fixture()
+        records[0]['normalized_result'].pop('artifact')
+        self.assertFalse(self.grade(answer, records, reference)['all_factual_checks_pass'])
 
     def test_faithful_summary_coverage_must_describe_the_single_complete_view(self):
         for field, wrong in [('status', 'page'), ('examined', 0), ('total', 2),

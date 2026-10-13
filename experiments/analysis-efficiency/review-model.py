@@ -328,6 +328,7 @@ def main():
                         source.get('kind') == 'summary'
                         and source.get('parent_operation') == 'inspect_pcap_capture'
                         and capture == reference['capture']
+                        and source.get('artifact') == {key: capture['target'][key] for key in ['path', 'sha256']}
                         and isinstance(source.get('parent_evidence_id'), str)
                         and page.get('parent_evidence_id') == source['parent_evidence_id']
                         and page.get('parent_operation') == 'inspect_pcap_capture'

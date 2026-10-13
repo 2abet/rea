@@ -551,7 +551,10 @@ const pcapObservation = (evidence, requestedView) => {
     evidence.subject?.digest?.sha256 !== inputSha ||
     evidence.subject?.local_path !== values.path ||
     target?.sha256 !== inputSha ||
-    target?.path !== values.path
+    target?.path !== values.path ||
+    (value.kind === "summary" &&
+      (value.artifact?.sha256 !== inputSha ||
+        value.artifact?.path !== values.path))
   )
     throw new Error("PCAP Evidence does not identify the selected capture");
   // Summary delivery delegates to a retained view, whose Evidence operation is
