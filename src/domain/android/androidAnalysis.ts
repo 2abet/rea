@@ -99,10 +99,11 @@ const textCoverage = z.strictObject({
   reported_total_bytes: z.number().int().nonnegative().nullable(),
 });
 /** A DEX prototype: parameter descriptors followed by the return descriptor. */
+// Hex parentheses keep the advertised character classes valid in JS u/v modes.
 export const dexDescriptorSchema = z
   .string()
   .regex(
-    /^\((?:\[*(?:[ZBSCIJFD]|L[^;()]+;))*\)(?:V|\[*(?:[ZBSCIJFD]|L[^;()]+;))$/u,
+    /^\((?:\[*(?:[ZBSCIJFD]|L[^;\x28\x29]+;))*\)(?:V|\[*(?:[ZBSCIJFD]|L[^;\x28\x29]+;))$/u,
   );
 
 const method = z.strictObject({
