@@ -588,6 +588,8 @@ const inspectPcapTarget = async () => {
         "PCAP page identity, scope or coverage differs from its parent",
       );
     uris = page.page.items;
+    if (observations.some((item) => item.evidence_id === selected.evidence_id))
+      throw new Error("PCAP retained read reused an Evidence identity");
     observations.push(pcapObservation(selected));
   } else {
     const {

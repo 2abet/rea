@@ -146,6 +146,13 @@ injection setup loaded the separate CommonJS client and did not inject a fault;
 that discarded setup attempt remains private alongside the corrected ESM runs.
 Original measured driver sources, token totals and timing data remain unchanged.
 
+The driver also requires a distinct Evidence receipt for the retained URI page.
+A private SDK consumer injection reuses the summary's response ID after a real
+MCP reply: the preceding driver accepts it, the corrected driver rejects it
+without writing an answer, and an unmodified real reply still passes. This
+checks receipt uniqueness before recording observations; it does not establish
+that a provider actually returned duplicate IDs.
+
 **Decision: keep existing complete defaults; add no production optimization.**
 For these compact recordings and this question, summary/page costs more total
 input in both real-model pairs. No stable speed or CPU/memory benefit justifies
