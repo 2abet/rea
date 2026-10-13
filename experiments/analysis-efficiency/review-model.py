@@ -246,7 +246,7 @@ def main():
         checks['pcap_delivery_observations_nonempty'] = isinstance(observations, list) and bool(observations)
         check('pcap_original_delivery_observations', json.dumps(canonical_observations, sort_keys=True),
               json.dumps(expected_observations, sort_keys=True))
-        if isinstance(canonical_observations, list) and all(isinstance(x, dict) for x in canonical_observations):
+        if isinstance(canonical_observations, list) and canonical_observations and all(isinstance(x, dict) for x in canonical_observations):
             check('pcap_requested_delivery_chain', [x.get('kind', 'complete') for x in canonical_observations],
                   [x.get('kind', 'complete') for x in reference['delivery_observations']])
             check('pcap_requested_views', json.dumps([x.get('view') for x in canonical_observations], sort_keys=True),

@@ -298,6 +298,16 @@ class PcapGraderWorkflowTests(unittest.TestCase):
                 self.assertFalse(report['factual_checks']['pcap_cited_source_supports_uri_prefix'])
                 self.assertFalse(report['all_factual_checks_pass'])
 
+    def test_empty_delivery_observations_write_failed_facts(self):
+        answer, records, reference = self.fixture()
+        answer['delivery_observations'] = []
+        answer['evidence_ids'] = []
+        report = self.grade(answer, records, reference)
+        self.assertFalse(report['factual_checks']['pcap_delivery_observations_nonempty'])
+        self.assertFalse(report['factual_checks']['pcap_cited_call_arguments'])
+        self.assertFalse(report['factual_checks']['pcap_cited_parameters'])
+        self.assertFalse(report['all_factual_checks_pass'])
+
     def test_cited_view_parameters_and_call_arguments_bind_actual_requests(self):
         for index in [0, 1]:
             for parameters in [None, {}, {'parent_evidence_id': 'ev_' + 'f' * 64,
