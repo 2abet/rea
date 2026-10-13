@@ -212,14 +212,25 @@ export const systemUninstallHost = (
   return {
     clients: () =>
       Promise.resolve(
-        supportedClients(home, platform, environment).flatMap((client) =>
-          client.configPaths === undefined
+        supportedClients(home, platform, environment).flatMap((client) => [
+          ...(client.configPaths === undefined
             ? [client]
             : client.configPaths.map((configPath) => ({
                 ...client,
                 configPath,
-              })),
-        ),
+              }))),
+          // ZCode loads its `mcpServers` fallback when the native table is
+          // empty, so removing the native entry must also remove REA there.
+          ...(client.zcodeFallbackPath === undefined
+            ? []
+            : [
+                {
+                  ...client,
+                  configPath: client.zcodeFallbackPath,
+                  format: "json" as const,
+                },
+              ]),
+        ]),
       ),
     inspectClient: async (client) => {
       const read = await readClientConfiguration(client, fileSystem);

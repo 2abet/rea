@@ -13,7 +13,10 @@ import {
 } from "../../../src/application/SetupClientConfiguration.js";
 import { skillDestinations } from "../../../src/application/SetupSkill.js";
 import { supportedClients } from "../../../src/application/SupportedClients.js";
-import { systemUninstallHost } from "../../../src/application/Uninstall.js";
+import {
+  runUninstall,
+  systemUninstallHost,
+} from "../../../src/application/Uninstall.js";
 import { createTestTempDirectory } from "../../fixtures/temporaryDirectory.js";
 import { clearClientLocationEnvironment } from "../../fixtures/clientEnvironment.js";
 
@@ -254,6 +257,65 @@ describe("ZCode .agents fallback preservation", () => {
       args: command.slice(1),
     });
     expect(parsed.mcp.servers.shared).toBeUndefined();
+  });
+});
+
+describe("ZCode fallback uninstall", () => {
+  const owned = { command: command[0], args: command.slice(1) };
+  const writeFallback = async (home: string, servers: object) => {
+    await mkdir(join(home, ".agents"), { recursive: true });
+    const text = `${JSON.stringify({ ui: { keep: true }, mcpServers: servers }, null, 2)}\n`;
+    await writeFile(fallbackPath(home), text);
+    return text;
+  };
+
+  it("removes the REA-owned fallback entry with the native registration", async () => {
+    const { home, client } = await zcodeClient();
+    await writeFile(
+      client.configPath,
+      JSON.stringify({ mcp: { servers: { rea: owned } } }),
+    );
+    const original = await writeFallback(home, {
+      rea: owned,
+      other: { command: "other-server" },
+    });
+
+    const result = await runUninstall(false, systemUninstallHost(home));
+
+    expect(result.status).toBe("complete");
+    expect(result.items.find(({ name }) => name === "zcode")?.status).toBe(
+      "removed",
+    );
+    const native = JSON.parse(await readFile(client.configPath, "utf8"));
+    expect(native.mcp.servers).toEqual({});
+    const fallback = JSON.parse(await readFile(fallbackPath(home), "utf8"));
+    expect(fallback).toEqual({
+      ui: { keep: true },
+      mcpServers: { other: { command: "other-server" } },
+    });
+    expect(await readFile(`${fallbackPath(home)}.rea.backup`, "utf8")).toBe(
+      original,
+    );
+  });
+
+  it("removes a fallback-only REA entry and keeps a foreign rea entry", async () => {
+    for (const [servers, expected] of [
+      [{ rea: owned }, {}],
+      [
+        { rea: { command: "someone-else" } },
+        { rea: { command: "someone-else" } },
+      ],
+    ] as const) {
+      const { home } = await zcodeClient();
+      await writeFallback(home, servers);
+
+      expect(
+        (await runUninstall(false, systemUninstallHost(home))).status,
+      ).toBe("complete");
+      expect(
+        JSON.parse(await readFile(fallbackPath(home), "utf8")).mcpServers,
+      ).toEqual(expected);
+    }
   });
 });
 
