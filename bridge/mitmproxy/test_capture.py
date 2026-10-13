@@ -62,6 +62,27 @@ class TransportUserinfoTests(unittest.TestCase):
                 self.assertEqual(sidecar["state"], "redacted")
                 self.assertEqual(len(redactions), 1)
 
+    def test_non_special_base_keeps_backslashes_inside_network_authorities(self):
+        text, sidecar, redactions = location(b"//user\\name:pass@host/x", b"foo")
+        self.assertEqual(text, "//host/x")
+        self.assertEqual(sidecar["state"], "redacted")
+        self.assertEqual(len(redactions), 1)
+        text, sidecar, redactions = location(b"/\\invoice@customer", b"foo")
+        self.assertEqual(text, "/\\invoice@customer")
+        self.assertEqual(sidecar["state"], "retained")
+        self.assertEqual(redactions, [])
+
+    def test_native_request_paths_preserve_origin_form_and_redact_absolute_form(self):
+        for value in [b"/\\invoice@customer", b"//invoice@customer", b"\\\\invoice@customer"]:
+            with self.subTest(value=value):
+                record = capture.project_record({"request": {"path": value}}, [])
+                self.assertEqual(record["reported"]["request"]["path"], value.decode("ascii"))
+                self.assertEqual(record["binary_fields"][0]["state"], "retained")
+                self.assertEqual(record["redactions"], [])
+        record = capture.project_record({"request": {"path": b"https://user:pass@host/x"}}, [])
+        self.assertEqual(record["reported"]["request"]["path"], "https://host/x")
+        self.assertEqual(record["binary_fields"][0]["state"], "redacted")
+
     def test_same_scheme_locations_preserve_relative_path_text_and_bytes(self):
         for value in [b"https:invoice@customer", b"https:/invoice@customer", b"https:\\invoice@customer"]:
             with self.subTest(value=value):

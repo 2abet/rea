@@ -70,6 +70,11 @@ def authority_start(text, base_scheme=None):
             if text[scheme.end():scheme.end() + 2] != "//":
                 return None
             return scheme.end() + 2, name in SPECIAL_SCHEMES
+        # A non-special base treats backslashes as authority data and only
+        # recognizes two forward slashes as a network reference.
+        if base_scheme is not None and base_scheme not in SPECIAL_SCHEMES:
+            prefix = re.match(r"^[\x00-\x20]*//", text)
+            return None if prefix is None else (prefix.end(), False)
         prefix = re.match(NETWORK_PREFIX, text)
         if prefix is None:
             return None
@@ -137,9 +142,18 @@ def project_record(state, secrets):
             return value, False
         binary = isinstance(value, bytes)
         separator = b"@" if binary else "@"
-        safe_url = without_userinfo(value, base_scheme if transport_url else None)
-        if path.endswith("/authority") and separator in safe_url:
-            safe_url = safe_url.rsplit(separator, 1)[1]
+        if transport_url:
+            safe_url = without_userinfo(value, base_scheme)
+        elif path.endswith("/authority"):
+            safe_url = value.rsplit(separator, 1)[-1]
+        else:
+            # Native request.path is origin-form unless it explicitly carries
+            # a scheme (absolute-form). Leading separators are path evidence,
+            # not a header URL reference's network authority.
+            text = value.decode("latin-1") if binary else value
+            safe_url = without_userinfo(value) if re.match(
+                SCHEME_PREFIX, text.translate(URL_CONTROL_TRANSLATION), flags=re.I
+            ) else value
         changed = safe_url != value
         if changed:
             redactions.append({"pointer": path, "reason": "transport-credential"})
