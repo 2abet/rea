@@ -282,7 +282,7 @@ describe("ZCode fallback uninstall", () => {
           ? `// unsupported comment\n${valid}`
           : mode === "bom"
             ? `\uFEFF${valid}`
-            : valid.replace(/}\s*$/u, ",}");
+            : valid.replace(/\}\s*$/u, ",}");
       await writeFile(fallbackPath(home), original);
       const result = await runUninstall(false, systemUninstallHost(home));
       expect(result.items).toContainEqual(
