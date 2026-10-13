@@ -127,7 +127,7 @@ export const resolveGhidraAnalysisProfile = async (
             "address-first-unique-target-source-mapping-v2",
           instruction_flow_evidence: "decoded-return-pcode-v1",
           instruction_references: "exact-address-incoming-v1",
-          function_boundary_observations: "ghidra-terminal-call-limitations-v1",
+          function_boundary_observations: "ghidra-terminal-call-limitations-v2",
           no_return_repair:
             installation.platform === "win32"
               ? "disabled-windows-p0"
@@ -136,7 +136,7 @@ export const resolveGhidraAnalysisProfile = async (
             installation.platform === "win32"
               ? "official-headless-script-v1"
               : "inspected-jvm-launch-support-v1",
-          load_image_evidence: "independent-raw-mapping-context-v2",
+          load_image_evidence: "independent-raw-mapping-context-v4",
           jump_table_evidence: "typed-case-default-blocks-v1",
           decompiler_jump_loads: true,
           loader: "BinaryLoader",
@@ -218,7 +218,7 @@ export const resolveGhidraAnalysisProfile = async (
           "address-first-unique-target-source-mapping-v2",
         instruction_flow_evidence: "decoded-return-pcode-v1",
         instruction_references: "exact-address-incoming-v1",
-        function_boundary_observations: "ghidra-terminal-call-limitations-v1",
+        function_boundary_observations: "ghidra-terminal-call-limitations-v2",
         no_return_repair:
           installation.platform === "win32"
             ? "disabled-windows-p0"
