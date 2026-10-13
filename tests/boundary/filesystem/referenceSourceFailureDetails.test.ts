@@ -172,6 +172,15 @@ describe("reference import paths beyond the platform limit", () => {
           code: "io",
           message: expect.stringContaining("ENAMETOOLONG"),
         });
+        const filteredRead = await readReferenceSource(root, {
+          shouldExclude: (_path, kind) => kind === "directory",
+        });
+        if (!filteredRead.ok) throw new Error(filteredRead.error.message);
+        expect(
+          filteredRead.value.entries.find(
+            (entry) => entry.path === failed?.path,
+          ),
+        ).toMatchObject({ status: "failed", kind: "unknown", code: "io" });
         const imported = await importTree(root);
         if (!imported.ok) throw new Error(imported.error.message);
         expect(imported.value.entries).toContainEqual(

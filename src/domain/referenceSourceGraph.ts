@@ -487,7 +487,6 @@ const rootCommitment = (
         return {
           kind: entry.kind,
           path: entry.path,
-          limitations: entry.limitations,
         };
     }
   }),
