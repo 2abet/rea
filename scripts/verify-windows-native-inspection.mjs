@@ -4,8 +4,10 @@ import {
   copyFile,
   mkdir,
   mkdtemp,
+  readFile,
   readdir,
   rm,
+  stat,
   symlink,
   writeFile,
 } from "node:fs/promises";
@@ -52,7 +54,7 @@ try {
     join(workspace, "dist", "windows", "WindowsNativeLoader.js"),
   ).href;
   const source = `import assert from 'node:assert/strict';
-import {readdirSync,renameSync,statSync} from 'node:fs';
+import {existsSync,mkdirSync,readFileSync,readdirSync,renameSync,statSync,writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {systemWindowsNativeAuthority} from ${JSON.stringify(loader)};
 const temp=process.env.TEMP;
@@ -62,14 +64,20 @@ assert.equal(first.retryable,true);
 assert.match(first.reason,/Delete owned object by handle failed.*Win32 5/s);
 const [name,...extra]=readdirSync(temp);assert.ok(name);assert.equal(extra.length,0);
 const path=join(temp,name);const identity=statSync(path,{bigint:true});
-assert.throws(()=>renameSync(path,path+'-replacement'));
-assert.equal(statSync(path,{bigint:true}).ino,identity.ino);
+const retainedPath=path+'-retained';renameSync(path,retainedPath);
+assert.equal(statSync(retainedPath,{bigint:true}).ino,identity.ino);
+// FILE_SHARE_DELETE permits rename; ownership follows the retained handle.
+mkdirSync(path);const replacement=statSync(path,{bigint:true});
+const marker=join(path,'caller-evidence.txt');writeFileSync(marker,'caller-owned replacement');
 if(process.argv[2]!=='teardown'){
  const second=systemWindowsNativeAuthority();assert.equal(second.available,true);
- assert.equal(readdirSync(temp).length,0);
+ assert.equal(existsSync(retainedPath),false);
+ assert.deepEqual(readdirSync(temp),[name]);
+ assert.equal(statSync(path,{bigint:true}).ino,replacement.ino);
+ assert.equal(readFileSync(marker,'utf8'),'caller-owned replacement');
  assert.equal(systemWindowsNativeAuthority(),second);
 }
-console.log(JSON.stringify({mode:process.argv[2],firstFailed:true,retainedOwner:true,inode:identity.ino.toString()}));
+console.log(JSON.stringify({mode:process.argv[2],firstFailed:true,retainedOwner:true,inode:identity.ino.toString(),replacementName:name,replacementInode:replacement.ino.toString()}));
 `;
   const fixture = join(workspace, "probe.mjs");
   await writeFile(fixture, source);
@@ -85,10 +93,19 @@ console.log(JSON.stringify({mode:process.argv[2],firstFailed:true,retainedOwner:
       }),
     );
     assert.equal(observed.retainedOwner, true);
-    assert.deepEqual(await readdir(temp), []);
+    assert.deepEqual(await readdir(temp), [observed.replacementName]);
+    const replacement = join(temp, observed.replacementName);
+    assert.equal(
+      (await stat(replacement, { bigint: true })).ino.toString(),
+      observed.replacementInode,
+    );
+    assert.equal(
+      await readFile(join(replacement, "caller-evidence.txt"), "utf8"),
+      "caller-owned replacement",
+    );
   }
   process.stdout.write(
-    `${JSON.stringify({ ok: true, controlledDispositionFailure: true, retainedOwner: true, retryRecovers: true, successfulAdmissionCached: true, environmentTeardownCleansProbe: true, issue1701HostCauseReproduced: false })}\n`,
+    `${JSON.stringify({ ok: true, controlledDispositionFailure: true, retainedOwner: true, renamePreservesIdentity: true, foreignReplacementPreserved: true, retryRecovers: true, successfulAdmissionCached: true, environmentTeardownCleansProbe: true, issue1701HostCauseReproduced: false })}\n`,
   );
 } finally {
   await rm(workspace, { recursive: true, force: true });
