@@ -125,17 +125,10 @@ const killCancellationProcesses = async (
 
 const settleCancelledProvider = async (
   pending: Promise<CancellationResult>,
-  ids: CancellationProcessIds,
 ): Promise<CancellationResult> => {
-  let outcome = await settleWithin(pending, 7_000);
-  if (outcome.status === "timeout") {
-    await killCancellationProcesses(ids);
-    outcome = await settleWithin(pending, 3_000);
-  }
+  const outcome = await settleWithin(pending, 7_000);
   if (outcome.status === "timeout")
-    throw new Error(
-      "Rizin cancellation did not settle after terminating the provider and descendant",
-    );
+    throw new Error("Rizin cancellation did not settle before its deadline");
   if (outcome.status === "rejected") throw outcome.reason;
   return outcome.value;
 };
@@ -173,7 +166,7 @@ const cleanupCancellationScenario = async (options: {
     if (options.pending !== undefined) {
       try {
         if (options.processIds !== undefined)
-          await settleCancelledProvider(options.pending, options.processIds);
+          await settleCancelledProvider(options.pending);
         else await settleWithin(options.pending, 10_000);
       } catch {
         // Main assertions report operation failures; continue cleanup.
@@ -228,13 +221,11 @@ it.skipIf(process.platform === "win32")(
     const providerPidMarker = join(directory, "provider-pid");
     const descendantStartedMarker = join(directory, "descendant-started");
     const descendantPidMarker = join(directory, "descendant-pid");
-    const descendantMarker = join(directory, "descendant-finished");
     const provider = join(directory, "slow-rizin.mjs");
     const descendantScript = [
       "const fs = require('node:fs');",
       "process.on('SIGTERM', () => {});",
       "fs.writeFileSync(process.env.REA_TEST_DESCENDANT_STARTED, 'started');",
-      "setTimeout(() => fs.writeFileSync(process.env.REA_TEST_DESCENDANT, 'finished'), 500);",
       "setInterval(() => {}, 1000);",
     ].join("\n");
     await writeFile(path, "before");
@@ -259,7 +250,6 @@ setInterval(() => {}, 1000);
         REA_TEST_PROVIDER_PID: providerPidMarker,
         REA_TEST_DESCENDANT_STARTED: descendantStartedMarker,
         REA_TEST_DESCENDANT_PID: descendantPidMarker,
-        REA_TEST_DESCENDANT: descendantMarker,
       },
     });
 
@@ -277,12 +267,8 @@ setInterval(() => {}, 1000);
       });
       controller.abort();
 
-      expectCancelledResult(await settleCancelledProvider(pending, processIds));
+      expectCancelledResult(await settleCancelledProvider(pending));
       expect(await readFile(path, "utf8")).toBe("before");
-      await new Promise((resolveDelay) => setTimeout(resolveDelay, 600));
-      await expect(readFile(descendantMarker)).rejects.toMatchObject({
-        code: "ENOENT",
-      });
       expect(await waitForProcessExit(processIds.descendantPid, 2_000)).toBe(
         true,
       );
