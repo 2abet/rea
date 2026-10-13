@@ -6,6 +6,7 @@ import { delimiter, join } from "node:path";
 import { afterEach, expect, it } from "vitest";
 
 import { GdbSessionManager } from "../../../src/gdb/GdbSessionManager.js";
+import { cleanupOwnedProcessGroup } from "../../../src/process/ProcessOwnership.js";
 import { spawnOwnedProviderProcess } from "../../../src/process/ProviderProcess.js";
 import { stopOwnedDebuggerProcess } from "../../../src/process/ownedDebuggerSession.js";
 
@@ -869,9 +870,11 @@ it.skipIf(process.platform === "win32")(
   async () => {
     directory = await mkdtemp(join(tmpdir(), "rea-gdb-stdin-error-"));
     const provider = join(directory, "fake-gdb-stdin-error.mjs");
+    const stdinClosed = join(directory, "stdin-closed");
     await writeFile(
       provider,
       `#!${process.execPath}
+import { closeSync, writeFileSync } from "node:fs";
 process.stdout.write("(gdb)\\n");
 let input = "";
 process.stdin.setEncoding("utf8");
@@ -883,7 +886,8 @@ process.stdin.on("data", (chunk) => {
     const match = /^(\\d+)/.exec(line);
     if (match && line.includes("auto-load off")) {
       process.stdout.write(match[1] + "^done\\n");
-      setTimeout(() => import("node:fs").then((fs) => fs.closeSync(0)), 50);
+      closeSync(0);
+      writeFileSync(${JSON.stringify(stdinClosed)}, "closed");
     }
   }
 });
@@ -891,22 +895,74 @@ setInterval(() => {}, 1000);
 `,
     );
     await chmod(provider, 0o700);
+    let ownedLaunch:
+      | Awaited<ReturnType<typeof spawnOwnedProviderProcess>>
+      | undefined;
+    let ownedProcessExit: Promise<void> | undefined;
     const manager = createGdbManagerForInjectedPlatform({
       environment: { REA_GDB_COMMAND: provider },
+      spawnProcess: async (options) => {
+        ownedLaunch = await spawnOwnedProviderProcess(options);
+        ownedProcessExit = new Promise<void>((resolve) => {
+          const child = ownedLaunch!.process;
+          if (child.exitCode !== null || child.signalCode !== null) resolve();
+          else child.once("exit", () => resolve());
+        });
+        return ownedLaunch;
+      },
+      stopProcess: async (session, name, options) =>
+        session.exited
+          ? stopOwnedDebuggerProcess(session, name, options)
+          : {
+              status: "incomplete",
+              reason: "fixture-owned process awaits test teardown",
+            },
     });
     managers.push(manager);
-    const started = await manager.start();
-    expect(started.ok).toBe(true);
-    if (!started.ok) return;
-    await new Promise((resolveDelay) => setTimeout(resolveDelay, 100));
+    let sessionId: string | undefined;
+    let originalError: { cleanupIncomplete: boolean } | undefined;
+    try {
+      const started = await manager.start();
+      expect(started.ok).toBe(true);
+      if (!started.ok) return;
+      sessionId = started.value.session_id;
 
-    const result = await manager.execute(
-      started.value.session_id,
-      "info files",
-    );
+      await expect
+        .poll(() => readFile(stdinClosed, "utf8").catch(() => undefined))
+        .toBe("closed");
+      const result = await manager.execute(sessionId, "info files");
 
-    expect(result.ok).toBe(false);
-    expect(manager.status(started.value.session_id)?.state).toBe("closed");
+      expect(result.ok).toBe(false);
+      expect(manager.status(sessionId)?.state).toBe("closed");
+      const closed = await manager.close(sessionId);
+      expect(closed.ok).toBe(false);
+      if (!closed.ok) {
+        originalError = closed.error;
+        expect(closed.error.cleanupIncomplete).toBe(true);
+      }
+      expect(manager.status(sessionId)?.state).toBe("closed");
+      await expect(manager.closeAll()).rejects.toThrow();
+      expect(manager.status(sessionId)?.state).toBe("closed");
+    } finally {
+      if (ownedLaunch !== undefined) {
+        const cleanup = await cleanupOwnedProcessGroup(ownedLaunch.ownership);
+        if (!cleanup.cleaned) {
+          const child = ownedLaunch.process;
+          if (child.exitCode === null && child.signalCode === null)
+            child.kill("SIGKILL");
+        }
+        await ownedProcessExit;
+        await expectOwnedProcessExited(String(ownedLaunch.process.pid));
+      }
+      const retried = await manager.retryCleanupFailures();
+      expect(retried.ok, retried.ok ? undefined : retried.error.message).toBe(
+        true,
+      );
+      if (originalError !== undefined)
+        expect(originalError.cleanupIncomplete).toBe(false);
+      if (sessionId !== undefined)
+        expect(manager.status(sessionId)).toBeUndefined();
+    }
   },
 );
 
