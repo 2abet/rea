@@ -878,11 +878,10 @@ export class RizinDebugSessionManager {
     const stopped = await this.#stopDebuggerOnly(session);
     if (stopped.status === "incomplete")
       return err(
-        new AnalysisCapabilityUnavailableError(
-          "rizin",
+        this.#retainCleanupFailure(
+          session,
           "close_rizin_debug_session",
           stopped.reason,
-          { cleanup: { reason: stopped.reason, resources: [session.id] } },
         ),
       );
     this.#sessions.delete(sessionId);
