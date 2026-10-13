@@ -90,6 +90,13 @@ const textCoverage = z.strictObject({
   text: z.string(),
   reported_total_bytes: z.number().int().nonnegative().nullable(),
 });
+/** A DEX prototype: parameter descriptors followed by the return descriptor. */
+export const dexDescriptorSchema = z
+  .string()
+  .regex(
+    /^\((?:\[*(?:[ZBSCIJFD]|L[^;\x28\x29]+;))*\)(?:V|\[*(?:[ZBSCIJFD]|L[^;\x28\x29]+;))$/u,
+  );
+
 const method = z.strictObject({
   name: z.string(),
   reported_signature: z.string(),
