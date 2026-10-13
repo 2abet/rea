@@ -56,6 +56,7 @@ export const registerRizinDebugTools = (
           ),
         undefined,
         () => manager.retryCleanupFailures(),
+        (value) => ({ session_id: value.session_id }),
       );
       return result.ok
         ? delivery.toCallToolResult({ ok: true, value: result.value }, start)

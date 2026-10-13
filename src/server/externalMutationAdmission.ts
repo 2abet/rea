@@ -20,6 +20,7 @@ export const runWithExternalMutationAdmission = async <Value>(
   cleanupRecovery?: (
     failure: AnalysisError | undefined,
   ) => Promise<Result<null, AnalysisError>>,
+  retainedDetails?: (value: Value) => Readonly<Record<string, string>>,
 ): Promise<Result<Value, AnalysisError>> => {
   if (session === undefined) {
     const recovered = await cleanupRecovery?.(undefined);
@@ -46,6 +47,9 @@ export const runWithExternalMutationAdmission = async <Value>(
               ...(cause.capturedOutput === undefined
                 ? {}
                 : { capturedOutput: cause.capturedOutput }),
+              ...(retainedDetails === undefined
+                ? {}
+                : { diagnostics: retainedDetails(value.value) }),
             },
           )
         : value.error.retainSecondaryFailure(cause, {
