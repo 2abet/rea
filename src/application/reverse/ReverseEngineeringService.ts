@@ -680,7 +680,6 @@ const runOwnedCommandOutput =
         },
         { signal: options.signal },
       );
-      // Stryker disable next-line ConditionalExpression,EqualityOperator -- null and undefined both mean no signal; wrapping a successful snapshot with those values is observationally equivalent after normalization.
       if (snapshot.signal !== null && snapshot.signal !== undefined)
         throw new OwnedOutputFailure({
           stdout: snapshot.stdout.text,
