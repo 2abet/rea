@@ -122,7 +122,7 @@ validated.
 Both real CLI complete results match full MCP normalized results, subjects,
 parameters, IDs and limitations. Portable CLI summary/URI views match MCP retained
 normalized facts and subjects; source forms/caller parameters remain distinct.
-Source bytes stay unchanged. Nine context/grading regressions pass. Five real-answer
+Source bytes stay unchanged. Twelve context/grading regressions pass. Five real-answer
 mutations—omitted null, false page exhaustion, contradictory source scope,
 unsupported absence claim and non-string receipt identity—fail correctly.
 Malformed identities produce failed facts rather than crashing the grader.
@@ -143,3 +143,11 @@ events are verified; missing terminal whole-scope counters remain unknown, so
 strict whole-resource grades stay false. No raw capture, trace, credential,
 runtime or result JSON is committed. No unrelated REA product bug is identified
 or fixed, and no release is performed.
+
+Review follow-up binds the cited URI page to its exact requested facet/range,
+reported values and the summary retained parent. Small synthetic trial receipts
+exercise the entire grading entrypoint, including faithful but wrong-page/range/
+parent citations, missing nulls, false scope and malformed identities. These are
+grader regressions, not real-provider evidence. All four stored actual model
+answers still pass; no model reruns are required. Transcript readers close their
+owned file handles after grading.
