@@ -134,6 +134,11 @@ class TransportUserinfoTests(unittest.TestCase):
         text, _sidecar, _redactions = location(b"https://user:pw@example.test/a@b")
         self.assertEqual(text, "https://example.test/a@b")
 
+    def test_empty_userinfo_marker_is_removed(self):
+        self.assertEqual(
+            capture.without_userinfo("https://@host"), "https://host"
+        )
+
     def test_special_schemes_skip_leading_slashes_before_userinfo(self):
         for value, expected in [
             (b"https://\\user:pass@host/path", b"https://\\host/path"),

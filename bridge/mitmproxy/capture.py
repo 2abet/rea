@@ -106,7 +106,7 @@ def without_userinfo(value, base_scheme=None):
     while end < len(parsed_text) and parsed_text[end] not in terminators:
         end += 1
     at = parsed_text.rfind("@", start, end)
-    if at <= start:
+    if at < start:
         return value
     parsed_offset = 0
     raw_start = 0
