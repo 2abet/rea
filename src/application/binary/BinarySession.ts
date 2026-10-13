@@ -5,7 +5,10 @@ import {
   analysisProfilesEqual,
   type AnalysisProfileCommitment,
 } from "../../domain/analysisProfile.js";
-import { AnalysisCancelledError } from "../../domain/analysisErrorCore.js";
+import {
+  AnalysisCancelledError,
+  AnalysisOutputError,
+} from "../../domain/analysisErrorCore.js";
 import type { AnalysisError } from "../../domain/analysisErrorBase.js";
 import { err, ok, type Result } from "../../domain/result.js";
 import type { JsonValue } from "../../domain/jsonValue.js";
@@ -72,6 +75,7 @@ export class BinarySession
   implements BinarySessionPort
 {
   #active: SessionBinding | undefined;
+  #externalMutationCleanupFailure: AnalysisError | undefined;
   #pendingCleanup:
     | {
         readonly client: AnalysisClient;
@@ -258,6 +262,8 @@ export class BinarySession
     resolve: () => Promise<Result<ResolvedSessionOpen, AnalysisError>>,
     options: Pick<BinarySessionOpenOptions, "signal" | "snapshot">,
   ): Promise<Result<BinaryTarget, AnalysisError>> {
+    if (this.#externalMutationCleanupFailure?.cleanupIncomplete === true)
+      return err(this.#externalMutationCleanupFailure);
     if (isAborted(options.signal))
       return err(new AnalysisCancelledError("open_binary"));
     const resolved = await resolve();
@@ -362,32 +368,48 @@ export class BinarySession
 
   /** Serialize an external local-file mutation and rebind a matching session. */
   withAdmittedExternalMutation<Value>(
-    path: string,
+    _path: string | undefined,
     signal: AbortSignal | undefined,
-    operation: () => Promise<Value>,
-    rebindFailure: (value: Value, error: AnalysisError) => AnalysisError,
-  ): Promise<Result<Value, AnalysisError>> {
+    operation: () => Promise<Result<Value, AnalysisError>>,
+    rebindFailure: (
+      value: Result<Value, AnalysisError>,
+      error: AnalysisError,
+    ) => AnalysisError,
+    operationName = "execute_rizin_command",
+  ): Promise<Result<Result<Value, AnalysisError>, AnalysisError>> {
     return this.#serialize(async (admittedThrough) => {
+      if (this.#externalMutationCleanupFailure?.cleanupIncomplete === true)
+        return err(this.#externalMutationCleanupFailure);
       if (isAborted(signal))
-        return err(new AnalysisCancelledError("execute_rizin_command"));
+        return err(new AnalysisCancelledError(operationName));
       await this.#drainCalls(admittedThrough);
       if (isAborted(signal))
-        return err(new AnalysisCancelledError("execute_rizin_command"));
+        return err(new AnalysisCancelledError(operationName));
 
       const activeAtDispatch = this.#active;
-      // Rizin commands are unrestricted: a hard link, symlink alias, plugin,
+      if (activeAtDispatch?.route.identity.id === "ghidra")
+        return err(
+          new AnalysisOutputError(
+            operationName,
+            "Close the active Ghidra session explicitly before an external mutation; rebinding would discard its ephemeral analysis edits.",
+          ),
+        );
+      // External commands are unrestricted: a hard link, symlink alias, plugin,
       // or command script can mutate the active file through another path.
       // Rebind every active session after the admitted call rather than infer
       // file identity with an uncancellable path lookup.
       const rebindTarget = activeAtDispatch !== undefined;
       this.invalidateSnapshot();
       const value = await operation();
+      this.#externalMutationCleanupFailure =
+        !value.ok && value.error.cleanupIncomplete ? value.error : undefined;
       if (!rebindTarget) return ok(value);
 
       const retired = await this.#closeActive({}, false);
       if (!retired.ok) return err(rebindFailure(value, retired.error));
+      if (this.#externalMutationCleanupFailure !== undefined) return ok(value);
 
-      const target = activeAtDispatch?.target;
+      const target = activeAtDispatch.target;
       const reopenOptions: BinarySessionOpenOptions = {
         targetKind: target?.kind,
         ...(activeAtDispatch?.profile === null ||
@@ -410,7 +432,7 @@ export class BinarySession
           resolveSessionOpen({
             router: this.#providerRouter,
             current: this.#active,
-            path: target?.sourcePath ?? target?.path ?? path,
+            path: target.sourcePath ?? target.path,
             options: reopenOptions,
             stagedSnapshotMatches: (target, profile) =>
               this.matchesSnapshot(target, profile),

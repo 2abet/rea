@@ -28,8 +28,11 @@ import {
 
 it("advertises exact valid schemas and records inline EVM interface evidence without a binary target", async () => {
   const value = evmInterfaceFixture();
+  const inspect = vi.fn(() =>
+    Promise.resolve(ok(evmInterfaceExecution(value))),
+  );
   const service = new EvmInterfaceService({
-    inspect: () => Promise.resolve(ok(evmInterfaceExecution(value))),
+    inspect,
   });
   const session = createTestBinarySession(() => {
     throw new Error("deep provider must not start");
@@ -71,6 +74,7 @@ it("advertises exact valid schemas and records inline EVM interface evidence wit
   expect(() => registerEvmTools(server, service, silentLogger)).toThrow(
     /inspect_evm_interface.*already registered/,
   );
+  expect(inspect).not.toHaveBeenCalled();
   expect(
     (await client.listTools()).tools.filter(
       (tool) => tool.name === "inspect_evm_interface",
@@ -101,6 +105,30 @@ it("advertises exact valid schemas and records inline EVM interface evidence wit
       })
     ).isError,
   ).toBe(true);
+});
+
+it("rejects an EVM provider response with a non-file subject before recording Evidence", async () => {
+  const value = evmInterfaceFixture();
+  const execution = evmInterfaceExecution(value);
+  const malformed = {
+    ...execution,
+    subject: { ...execution.subject, format: "elf" },
+  } as unknown as typeof execution;
+  const harness = await createApplicationMcpHarness({
+    serverOptions: {
+      evmInterface: new EvmInterfaceService({
+        inspect: () => Promise.resolve(ok(malformed)),
+      }),
+    },
+  });
+  onTestFinished(harness.close);
+  const before = harness.session.exportEvidenceBundle().records.length;
+  const response = await harness.client.callTool({
+    name: "inspect_evm_interface",
+    arguments: { path: value.artifact.path, encoding: "hex" },
+  });
+  expect(parseMcpToolError(response).error.code).toBe("unreadable_output");
+  expect(harness.session.exportEvidenceBundle().records).toHaveLength(before);
 });
 
 it.each(["unavailable", "incompatible-output"])(

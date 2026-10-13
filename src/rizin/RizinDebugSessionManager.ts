@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { isUtf8 } from "node:buffer";
 import { open, readFile, readlink, realpath, stat } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
 import { isatty } from "node:tty";
@@ -8,6 +9,7 @@ import {
   AnalysisCancelledError,
   AnalysisCapabilityUnavailableError,
   AnalysisInputError,
+  AnalysisResourceConstraintError,
   AnalysisTimeoutError,
 } from "../domain/analysisErrorCore.js";
 import type { AnalysisError } from "../domain/analysisErrorBase.js";
@@ -21,8 +23,11 @@ import {
 import {
   closeOwnedDebuggerSessions,
   stopOwnedDebuggerProcess,
+  type OwnedDebuggerDetachResult,
 } from "../process/ownedDebuggerSession.js";
 
+const MAX_SESSIONS = 8;
+const MAX_PENDING_COMMANDS = 16;
 const FRAME_TIMEOUT_MS = 120_000;
 const CLEANUP_COMMAND_TIMEOUT_MS = 1_000;
 const STARTUP_TIMEOUT_MS = 30_000;
@@ -72,6 +77,11 @@ export const createRizinCommandTimeoutEvidence = (
       "The current debugger target identity is not established by the Rizin session identifier.",
     limitations: [
       "The command timed out before its completion marker; retained output is partial and completion is unknown.",
+      ...(result.output_invalid_utf8
+        ? [
+            "Retained session frame bytes did not form valid UTF-8; displayed output contains replacement characters.",
+          ]
+        : []),
       ...(cleanupFailure === undefined
         ? [
             "The owned debugger session was stopped because output correlation could no longer be guaranteed.",
@@ -99,6 +109,11 @@ interface RizinDebugSession {
   readonly inferiorTty: string;
   readonly inferiorTtyDevice: number;
   readonly inferiorTtyInode: number;
+  readonly detachInferior: () => Promise<OwnedDebuggerDetachResult>;
+  cleanupCommandTurnHeld: boolean;
+  stopAttempt: ReturnType<typeof stopOwnedDebuggerProcess> | undefined;
+  pendingCommandCount: number;
+  invalidUtf8Observed: boolean;
   closing: boolean;
   readonly history: string[];
   queuedFrameBytes: number;
@@ -133,6 +148,8 @@ class RizinFrameTimeoutError extends Error {
 export class RizinDebugSessionManager {
   readonly #sessions = new Map<string, RizinDebugSession>();
   #activeStarts = 0;
+  #sessionReservations = 0;
+  readonly #environment: Readonly<NodeJS.ProcessEnv>;
   #closingAll = false;
   readonly #startDrainWaiters: Array<() => void> = [];
   readonly #command: string;
@@ -153,6 +170,7 @@ export class RizinDebugSessionManager {
       readonly spawnProcess?: typeof spawnOwnedProviderProcess;
     } = {},
   ) {
+    this.#environment = { ...environment };
     this.#command = environment.REA_RIZIN_COMMAND ?? "rizin";
     this.#frameTimeoutMs = options.frameTimeoutMs ?? FRAME_TIMEOUT_MS;
     this.#maxCommandOutputBytes =
@@ -177,10 +195,28 @@ export class RizinDebugSessionManager {
   > {
     if (this.#closingAll)
       return err(new AnalysisInputError("start_rizin_debug_session"));
+    const occupied = this.#sessions.size + this.#sessionReservations;
+    if (occupied >= MAX_SESSIONS)
+      return err(
+        new AnalysisResourceConstraintError(
+          "start_rizin_debug_session",
+          "memory",
+          "Rizin session capacity reached.",
+          { max_sessions: MAX_SESSIONS, active_or_reserved_sessions: occupied },
+        ),
+      );
     this.#activeStarts += 1;
+    this.#sessionReservations += 1;
+    let reserved = true;
+    const releaseReservation = () => {
+      if (!reserved) return;
+      reserved = false;
+      this.#sessionReservations -= 1;
+    };
     try {
-      return await this.#start(input, signal);
+      return await this.#start(input, signal, releaseReservation);
     } finally {
+      releaseReservation();
       this.#activeStarts -= 1;
       if (this.#activeStarts === 0)
         for (const resolve of this.#startDrainWaiters.splice(0)) resolve();
@@ -193,7 +229,8 @@ export class RizinDebugSessionManager {
       readonly inferior_tty: string;
       readonly backend?: string;
     },
-    signal?: AbortSignal,
+    signal: AbortSignal | undefined,
+    releaseReservation: () => void,
   ): Promise<
     Result<
       { readonly session_id: string; readonly backend: string | null },
@@ -261,6 +298,7 @@ export class RizinDebugSessionManager {
       launched = await this.#spawnProcess({
         command: this.#command,
         arguments: arguments_,
+        hostEnvironment: this.#environment,
         runId: id,
         stdin: "pipe",
         ...(signal === undefined ? {} : { signal }),
@@ -287,6 +325,14 @@ export class RizinDebugSessionManager {
       inferiorTty: ttyPath,
       inferiorTtyDevice: ttyDevice,
       inferiorTtyInode: ttyInode,
+      detachInferior: () =>
+        session.cleanupCommandTurnHeld
+          ? this.#detachInferiorUnlocked(session)
+          : this.#detachInferior(session),
+      cleanupCommandTurnHeld: false,
+      stopAttempt: undefined,
+      pendingCommandCount: 0,
+      invalidUtf8Observed: false,
       closing: false,
       supervisor: new ProviderProcessSupervisor(
         { process: launched.process, ownsProcessLifetime: false },
@@ -309,6 +355,7 @@ export class RizinDebugSessionManager {
       discardingOversizedFrame: false,
     };
     this.#sessions.set(id, session);
+    releaseReservation();
     launched.process.stdout?.on("data", (chunk: Buffer | string) =>
       this.#receive(session, Buffer.from(chunk)),
     );
@@ -391,6 +438,19 @@ export class RizinDebugSessionManager {
       return err(new AnalysisInputError("rizin_debug_command"));
     if (signal?.aborted)
       return err(new AnalysisCancelledError("rizin_debug_command"));
+    if (session.pendingCommandCount >= MAX_PENDING_COMMANDS)
+      return err(
+        new AnalysisResourceConstraintError(
+          "rizin_debug_command",
+          "transport",
+          "Rizin command queue capacity reached.",
+          {
+            max_pending_commands: MAX_PENDING_COMMANDS,
+            active_or_queued_commands: session.pendingCommandCount,
+          },
+        ),
+      );
+    session.pendingCommandCount += 1;
     let release: (() => void) | undefined;
     let acquired = false;
     let commandSent = false;
@@ -403,6 +463,14 @@ export class RizinDebugSessionManager {
       acquired = true;
       if (signal?.aborted)
         return err(new AnalysisCancelledError("rizin_debug_command"));
+      if (
+        !session.ready ||
+        session.exited ||
+        session.closing ||
+        this.#closingAll ||
+        session.protocolError !== undefined
+      )
+        return err(new AnalysisInputError("rizin_debug_command"));
       if (session.frames.length > 0) {
         const message =
           "Unsolicited Rizin frames arrived before a command; command output can no longer be safely correlated.";
@@ -472,6 +540,9 @@ export class RizinDebugSessionManager {
           ? ("unknown" as const)
           : ("complete" as const),
         backend: session.backend,
+        ...(session.invalidUtf8Observed
+          ? { output_invalid_utf8: true as const }
+          : {}),
       };
       const evidence = createEvidence(
         undefined,
@@ -490,6 +561,11 @@ export class RizinDebugSessionManager {
             "The current debugger target identity is not established by the Rizin session identifier.",
           limitations: [
             "Rizin commands and debugger effects depend on the loaded IO plugin and target.",
+            ...(session.invalidUtf8Observed
+              ? [
+                  "Retained session frame bytes did not form valid UTF-8; displayed output contains replacement characters.",
+                ]
+              : []),
             "Output contains all NUL frames through an explicit command-completion marker; backend output interleaved before that marker cannot be distinguished from command output.",
             ...(captured.outputTruncated
               ? [
@@ -536,6 +612,9 @@ export class RizinDebugSessionManager {
           output_truncated: true,
           completion_status: "unknown",
           backend: session.backend,
+          ...(session.invalidUtf8Observed
+            ? { output_invalid_utf8: true as const }
+            : {}),
         };
         const evidence = createRizinCommandTimeoutEvidence(
           sessionId,
@@ -554,6 +633,9 @@ export class RizinDebugSessionManager {
           output_truncated: false,
           completion_status: "unknown",
           backend: session.backend,
+          ...(session.invalidUtf8Observed
+            ? { output_invalid_utf8: true as const }
+            : {}),
         };
         const evidence = createEvidence(
           undefined,
@@ -572,6 +654,11 @@ export class RizinDebugSessionManager {
               "The current debugger target identity is not established by the Rizin session identifier.",
             limitations: [
               "Rizin exited before the command-completion marker; retained frame output is partial and command completion is unknown.",
+              ...(session.invalidUtf8Observed
+                ? [
+                    "Retained session frame bytes did not form valid UTF-8; displayed output contains replacement characters.",
+                  ]
+                : []),
               "The command is unrestricted and may access local files, the shell, network, or mutate the target.",
             ],
           },
@@ -598,8 +685,13 @@ export class RizinDebugSessionManager {
     } finally {
       if (acquired) {
         session.commandCaptureActive = false;
+        session.pendingCommandCount -= 1;
         release?.();
-      } else void previous.then(() => release?.());
+      } else
+        void previous.then(() => {
+          session.pendingCommandCount -= 1;
+          release?.();
+        });
     }
   }
 
@@ -685,6 +777,7 @@ export class RizinDebugSessionManager {
       const piece = chunk.subarray(offset, end);
       if (session.discardingOversizedFrame) {
         if (boundary < 0) return;
+        session.invalidUtf8Observed ||= !isUtf8(session.buffer);
         const frame = session.buffer.toString("utf8");
         const frameBytes = session.buffer.length;
         session.buffer = Buffer.alloc(0);
@@ -715,6 +808,7 @@ export class RizinDebugSessionManager {
           session.discardingOversizedFrame = true;
           return;
         }
+        session.invalidUtf8Observed ||= !isUtf8(session.buffer);
         const frame = session.buffer.toString("utf8");
         const frameBytes = session.buffer.length;
         session.buffer = Buffer.alloc(0);
@@ -728,6 +822,7 @@ export class RizinDebugSessionManager {
       }
       session.buffer = Buffer.concat([session.buffer, piece]);
       if (boundary < 0) return;
+      session.invalidUtf8Observed ||= !isUtf8(session.buffer);
       const frame = session.buffer.toString("utf8");
       const frameBytes = session.buffer.length;
       session.buffer = Buffer.alloc(0);
@@ -789,17 +884,18 @@ export class RizinDebugSessionManager {
 
   #stopDebuggerOnly(session: RizinDebugSession, commandTurnHeld = false) {
     session.closing = true;
-    return this.#stopProcess(
-      {
-        ...session,
-        detachInferior: () =>
-          commandTurnHeld
-            ? this.#detachInferiorUnlocked(session)
-            : this.#detachInferior(session),
-      },
-      "Rizin debugger",
-      { platform: this.#platform },
-    );
+    if (session.stopAttempt !== undefined) return session.stopAttempt;
+    session.cleanupCommandTurnHeld = commandTurnHeld;
+    session.stopAttempt = Promise.resolve()
+      .then(() =>
+        this.#stopProcess(session, "Rizin debugger", {
+          platform: this.#platform,
+        }),
+      )
+      .finally(() => {
+        session.stopAttempt = undefined;
+      });
+    return session.stopAttempt;
   }
 
   async #detachInferior(
@@ -941,6 +1037,7 @@ export interface RizinDebugCommandResult {
   readonly output: string;
   readonly output_scope: "command_and_interleaved_session_output";
   readonly output_truncated: boolean;
+  readonly output_invalid_utf8?: true;
   readonly completion_status: "complete" | "unknown";
   readonly backend: string | null;
 }

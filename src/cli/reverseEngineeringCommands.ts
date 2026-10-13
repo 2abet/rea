@@ -289,18 +289,20 @@ export const registerReverseEngineeringCommands = (
       withCommandCancellation((signal) =>
         logCliCommand(logger, CLI_COMMANDS.debugWithRizin, async () => {
           const manager = new RizinDebugSessionManager(environment);
-          const started = await manager.start(
-            {
-              ...args,
-              inferior_tty: options.inferiorTty,
-              ...(options.backend === undefined
-                ? {}
-                : { backend: options.backend }),
-            },
-            signal,
-          );
-          if (!started.ok) return projectAnalysisError(started.error);
+          let sessionId: string | undefined;
           try {
+            const started = await manager.start(
+              {
+                ...args,
+                inferior_tty: options.inferiorTty,
+                ...(options.backend === undefined
+                  ? {}
+                  : { backend: options.backend }),
+              },
+              signal,
+            );
+            if (!started.ok) return projectAnalysisError(started.error);
+            sessionId = started.value.session_id;
             const executed = await manager.execute(
               started.value.session_id,
               args.command,
@@ -310,8 +312,11 @@ export const registerReverseEngineeringCommands = (
               ? executed.value.evidence
               : projectAnalysisError(executed.error);
           } finally {
-            const closed = await manager.close(started.value.session_id);
-            if (!closed.ok) {
+            const closed =
+              sessionId === undefined
+                ? undefined
+                : await manager.close(sessionId);
+            if (closed !== undefined && !closed.ok) {
               logger.error(
                 {
                   command: CLI_COMMANDS.debugWithRizin,
@@ -320,19 +325,20 @@ export const registerReverseEngineeringCommands = (
                 "Rizin cleanup failed after collecting command output",
               );
               process.exitCode = 1;
-              await manager.closeAll().catch((cause: unknown) => {
-                logger.error(
-                  {
-                    command: CLI_COMMANDS.debugWithRizin,
-                    cleanup:
-                      cause instanceof Error
-                        ? cause.message
-                        : "Unknown cleanup failure",
-                  },
-                  "Rizin fallback cleanup failed",
-                );
-              });
             }
+            await manager.closeAll().catch((cause: unknown) => {
+              process.exitCode = 1;
+              logger.error(
+                {
+                  command: CLI_COMMANDS.debugWithRizin,
+                  cleanup:
+                    cause instanceof Error
+                      ? cause.message
+                      : "Unknown cleanup failure",
+                },
+                "Rizin fallback cleanup failed",
+              );
+            });
           }
         }),
       ),

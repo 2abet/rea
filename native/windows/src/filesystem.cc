@@ -308,7 +308,12 @@ static napi_value readCutterBridgeDescriptor(napi_env env, const std::vector<nap
 }
 
 std::unique_ptr<Runtime> createRuntime(const std::wstring& parentPath, const std::wstring& prefix) {
-  auto parent = openFile(parentPath, 0, true);
+  std::unique_ptr<File> parent;
+  try { parent = openFile(parentPath, 0, true); }
+  catch (Failure& failure) {
+    failure.runtimeDirectoryUnallocated = true;
+    throw;
+  }
   require(!prefix.empty() && prefix.find_first_of(L"\\/:\"<>|?*") == std::wstring::npos,
           "Runtime prefix must be one filename component", parentPath, ERROR_INVALID_PARAMETER);
   std::array<unsigned char, 16> random;

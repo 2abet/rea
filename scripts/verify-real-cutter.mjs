@@ -96,9 +96,12 @@ try {
   );
   assert.equal(typeof inspection.raw_result.bin?.arch, "string");
 
-  const mcpServer = createServer(unavailableAnalysis, undefined, {
-    providerEnvironment: process.env,
-  });
+  const mcpServer = createServer(
+    { kind: "fixed", analysis: unavailableAnalysis },
+    {
+      providerEnvironment: process.env,
+    },
+  );
   const mcpClient = new Client({
     name: "rea-cutter-upstream-smoke",
     version: "1",
@@ -128,7 +131,7 @@ try {
     });
     assert.notEqual(mcpInspection.isError, true);
     assert.deepEqual(
-      mcpInspection.structuredContent.evidence.normalized_result,
+      mcpInspection.structuredContent.normalized_result,
       inspection.normalized_result,
       "Cutter CLI and MCP returned different analysis results.",
     );

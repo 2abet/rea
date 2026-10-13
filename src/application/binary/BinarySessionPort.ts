@@ -50,11 +50,15 @@ export interface BinarySessionPort
   ): Promise<Result<Value, AnalysisError>>;
   /** Serialize an external mutation and refresh a target bound to its path. */
   withAdmittedExternalMutation<Value>(
-    path: string,
+    _path: string | undefined,
     signal: AbortSignal | undefined,
-    operation: () => Promise<Value>,
-    rebindFailure: (value: Value, error: AnalysisError) => AnalysisError,
-  ): Promise<Result<Value, AnalysisError>>;
+    operation: () => Promise<Result<Value, AnalysisError>>,
+    rebindFailure: (
+      value: Result<Value, AnalysisError>,
+      error: AnalysisError,
+    ) => AnalysisError,
+    operationName?: string,
+  ): Promise<Result<Result<Value, AnalysisError>, AnalysisError>>;
   open(
     path: string,
     options?: {

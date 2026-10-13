@@ -101,15 +101,33 @@ export const gdbThreadGroupCount = (mi: string): number | undefined => {
   let quoted = false;
   let escaped = false;
   let count = 0;
+  let fieldStart = start;
+  let pidStart: number | undefined;
+  let hasLivePid = false;
   for (let index = start; index < mi.length; index += 1) {
     const character = mi[index];
     if (quoted) {
       if (escaped) escaped = false;
       else if (character === "\\") escaped = true;
-      else if (character === '"') quoted = false;
+      else if (character === '"') {
+        quoted = false;
+        if (pidStart !== undefined) {
+          if (!/^[1-9]\d*$/u.test(mi.slice(pidStart, index))) return undefined;
+          hasLivePid = true;
+          pidStart = undefined;
+        }
+      }
       continue;
     }
     if (character === '"') {
+      if (
+        squareDepth === 1 &&
+        objectDepth === 1 &&
+        mi.slice(fieldStart, index) === "pid="
+      ) {
+        if (hasLivePid) return undefined;
+        pidStart = index + 1;
+      }
       quoted = true;
       continue;
     }
@@ -117,16 +135,31 @@ export const gdbThreadGroupCount = (mi: string): number | undefined => {
     else if (character === "]") {
       squareDepth -= 1;
       if (squareDepth === 0) {
+        if (objectDepth !== 0) return undefined;
         const body = mi.slice(start, index);
         if (body.includes("groups=[")) return undefined;
         return count;
       }
     } else if (character === "{") {
-      if (squareDepth === 1 && objectDepth === 0) count += 1;
+      if (squareDepth === 1 && objectDepth === 0) {
+        hasLivePid = false;
+        fieldStart = index + 1;
+      }
       objectDepth += 1;
     } else if (character === "}") {
+      if (squareDepth === 1 && objectDepth === 1) {
+        const field = mi.slice(fieldStart, index);
+        if (field.startsWith("pid=") && !/^pid="[1-9]\d*"$/u.test(field))
+          return undefined;
+      }
       objectDepth -= 1;
       if (objectDepth < 0) return undefined;
+      if (squareDepth === 1 && objectDepth === 0 && hasLivePid) count += 1;
+    } else if (character === "," && squareDepth === 1 && objectDepth === 1) {
+      const field = mi.slice(fieldStart, index);
+      if (field.startsWith("pid=") && !/^pid="[1-9]\d*"$/u.test(field))
+        return undefined;
+      fieldStart = index + 1;
     }
   }
   return undefined;
@@ -168,8 +201,11 @@ interface GdbSession {
   noInferiorVerified: boolean;
   stopAttempt: ReturnType<typeof stopOwnedDebuggerProcess> | undefined;
   readonly pending: Map<number, PendingCommand>;
+  readonly cleanupFailures: Set<AnalysisError>;
   readonly lines: string[];
-  buffer: string;
+  readonly bufferChunks: string[];
+  bufferBytes: number;
+  promptTail: string;
   ready: boolean;
   exited: boolean;
   exitCode: number | null;
@@ -405,8 +441,11 @@ export class GdbSessionManager {
       noInferiorVerified: true,
       stopAttempt: undefined,
       pending: new Map(),
+      cleanupFailures: new Set(),
       lines: [],
-      buffer: "",
+      bufferChunks: [],
+      bufferBytes: 0,
+      promptTail: "",
       ready: false,
       exited: false,
       exitCode: null,
@@ -723,7 +762,7 @@ export class GdbSessionManager {
       );
     if (signal?.aborted) return err(new AnalysisCancelledError("gdb_console"));
     try {
-      return await this.#serialize(
+      const completed = await this.#serialize(
         session,
         async () => {
           if (session.exited || session.protocolError !== undefined)
@@ -824,12 +863,16 @@ export class GdbSessionManager {
         signal,
         "gdb_console",
       );
+      if (!completed.ok && completed.error.cleanupIncomplete)
+        session.cleanupFailures.add(completed.error);
+      return completed;
     } catch (cause) {
-      return err(
+      const error =
         cause instanceof AnalysisError
           ? cause
-          : new AnalysisCancelledError("gdb_console", { cause }),
-      );
+          : new AnalysisCancelledError("gdb_console", { cause });
+      if (error.cleanupIncomplete) session.cleanupFailures.add(error);
+      return err(error);
     }
   }
 
@@ -1050,26 +1093,38 @@ export class GdbSessionManager {
   }
 
   #receive(session: GdbSession, data: string): void {
-    const combined = session.buffer + data;
-    session.buffer = "";
-    const parts = combined.split(/\r?\n/u);
-    if (!combined.endsWith("\n")) session.buffer = parts.pop()!;
-    if (Buffer.byteLength(session.buffer, "utf8") > MAX_MI_LINE_BYTES) {
-      this.#failProtocol(
-        session,
-        "GDB emitted a partial MI line exceeding the 16 MiB protocol limit.",
-      );
-      return;
+    if (session.startupResolve !== undefined) {
+      const prompt = session.promptTail + data;
+      if (prompt.includes("(gdb)")) {
+        const resolve = session.startupResolve;
+        session.startupResolve = undefined;
+        resolve();
+      }
+      session.promptTail = prompt.slice(-4);
     }
-    const lines = parts.filter((line) => line.length > 0);
-    if (
-      lines.some((line) => Buffer.byteLength(line, "utf8") > MAX_MI_LINE_BYTES)
-    ) {
-      this.#failProtocol(
-        session,
-        "GDB emitted an MI line exceeding the 16 MiB protocol limit.",
-      );
-      return;
+    const lines: string[] = [];
+    let offset = 0;
+    while (offset < data.length) {
+      const newline = data.indexOf("\n", offset);
+      const piece = data.slice(offset, newline < 0 ? data.length : newline);
+      session.bufferBytes += Buffer.byteLength(piece, "utf8");
+      const lineBytes =
+        session.bufferBytes - (newline >= 0 && piece.endsWith("\r") ? 1 : 0);
+      if (lineBytes > MAX_MI_LINE_BYTES) {
+        this.#failProtocol(
+          session,
+          "GDB emitted an MI line exceeding the 16 MiB protocol limit.",
+        );
+        return;
+      }
+      if (piece.length > 0) session.bufferChunks.push(piece);
+      if (newline < 0) break;
+      const record = session.bufferChunks.join("");
+      const line = record.endsWith("\r") ? record.slice(0, -1) : record;
+      session.bufferChunks.length = 0;
+      session.bufferBytes = 0;
+      if (line.length > 0) lines.push(line);
+      offset = newline + 1;
     }
     for (const line of lines) {
       if (Buffer.byteLength(line, "utf8") > MAX_RECENT_MI_LINE_BYTES) {
@@ -1081,7 +1136,6 @@ export class GdbSessionManager {
       session.lines.splice(0, session.lines.length - 256);
       session.recentRecordsTruncated = true;
     }
-    if (combined.includes("(gdb)")) session.startupResolve?.();
     for (const line of lines) {
       for (const pending of session.pending.values()) {
         const lineBytes = Buffer.byteLength(line, "utf8") + 1;
@@ -1193,9 +1247,18 @@ export class GdbSessionManager {
     session: GdbSession,
   ): ReturnType<typeof stopOwnedDebuggerProcess> {
     if (session.stopAttempt !== undefined) return session.stopAttempt;
-    const attempt = this.#stopProcess(session, "GDB").finally(() => {
-      session.stopAttempt = undefined;
-    });
+    const attempt = this.#stopProcess(session, "GDB")
+      .then((stopped) => {
+        if (stopped.status !== "incomplete") {
+          for (const failure of session.cleanupFailures)
+            failure.resolveCleanup();
+          session.cleanupFailures.clear();
+        }
+        return stopped;
+      })
+      .finally(() => {
+        if (session.stopAttempt === attempt) session.stopAttempt = undefined;
+      });
     session.stopAttempt = attempt;
     return attempt;
   }
@@ -1488,13 +1551,13 @@ export class GdbSessionManager {
             "The active GDB inferior identity is not established by the debugger session identifier.",
           limitations: [
             "The GDB command was cancelled; retained MI records are partial and command completion is unknown.",
-            "The owned GDB process was stopped because output correlation could no longer be guaranteed.",
+            "Shutdown of the owned GDB process was requested because output correlation could no longer be guaranteed.",
             "The unrestricted GDB console can access local shell, filesystem, network, and target controls.",
           ],
         });
         session.pending.delete(token);
         session.protocolError =
-          "A GDB MI command was cancelled; the owned session was stopped because output correlation can no longer be guaranteed.";
+          "A GDB MI command was cancelled; owned-session shutdown was requested because output correlation can no longer be guaranteed.";
         void this.#stopDebuggerOnly(session).then(
           (stopped) => {
             pending.reject(

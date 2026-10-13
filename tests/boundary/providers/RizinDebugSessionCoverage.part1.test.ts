@@ -38,7 +38,7 @@ it.skipIf(process.platform === "win32")(
       (
         await windows.start({
           path: "/tmp/a",
-          inferior_tty: await rizinTestInferiorTty(),
+          inferior_tty: "unused-before-platform-admission",
         })
       ).ok,
     ).toBe(false);

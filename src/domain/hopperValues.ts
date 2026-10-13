@@ -19,6 +19,8 @@ export interface SegmentSummary {
   readonly readable: boolean | null;
   readonly writable: boolean | null;
   readonly executable: boolean | null;
+  readonly image_base?: string;
+  readonly address_space?: string;
 }
 
 /** Return a bounded byte distance between canonical addresses in one space. */
@@ -57,10 +59,9 @@ const segmentSchema = z.object({
   readable: z.boolean().nullable(),
   writable: z.boolean().nullable(),
   executable: z.boolean().nullable(),
+  image_base: z.string().min(1).exactOptional(),
+  address_space: z.string().min(1).exactOptional(),
 });
-const segmentImageBaseSchema = z
-  .object({ image_base: z.string().min(1) })
-  .passthrough();
 const unavailableAnalysisFactSchema = z
   .object({ available: z.literal(false), reason: z.string() })
   .strict();
@@ -419,7 +420,7 @@ export const parseRelatedAddresses = (
     : invalid(operation, `${relation} list`, parsed.error);
 };
 
-/** Parse direct or wrapped provider segment records. */
+/** Preserve reported address context in direct or wrapped provider segments. */
 export const parseSegments = (
   value: JsonValue,
   operation = "list_segments",
@@ -432,15 +433,15 @@ export const parseSegments = (
     : invalid(operation, "segment list", parsed.error);
 };
 
-/** Parse direct or wrapped provider document names. */
-/** Return a provider-reported image base only when every segment agrees on it. */
-export const parseSegmentImageBase = (value: JsonValue): string | undefined => {
-  const parsed = z
-    .array(segmentImageBaseSchema)
-    .safeParse(unwrapProperty(value, "segments"));
-  if (!parsed.success) return undefined;
-  const bases = new Set(parsed.data.map(({ image_base }) => image_base));
-  return bases.size === 1 ? parsed.data[0]?.image_base : undefined;
+/** Return a reported overview base only when every parsed segment agrees. */
+export const parseSegmentImageBase = (
+  segments: readonly SegmentSummary[],
+): string | undefined => {
+  const base = segments[0]?.image_base;
+  return base !== undefined &&
+    segments.every((segment) => segment.image_base === base)
+    ? base
+    : undefined;
 };
 
 /** Parse direct or wrapped provider document names. */

@@ -1,3 +1,4 @@
+import { projectAnalysisError } from "../domain/analysisErrorProjection.js";
 import type {
   CallToolResult,
   McpServer,
@@ -29,11 +30,14 @@ export const registerReverseEngineeringTools = (
   withAdmittedAnalysis?: WithAdmittedAnalysis,
   invalidateSnapshotForExternalMutation?: () => void,
   withAdmittedExternalMutation?: <Value>(
-    path: string,
+    path: string | undefined,
     signal: AbortSignal | undefined,
-    operation: () => Promise<Value>,
-    rebindFailure: (value: Value, error: AnalysisError) => AnalysisError,
-  ) => Promise<Result<Value, AnalysisError>>,
+    operation: () => Promise<Result<Value, AnalysisError>>,
+    rebindFailure: (
+      value: Result<Value, AnalysisError>,
+      error: AnalysisError,
+    ) => AnalysisError,
+  ) => Promise<Result<Result<Value, AnalysisError>, AnalysisError>>,
 ): void => {
   const objdump = toolContract("inspect_with_objdump");
   const rizin = toolContract("execute_rizin_command");
@@ -73,6 +77,9 @@ export const registerReverseEngineeringTools = (
     async (input, context: ServerContext) => {
       const parsed = rizinInputSchema.safeParse(input);
       if (parsed.success && withAdmittedExternalMutation !== undefined) {
+        const cleanup = await service.retryCleanup(rizin.name);
+        if (!cleanup.ok)
+          return deliverFailure(cleanup.error, rizin, delivery, recordEvidence);
         const admitted = await withAdmittedExternalMutation(
           parsed.data.path,
           context.mcpReq.signal,
@@ -85,14 +92,22 @@ export const registerReverseEngineeringTools = (
             );
           },
           (value, cause) => {
-            const observation = value.ok
-              ? value.value
-              : value.error.partialObservation;
+            if (!value.ok)
+              return value.error.retainSecondaryFailure(cause, {
+                rebind_error: projectAnalysisError(cause),
+              });
+            const observation = value.value;
             return new AnalysisOutputError(
               rizin.name,
               "Rizin may have changed the bound artifact, but the active analysis session could not be rebound.",
               {
                 cause,
+                ...(cause.cleanup === undefined
+                  ? {}
+                  : { cleanup: cause.cleanup }),
+                ...(cause.capturedOutput === undefined
+                  ? {}
+                  : { capturedOutput: cause.capturedOutput }),
                 ...(observation === undefined
                   ? {}
                   : { partialObservation: observation }),

@@ -235,76 +235,97 @@ it("reports rebind failure when admitted Rizin execution has no partial observat
   });
 });
 
-it("retains partial Evidence and leaves the session unbound when a symlink rebind fails", async () => {
-  const [target] = await createBinarySessionTargets();
-  const alias = join(dirname(target), "active-target-alias.hop");
-  await symlink(target, alias);
-  let profileResolutions = 0;
-  const base = createCacheProvider([]);
-  const session = createTestBinarySession({
-    ...base,
-    resolveAnalysisProfile: async (...arguments_) => {
-      profileResolutions += 1;
-      if (profileResolutions > 1) return err(new HopperStartError());
-      return base.resolveAnalysisProfile!(...arguments_);
-    },
-  });
-  expect((await session.open(target)).ok).toBe(true);
-  expect(session.activeTarget()?.path).toBe(target);
+it.each(["success", "timeout"])(
+  "retains %s output and leaves the session unbound when a symlink rebind fails",
+  async (outcome) => {
+    const [target] = await createBinarySessionTargets();
+    const alias = join(dirname(target), "active-target-alias.hop");
+    await symlink(target, alias);
+    let profileResolutions = 0;
+    const base = createCacheProvider([]);
+    const session = createTestBinarySession({
+      ...base,
+      resolveAnalysisProfile: async (...arguments_) => {
+        profileResolutions += 1;
+        if (profileResolutions > 1) return err(new HopperStartError());
+        return base.resolveAnalysisProfile!(...arguments_);
+      },
+    });
+    expect((await session.open(target)).ok).toBe(true);
+    expect(session.activeTarget()?.path).toBe(target);
 
-  const { server, handler } = createReverseEngineeringMcpHarness();
-  const service = new ReverseEngineeringService({
-    run: async () => {
-      await writeFile(alias, "changed by Rizin");
-      return { stdout: "partial analysis output", stderr: "" };
-    },
-  });
-  const recordEvidence = vi.fn(() => ok("added" as const));
-  registerReverseEngineeringTools(
-    server,
-    service,
-    pino({ enabled: false }),
-    createToolResultDelivery(2 * 1024 * 1024),
-    recordEvidence,
-    undefined,
-    () => session.invalidateSnapshotForExternalMutation(),
-    (path, signal, operation, rebindFailure) =>
-      session.withAdmittedExternalMutation(
-        path,
-        signal,
-        operation,
-        rebindFailure,
-      ),
-  );
-  const invoke = handler("execute_rizin_command");
+    const { server, handler } = createReverseEngineeringMcpHarness();
+    const service = new ReverseEngineeringService({
+      run: async () => {
+        await writeFile(alias, "changed by Rizin");
+        if (outcome === "timeout")
+          throw Object.assign(new Error("timed out"), {
+            stdout: "partial analysis output",
+            stderr: "timeout diagnostics",
+            code: "ETIMEDOUT",
+            signal: null,
+            killed: true,
+          });
+        return { stdout: "partial analysis output", stderr: "" };
+      },
+    });
+    const recordEvidence = vi.fn(() => ok("added" as const));
+    registerReverseEngineeringTools(
+      server,
+      service,
+      pino({ enabled: false }),
+      createToolResultDelivery(2 * 1024 * 1024),
+      recordEvidence,
+      undefined,
+      () => session.invalidateSnapshotForExternalMutation(),
+      (path, signal, operation, rebindFailure) =>
+        session.withAdmittedExternalMutation(
+          path,
+          signal,
+          operation,
+          rebindFailure,
+        ),
+    );
+    const invoke = handler("execute_rizin_command");
 
-  const response = (await invoke(
-    { path: alias, command: "wx 00 @ 0" },
-    { mcpReq: { signal: new AbortController().signal } },
-  )) as {
-    readonly isError?: boolean;
-    readonly structuredContent?: {
-      readonly error?: {
-        readonly code?: string;
-        readonly details?: Readonly<Record<string, unknown>>;
+    const response = (await invoke(
+      { path: alias, command: "wx 00 @ 0" },
+      { mcpReq: { signal: new AbortController().signal } },
+    )) as {
+      readonly isError?: boolean;
+      readonly structuredContent?: {
+        readonly error?: {
+          readonly code?: string;
+          readonly details?: Readonly<Record<string, unknown>>;
+        };
       };
     };
-  };
 
-  expect(profileResolutions).toBeGreaterThan(1);
-  expect(response.isError).toBe(true);
-  expect(response.structuredContent?.error?.code).toBe("unreadable_output");
-  expect(response.structuredContent?.error?.details).toMatchObject({
-    partial_observation: {
-      kind: "retained-evidence",
-      evidence_id: expect.any(String),
-    },
-  });
-  expect(recordEvidence).toHaveBeenCalledTimes(1);
-  expect(session.activeTarget()).toBeUndefined();
-  await session.close();
-  await rm(dirname(target), { recursive: true, force: true });
-});
+    expect(profileResolutions).toBeGreaterThan(1);
+    expect(response.isError).toBe(true);
+    expect(response.structuredContent?.error?.code).toBe(
+      outcome === "timeout" ? "provider_timeout" : "unreadable_output",
+    );
+    if (outcome === "timeout")
+      expect(response.structuredContent?.error?.details).toMatchObject({
+        captured_output: {
+          stdout: "partial analysis output",
+          stderr: "timeout diagnostics",
+        },
+        diagnostics: { rebind_error: { code: expect.any(String) } },
+      });
+    expect(response.structuredContent?.error?.details).toMatchObject({
+      partial_observation: {
+        kind: "retained-evidence",
+        evidence_id: expect.any(String),
+      },
+    });
+    expect(recordEvidence).toHaveBeenCalledTimes(1);
+    expect(session.activeTarget()).toBeUndefined();
+    await session.close();
+    await rm(dirname(target), { recursive: true, force: true });
+  },
+);
 
 it("preserves a partial MCP error without claiming failed Evidence retention", async () => {
   const { server, handler } = createReverseEngineeringMcpHarness();

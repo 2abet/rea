@@ -85,7 +85,10 @@ export class ReverseEngineeringService {
   readonly #stat: (path: string) => Promise<Stats>;
   readonly #pendingCleanup = new Map<
     ProviderProcessSupervisor,
-    AnalysisCleanupObservation
+    {
+      readonly observation: AnalysisCleanupObservation;
+      readonly failures: Set<AnalysisError>;
+    }
   >();
   readonly #activeOperations = new Map<
     AbortController,
@@ -101,10 +104,54 @@ export class ReverseEngineeringService {
       options.run ??
       runOwnedCommandOutput(
         options.runOwned ?? runOwnedCommand,
-        (owner, cleanup) => this.#pendingCleanup.set(owner, cleanup),
+        (owner, cleanup) =>
+          this.#pendingCleanup.set(owner, {
+            observation: cleanup,
+            failures: this.#pendingCleanup.get(owner)?.failures ?? new Set(),
+          }),
       );
     this.#digest = options.digest ?? digestFile;
     this.#stat = options.stat ?? statPath;
+  }
+
+  /** Ask retained process owners to settle cleanup before admitting more work. */
+  async retryCleanup(
+    operation = "reverse_engineering_cleanup",
+  ): Promise<Result<null, AnalysisError>> {
+    let failure: AnalysisError | undefined;
+    for (const [owner, retained] of this.#pendingCleanup) {
+      let stopped: Awaited<ReturnType<ProviderProcessSupervisor["stop"]>>;
+      try {
+        stopped = await owner.stop();
+      } catch (cause) {
+        stopped = {
+          status: "incomplete",
+          reason: cause instanceof Error ? cause.message : String(cause),
+        };
+      }
+      if (stopped.status === "incomplete") {
+        const observation = {
+          reason: stopped.reason,
+          resources: retained.observation.resources,
+        };
+        this.#pendingCleanup.set(owner, {
+          observation,
+          failures: retained.failures,
+        });
+        if (failure === undefined) {
+          failure = new AnalysisOutputError(
+            operation,
+            "A previous provider process still requires cleanup.",
+            { cleanup: observation },
+          );
+          retained.failures.add(failure);
+        }
+      } else {
+        for (const previous of retained.failures) previous.resolveCleanup();
+        this.#pendingCleanup.delete(owner);
+      }
+    }
+    return failure === undefined ? ok(null) : err(failure);
   }
 
   /** Retry cleanup for provider process groups retained after an incomplete stop. */
@@ -124,36 +171,8 @@ export class ReverseEngineeringService {
     for (const [controller] of active) controller.abort();
     await Promise.allSettled(active.map(([, operation]) => operation));
 
-    const failures: AnalysisCleanupObservation[] = [];
-    for (const [owner, previous] of this.#pendingCleanup) {
-      let result: Awaited<ReturnType<ProviderProcessSupervisor["stop"]>>;
-      try {
-        result = await owner.stop();
-      } catch (cause) {
-        result = {
-          status: "incomplete",
-          reason: cause instanceof Error ? cause.message : String(cause),
-        };
-      }
-      if (result.status === "incomplete") {
-        const cleanup = {
-          reason: result.reason,
-          resources: previous.resources,
-        };
-        this.#pendingCleanup.set(owner, cleanup);
-        failures.push(cleanup);
-      } else {
-        this.#pendingCleanup.delete(owner);
-      }
-    }
-    if (failures.length > 0) {
-      const cleanup = failures[0]!;
-      throw new AnalysisOutputError(
-        "reverse_engineering_cleanup",
-        "Provider process cleanup remains incomplete.",
-        { cleanup },
-      );
-    }
+    const cleanup = await this.retryCleanup();
+    if (!cleanup.ok) throw cleanup.error;
   }
 
   inspectWithObjdump(
@@ -266,32 +285,8 @@ export class ReverseEngineeringService {
   ): Promise<Result<Evidence, AnalysisError>> {
     const { executable: command, arguments: args } = profile;
     if (signal?.aborted) return err(new AnalysisCancelledError(operation));
-    for (const [owner, previous] of this.#pendingCleanup) {
-      let stopped: Awaited<ReturnType<ProviderProcessSupervisor["stop"]>>;
-      try {
-        stopped = await owner.stop();
-      } catch (cause) {
-        stopped = {
-          status: "incomplete",
-          reason: cause instanceof Error ? cause.message : String(cause),
-        };
-      }
-      if (stopped.status === "incomplete") {
-        const cleanup = {
-          reason: stopped.reason,
-          resources: previous.resources,
-        };
-        this.#pendingCleanup.set(owner, cleanup);
-        return err(
-          new AnalysisOutputError(
-            operation,
-            "A previous provider process still requires cleanup.",
-            { cleanup },
-          ),
-        );
-      }
-      this.#pendingCleanup.delete(owner);
-    }
+    const cleanup = await this.retryCleanup(operation);
+    if (!cleanup.ok) return cleanup;
     const providerCapability = parameters.operation === "architectures";
     const absolutePath = resolve(path);
     let digest: string | undefined;
@@ -326,6 +321,7 @@ export class ReverseEngineeringService {
     let cleanupIncomplete = false;
     let completionStatus: "complete" | "unknown" = "complete";
     let failure: AnalysisError | undefined;
+    let cleanupOwner: ProviderProcessSupervisor | undefined;
     try {
       const output = await this.#run(command, args, {
         env: {
@@ -344,6 +340,8 @@ export class ReverseEngineeringService {
       stdoutInvalidUtf8 = output.stdoutInvalidUtf8 === true;
       stderrInvalidUtf8 = output.stderrInvalidUtf8 === true;
     } catch (cause) {
+      cleanupOwner =
+        cause instanceof OwnedOutputFailure ? cause.cleanupOwner : undefined;
       if (
         cause instanceof OwnedOutputFailure &&
         cause.capabilityError !== undefined
@@ -460,6 +458,8 @@ export class ReverseEngineeringService {
         stderrInvalidUtf8 = cause.stderrInvalidUtf8;
       }
     }
+    if (failure !== undefined && cleanupOwner !== undefined)
+      this.#pendingCleanup.get(cleanupOwner)?.failures.add(failure);
     let digestAfter: string | null = null;
     if (providerCapability) {
       digestAfter = null;
@@ -613,6 +613,7 @@ interface OwnedOutputFailureOptions {
   readonly capabilityError?: AnalysisCapabilityUnavailableError;
   readonly collectionFailure?: boolean;
   readonly cleanup?: AnalysisCleanupObservation;
+  readonly cleanupOwner?: ProviderProcessSupervisor;
   readonly cause?: unknown;
 }
 
@@ -629,6 +630,7 @@ class OwnedOutputFailure extends Error {
   readonly capabilityError: AnalysisCapabilityUnavailableError | undefined;
   readonly collectionFailure: boolean;
   readonly cleanup: AnalysisCleanupObservation | undefined;
+  readonly cleanupOwner: ProviderProcessSupervisor | undefined;
 
   constructor(options: OwnedOutputFailureOptions) {
     super("Owned provider command did not produce a complete result.", {
@@ -646,6 +648,7 @@ class OwnedOutputFailure extends Error {
     this.capabilityError = options.capabilityError;
     this.collectionFailure = options.collectionFailure ?? false;
     this.cleanup = options.cleanup;
+    this.cleanupOwner = options.cleanupOwner;
   }
 }
 
@@ -756,6 +759,9 @@ const runOwnedCommandOutput =
                 resources: cause.resources,
               },
             }),
+        ...(cause.cleanupOwner === undefined
+          ? {}
+          : { cleanupOwner: cause.cleanupOwner }),
         cause,
       });
     }

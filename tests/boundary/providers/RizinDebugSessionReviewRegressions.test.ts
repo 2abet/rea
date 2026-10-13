@@ -55,7 +55,7 @@ it("keeps persistent Rizin sessions unavailable on Windows", async () => {
     { platform: "win32" },
   ).start({
     path: "/tmp/fixture.bin",
-    inferior_tty: await rizinTestInferiorTty(),
+    inferior_tty: "unused-before-platform-admission",
   });
   expect(rizin.ok).toBe(false);
   if (!rizin.ok) {

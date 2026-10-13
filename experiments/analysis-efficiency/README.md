@@ -7,6 +7,18 @@ JSON measurements belong outside the checkout. This document keeps the measured
 findings, verification scope and revision references; the scripts and `corpus.json`
 keep the reproduction inputs. Generated `results/` is ignored.
 
+Follow-up: [latest-main capability audit](latest-main-audit.md) records the
+Flutter, SQLite, TShark and sigrok priorities and the first shipped Dart AOT
+baseline, preserving existing controls before introducing another selector.
+
+Follow-up: [Dart AOT summary and retained string pools](flutter-aot-summary.md)
+records real LocalSend delivery pairs and old Evidence continuation, preserving
+ABI selection, snapshot identity, original lower bounds and partial coverage.
+
+Follow-up: [SQLite existing-control measurements](sqlite-existing-controls.md)
+tests QGIS's shipped GeoPackage through the existing column selection, preserving
+full selected-table schema and typed cells before considering another API.
+
 Follow-up: [native PE/DOS entry views and real model verification](native-entry-views.md)
 records the post-merge native continuation, including a small-function case where
 four selected replies cost more bytes than the complete dossier.
@@ -22,6 +34,29 @@ and real-model pairs, including mixed token/time results and strict-answer limit
 Follow-up: [task-scoped preset lifecycle verification](preset-lifecycle.md) checks
 real Ghidra profile/snapshot boundaries, startup cancellation and retained cleanup
 retry while preserving defaults and distinguishing verification from performance.
+
+Follow-up: [EVM descriptor lifecycle acceptance](evm-lifecycle.md) verifies actual
+worker replies, late SDK cancellation, permission-induced cleanup failures,
+healthy WASM peers and old CLI parity with explicit runtime and platform scope.
+
+Follow-up: [managed artifact delivery and retained views](managed-artifact-summary.md)
+records two shipped assembly checks, previous-runtime portable Evidence, and four
+actual Codex trials. Selected replies shrink substantially; observed model input
+tokens increase and latency is mixed, so model-token savings are not claimed.
+
+Follow-up: [model tool context and per-response usage](model-context.md) separates
+raw MCP replies from observed client execution/discovery and usage. Optional
+trial capture retains tool/usage items while excluding account and ambient state;
+existing ephemeral trials keep their default behavior.
+
+Follow-up: [Android package delivery and retained manifest](android-package-summary.md)
+records real NewPipe SDK pairs, unchanged old requests/Evidence, exact retained
+text, and actual Codex outcomes including client errors and a failed discovery.
+Reply bytes fall; model-token/time gains are not established.
+
+Follow-up: [resource counters at payload completion](resource-counters.md) adds
+optional owned counter observations while preserving unknown whole-scope final
+counters, default receipt shape and the unchanged CPU/memory safeguards.
 
 The 12 detailed checkpoint receipts were archived byte-for-byte before removal
 from the final PR tree. The archive `review-receipts-00d51e0fc-20261012` is in the

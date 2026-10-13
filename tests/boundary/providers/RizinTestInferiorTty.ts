@@ -7,6 +7,10 @@ let ttyPathPromise: Promise<string> | undefined;
 let terminal: ReturnType<typeof spawn> | undefined;
 
 export const rizinTestInferiorTty = (): Promise<string> => {
+  if (process.platform === "win32")
+    return Promise.reject(
+      new Error("The Rizin test TTY requires a POSIX host."),
+    );
   ttyPathPromise ??= new Promise<string>((resolve, reject) => {
     terminal = spawn("sh", ["-c", "tty; exec sleep 600"], {
       name: "xterm",
@@ -21,7 +25,11 @@ export const rizinTestInferiorTty = (): Promise<string> => {
     );
     terminal.onData((chunk) => {
       output += chunk;
-      const match = /\/dev\/pts\/\d+/u.exec(output);
+      const pattern =
+        process.platform === "darwin"
+          ? /\/dev\/ttys[0-9a-z]+/u
+          : /\/dev\/pts\/\d+/u;
+      const match = pattern.exec(output);
       if (match !== null) {
         clearTimeout(timer);
         resolve(match[0]);

@@ -1,31 +1,20 @@
 import { execFileSync } from "node:child_process";
 import { appendFileSync } from "node:fs";
 import { matchesGlob } from "node:path";
-import { MANUAL_VERIFIERS, SCOPES } from "./scopes.mjs";
+import { CI_FLAGS as flags, MANUAL_VERIFIERS, SCOPES } from "./scopes.mjs";
+import { planTestSelection } from "./test-selection.mjs";
 
-const flags = [
-  ...new Set([
-    "code",
-    "reverse_tools",
-    "runtime",
-    "package",
-    "apple",
-    "fixtures",
-    "readiness",
-    "docs",
-    "workflows",
-    ...Object.keys(SCOPES),
-  ]),
-];
-// Test files select the native-host lanes that run them explicitly. Provider
-// scopes remain implementation-owned, so test-only edits stay off those lanes.
-const NATIVE_TEST_OWNERS = ["apple", "package"];
+// Test files select the host/runtime lanes that execute their focused suites.
+const HOST_TEST_OWNERS = ["apple", "package", "sqlite"];
 // Actionlint validates workflow syntax only. The semantic suite asserts these
 // workflows' release, publication and self-hosted runner safeguards.
 const GUARDED_WORKFLOWS = new Set([
+  ".github/workflows/pr-title.yml",
+  ".github/workflows/ci-full-pr.yml",
   ".github/workflows/release.yml",
   ".github/workflows/real-ghidra-windows.yml",
   ".github/workflows/sqlite-runtime.yml",
+  ".github/workflows/ci-timings.yml",
 ]);
 // Sources compiled by build-conformance-fixtures.mjs. The readiness journey
 // analyzes the built C fixture as well as its own applications.
@@ -37,58 +26,15 @@ const FIXTURE_SOURCES = [
   "tests/conformance/versions/**",
 ];
 const READINESS_SOURCES = ["tests/conformance/readiness/**"];
-const REVERSE_TOOL_SOURCES = [
-  "src/application/reverse/**",
-  "src/cutter/**",
-  "src/gdb/**",
-  "src/frida/frida-bindings.d.ts",
-  "src/objdump/**",
-  "src/cli/reverseEngineeringCommands.ts",
-  "src/process/ownedDebuggerSession.ts",
-  "src/rizin/**",
-  "src/contracts/*ToolContracts.ts",
-  "src/server/registerCutterTools.ts",
-  "src/server/registerGdbTools.ts",
-  "src/server/registerReverseEngineeringTools.ts",
-  "src/server/providerEnvironment.ts",
-  "src/process/ExecFileOutput.ts",
-  "src/process/ExecFileOutput.test.ts",
-  "tests/boundary/providers/DebuggerSessionManagers.test.ts",
-  "tests/boundary/providers/DebuggerSessionReviewRegressions.test.ts",
-  "tests/boundary/providers/RizinDebugSessionCoverage.test.ts",
-  "tests/boundary/providers/RizinDebugSessionCoverage.fixtures.ts",
-  "src/server/registerRizinDebugTools.ts",
-  "tests/boundary/providers/CutterBridge*.test.ts",
-  "tests/boundary/providers/GdbSession*.test.ts",
-  "tests/boundary/providers/GdbCommandQueue.test.ts",
-  "tests/boundary/providers/gdbTestHelpers.ts",
-  "tests/boundary/providers/RizinDebugSessionCoverage.part*.test.ts",
-  "tests/boundary/providers/RizinCommandTimeout.test.ts",
-  "tests/boundary/providers/RizinTimeoutEvidence.test.ts",
-  "tests/boundary/providers/RizinDebugSession*.test.ts",
-  "tests/boundary/providers/RizinInferiorTty.test.ts",
-  "tests/boundary/providers/RizinTestInferiorTty.ts",
-  "tests/boundary/process/ownedDebuggerSession.test.ts",
-  "tests/boundary/cli/gdbStartupCleanupCli.test.ts",
-  "tests/boundary/mcp/cutter*.test.ts",
-  "tests/boundary/mcp/gdbCancellationMcp.test.ts",
-  "tests/boundary/mcp/debuggerCancellationMcp.test.ts",
-  "tests/boundary/mcp/rizinDebuggerCancellationMcp.test.ts",
-  "tests/boundary/mcp/reverseEngineeringPartialMcp.test.ts",
-  "tests/boundary/mcp/reverseEngineeringEnvironmentMcp.test.ts",
-  "tests/support/reverseEngineering*.ts",
-  "tests/support/ownedRizinCommandEvidenceTests.ts",
-  "tests/support/reverseDebuggerMcpTestHelpers.ts",
-  "tests/processOwnershipRunner.ts",
-  "tests/composition/reverseEngineering*.test.ts",
-  "vitest.reverse-tools.config.ts",
-  "vitest.reverse-tools-semantics.config.ts",
-  "stryker.config.json",
-  "stryker.semantics.config.json",
-  "tsconfig.reverse-tools-mutation.json",
-  "vitest.timeout.config.ts",
-  "scripts/prepare-reverse-tools-mutation.mjs",
-];
+// These reporters affect CI output only; they do not select a host or provider
+// verification lane when changed on their own.
+const PORTABLE_CI_REPORTERS = new Set([
+  "scripts/ci/job-timings.mjs",
+  "scripts/ci/job-timings-batch.mjs",
+  "scripts/ci/test-report.mjs",
+  "scripts/ci/test-timing-reporter.mjs",
+  "scripts/ci/test-history.mjs",
+]);
 const matchesAny = (file, patterns) =>
   patterns.some((pattern) => matchesGlob(file, pattern));
 const selected = Object.fromEntries(flags.map((flag) => [flag, false]));
@@ -116,8 +62,14 @@ function classifyPackage(base, head) {
     ]),
   ].filter((key) => beforeScripts?.[key] !== afterScripts?.[key]);
   for (const script of changed) {
-    if (/^test:(coverage|mutation):reverse-tools$/.test(script))
+    if (/^test:(coverage|mutation):reverse-tools$/.test(script)) {
       selected.reverse_tools = true;
+      continue;
+    }
+    if (script === "test:sqlite" || script === "test:sqlite:run") {
+      selected.sqlite = true;
+      continue;
+    }
     if (
       /^(test(?::|$)|check(?::|$)|lint(?::|$)|format(?::|$)|knip$|jscpd$)/.test(
         script,
@@ -163,99 +115,135 @@ function classifyPackage(base, head) {
 }
 
 const event = process.env.GITHUB_EVENT_NAME;
-let files = [];
-if (
-  event === "push" ||
+if (!["pull_request", "push", "schedule", "workflow_dispatch"].includes(event))
+  throw new Error(`Unsupported CI event: ${event}`);
+const requestedFull =
   event === "schedule" ||
   event === "workflow_dispatch" ||
-  process.env.CI_FULL === "true"
-) {
+  process.env.CI_FULL === "true";
+const tier =
+  event === "schedule" &&
+  process.env.CI_SKIP_FULL === "true" &&
+  process.env.CI_FULL !== "true"
+    ? "reused"
+    : requestedFull
+      ? "full"
+      : "fast";
+let files = [];
+if (tier === "reused") {
+  reasons.push(
+    "Recent exact-SHA full qualification reused; no fresh provider observation",
+  );
+} else if (tier === "full") {
   full("Full baseline requested by event or ci:full label");
-} else if (event === "pull_request") {
-  const base = git("merge-base", process.env.BASE_SHA, process.env.HEAD_SHA);
+} else if (event === "pull_request" || event === "push") {
   const head = process.env.HEAD_SHA;
-  // Disable rename detection so both the removed and added paths participate.
-  files = git("diff", "--name-only", "--no-renames", "-z", base, head)
-    .split("\0")
-    .filter(Boolean);
-  for (const file of files) {
-    if (matchesAny(file, REVERSE_TOOL_SOURCES)) selected.reverse_tools = true;
-    if (
-      /^(README(?:_[^/]+)?\.md|AGENTS\.md|CONTRIBUTING\.md|CHANGELOG\.md|SECURITY\.md|native\/windows\/README\.md|\.github\/pull_request_template\.md)$/.test(
-        file,
-      ) ||
-      file.startsWith("docs/") ||
-      file.startsWith(".github/ISSUE_TEMPLATE/")
-    ) {
-      selected.docs = true;
-      selected.website ||= matchesAny(file, SCOPES.website);
-      continue;
-    }
-    if (/^(src|tests)\/.*\.(?:test|spec)\.[cm]?[jt]sx?$/.test(file)) {
-      selected.code = true;
-      for (const owner of NATIVE_TEST_OWNERS)
-        selected[owner] ||= matchesAny(file, SCOPES[owner]);
-      continue;
-    }
-    if (matchesAny(file, MANUAL_VERIFIERS)) {
-      selected.code = true;
-      continue;
-    }
-    const owners = Object.entries(SCOPES)
-      .filter(([, patterns]) =>
-        patterns.some((pattern) => matchesGlob(file, pattern)),
-      )
-      .map(([owner]) => owner);
-    for (const owner of owners) selected[owner] = true;
-    if (
-      file.startsWith(".github/workflows/") ||
-      file === ".github/actionlint.yaml"
-    ) {
-      selected.workflows = true;
-      if (GUARDED_WORKFLOWS.has(file)) selected.code = true;
-      if (file !== ".github/workflows/ci.yml") continue;
-    }
-    if (owners.length === 1 && owners[0] === "website") continue;
-    if (/^src\/(contracts|domain)\//.test(file)) selected.docs = true;
-    if (file === "package.json") {
-      classifyPackage(base, head);
-      continue;
-    }
-    selected.code = true;
-    if (matchesAny(file, FIXTURE_SOURCES)) {
-      selected.fixtures = true;
-      selected.readiness = true;
-    }
-    if (matchesAny(file, READINESS_SOURCES)) selected.readiness = true;
-    if (file.startsWith("tests/")) continue;
-    if (
-      /^(src\/process\/|src\/filesystem\/|src\/contracts\/tool|src\/server\/createServer|src\/cli\.ts|scripts\/ci\/)/.test(
-        file,
-      )
-    ) {
-      full(`Shared boundary: ${file}`);
-    } else if (owners.length) {
-      if (file.startsWith("src/") || file.startsWith("bridge/"))
-        selected.runtime = true;
-    } else if (/^(src|bridge)\//.test(file)) {
-      // Unowned runtime sources keep the Linux x64 installed-package baseline;
-      // ci:full, main pushes and manual dispatch retain every native host.
-      selected.runtime = true;
-      reasons.push(`Unowned runtime source: ${file}`);
-    } else if (file.startsWith(".agents/skills/")) {
-      selected.runtime = true;
-      selected.docs = true;
-    } else {
-      full(`Unclassified input: ${file}`);
+  let base;
+  if (event === "pull_request") {
+    base = git("merge-base", process.env.BASE_SHA, head);
+  } else {
+    const candidate = process.env.BASE_SHA;
+    const baselineReason = process.env.BASELINE_REASON;
+    try {
+      if (!candidate || !/^[0-9a-f]{40}$/i.test(candidate))
+        throw new Error(
+          baselineReason || "No valid successful push baseline was found",
+        );
+      execFileSync("git", ["merge-base", "--is-ancestor", candidate, head], {
+        stdio: "ignore",
+      });
+      base = candidate;
+    } catch {
+      full(
+        baselineReason ||
+          "No valid successful push baseline ancestor; selecting all lanes",
+      );
     }
   }
-} else throw new Error(`Unsupported CI event: ${event}`);
+  if (base) {
+    // Disable rename detection so both the removed and added paths participate.
+    files = git("diff", "--name-only", "--no-renames", "-z", base, head)
+      .split("\0")
+      .filter(Boolean);
+    for (const file of files) {
+      if (matchesAny(file, SCOPES.reverse_tools)) selected.reverse_tools = true;
+      if (
+        /^(README(?:_[^/]+)?\.md|AGENTS\.md|CONTRIBUTING\.md|CHANGELOG\.md|SECURITY\.md|native\/windows\/README\.md|\.github\/pull_request_template\.md)$/.test(
+          file,
+        ) ||
+        file.startsWith("docs/") ||
+        file.startsWith(".github/ISSUE_TEMPLATE/")
+      ) {
+        selected.docs = true;
+        selected.website ||= matchesAny(file, SCOPES.website);
+        continue;
+      }
+      if (/^(src|tests)\/.*\.(?:test|spec)\.[cm]?[jt]sx?$/.test(file)) {
+        selected.code = true;
+        for (const owner of HOST_TEST_OWNERS)
+          selected[owner] ||= matchesAny(file, SCOPES[owner]);
+        continue;
+      }
+      if (matchesAny(file, MANUAL_VERIFIERS)) {
+        selected.code = true;
+        continue;
+      }
+      const owners = Object.entries(SCOPES)
+        .filter(([, patterns]) =>
+          patterns.some((pattern) => matchesGlob(file, pattern)),
+        )
+        .map(([owner]) => owner);
+      for (const owner of owners) selected[owner] = true;
+      if (
+        file.startsWith(".github/workflows/") ||
+        file === ".github/actionlint.yaml"
+      ) {
+        selected.workflows = true;
+        if (GUARDED_WORKFLOWS.has(file)) selected.code = true;
+        if (file !== ".github/workflows/ci.yml") continue;
+      }
+      if (owners.length === 1 && owners[0] === "website") continue;
+      if (/^src\/(contracts|domain)\//.test(file)) selected.docs = true;
+      if (file === "package.json") {
+        classifyPackage(base, head);
+        continue;
+      }
+      selected.code = true;
+      if (matchesAny(file, FIXTURE_SOURCES)) {
+        selected.fixtures = true;
+        selected.readiness = true;
+      }
+      if (matchesAny(file, READINESS_SOURCES)) selected.readiness = true;
+      if (file.startsWith("tests/")) continue;
+      if (PORTABLE_CI_REPORTERS.has(file)) continue;
+      if (
+        /^(src\/process\/|src\/filesystem\/|src\/contracts\/tool|src\/server\/createServer|src\/cli\.ts|scripts\/ci\/)/.test(
+          file,
+        )
+      ) {
+        full(`Shared boundary: ${file}`);
+      } else if (owners.length) {
+        if (file.startsWith("src/") || file.startsWith("bridge/"))
+          selected.runtime = true;
+      } else if (/^(src|bridge)\//.test(file)) {
+        // Unowned runtime sources keep the Linux x64 installed-package baseline;
+        // full qualification retains every native host.
+        selected.runtime = true;
+        reasons.push(`Unowned runtime source: ${file}`);
+      } else if (file.startsWith(".agents/skills/")) {
+        selected.runtime = true;
+        selected.docs = true;
+      } else {
+        full(`Unclassified input: ${file}`);
+      }
+    }
+  }
+}
 selected.runtime ||= selected.package;
 const linux = { os: "ubuntu-latest", platform: "linux", architecture: "x64" };
-// macOS x64 is the slowest package host. Pull requests run it only with ci:full;
-// main pushes, schedules and manual dispatch always include it.
+// macOS x64 is the slowest package host. Fast qualification omits it.
 const intel =
-  event !== "pull_request" || process.env.CI_FULL === "true"
+  tier === "full"
     ? [{ os: "macos-15-intel", platform: "darwin", architecture: "x64" }]
     : [];
 const matrix = {
@@ -268,17 +256,23 @@ const matrix = {
       ]
     : [linux],
 };
-const plan = { ...selected, matrix, files, reasons };
+const testSelection = planTestSelection(files, event, tier);
+const plan = { ...selected, tier, matrix, files, reasons, testSelection };
 if (process.env.GITHUB_OUTPUT)
   appendFileSync(
     process.env.GITHUB_OUTPUT,
-    Object.entries({ ...selected, matrix: JSON.stringify(matrix) })
+    Object.entries({
+      ...selected,
+      tier,
+      matrix: JSON.stringify(matrix),
+      test_selection: JSON.stringify(testSelection),
+    })
       .map(([key, value]) => `${key}=${value}\n`)
       .join(""),
   );
 if (process.env.GITHUB_STEP_SUMMARY)
   appendFileSync(
     process.env.GITHUB_STEP_SUMMARY,
-    `### Selected CI lanes\n\n${flags.filter((flag) => selected[flag]).join(", ") || "Formatting only"}\n\n${reasons.join("\n\n")}\n`,
+    `### Selected CI lanes (${tier})\n\n${flags.filter((flag) => selected[flag]).join(", ") || "Formatting only"}\n\n${reasons.join("\n\n")}\n`,
   );
 console.log(JSON.stringify(plan));

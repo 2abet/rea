@@ -89,15 +89,33 @@ export abstract class AnalysisError extends Error {
   partialObservation: AnalysisPartialObservation | undefined;
   readonly cleanupReport: ProcessCaptureCleanupReport | undefined = undefined;
 
-  /** Retain a completed observation when a later step fails. */
-  retainPartialObservation(observation: AnalysisPartialObservation): this {
-    this.partialObservation ??= observation;
+  /** Retain a later lifecycle failure without replacing the original typed error. */
+  retainSecondaryFailure(
+    failure: AnalysisError,
+    diagnostics: Readonly<Record<string, JsonValue>>,
+  ): this {
+    // Secondary resources remain owned by their cleanup lifecycle; preserve
+    // the primary error's live cleanup status and original output.
+    Object.assign(this, {
+      diagnostics: structuredClone({ ...this.diagnostics, ...diagnostics }),
+      cause: new AggregateError(
+        this.cause === undefined ? [failure] : [this.cause, failure],
+        "Analysis failed and a later lifecycle operation also failed.",
+        { cause: this.cause },
+      ),
+    });
     return this;
   }
 
-  /** Clear stale cleanup-incomplete status after an owner confirms retry success. */
+  /** Clear live cleanup status only after its owning resource confirms retry success. */
   resolveCleanup(): this {
     this.cleanupIncomplete = false;
+    return this;
+  }
+
+  /** Retain a completed observation when a later step fails. */
+  retainPartialObservation(observation: AnalysisPartialObservation): this {
+    this.partialObservation ??= observation;
     return this;
   }
 }

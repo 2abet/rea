@@ -42,6 +42,8 @@ import {
 } from "./javascriptSemanticTraversal.js";
 import { semanticRequireOrigin } from "./javascriptSemanticRequireOrigin.js";
 import { collectSemanticMemberMutationsSteps } from "./javascriptSemanticMemberMutations.js";
+import { indexJavaScriptAmbientWritesSteps } from "./javascriptSemanticAmbientWrites.js";
+import { hasUncertainTypeOnlyModuleSideEffect } from "./javascriptModuleDeclaration.js";
 import {
   collectSemanticReturns,
   resolveSemanticModuleCallables,
@@ -66,6 +68,7 @@ import {
 import { isJavaScriptRpcClientFactory } from "./javascriptRpcEndpoints.js";
 import { createSemanticModuleInterop } from "./javascriptModuleInterop.js";
 import { SemanticPropertyPathCoverage } from "./javascriptSemanticPropertyPaths.js";
+import type { JavaScriptModuleResolutionMode } from "./javascriptModuleResolutionMode.js";
 
 interface BindPatternInput {
   readonly pattern: t.Node;
@@ -99,6 +102,7 @@ interface AddBindingInput {
   readonly definitionNode: t.Node;
   readonly initializer: t.Node | null;
   readonly directOrigin?: JavaScriptModuleOrigin;
+  readonly runtimeImport?: boolean;
   readonly projection?: readonly (string | number | null)[];
 }
 
@@ -128,13 +132,14 @@ export function* indexJavaScriptBindingsSteps(
 ): Generator<void, JavaScriptSemanticAnalysisState> {
   const state = createState(program);
   yield* collectDefinitionsSteps(program, state);
+  yield* indexJavaScriptAmbientWritesSteps(program, state);
   return state;
 }
 
 /** Recover semantics from an already parsed JavaScript artifact. */
 export const analyzeParsedJavaScriptSemantics = (
   file: ParsedJavaScriptSource,
-  staticImportResolutionMode: "import" | "require" = "import",
+  staticImportResolutionMode: JavaScriptModuleResolutionMode = "import",
 ): JavaScriptSemanticIr =>
   completeSemanticSteps(
     analyzeParsedJavaScriptSemanticsSteps(file, staticImportResolutionMode),
@@ -148,7 +153,7 @@ export const analyzeParsedJavaScriptSemantics = (
  */
 export function* analyzeParsedJavaScriptSemanticsSteps(
   file: ParsedJavaScriptSource,
-  staticImportResolutionMode: "import" | "require" = "import",
+  staticImportResolutionMode: JavaScriptModuleResolutionMode = "import",
 ): Generator<void, JavaScriptSemanticIr> {
   const state = createState(file.program, staticImportResolutionMode);
   yield* collectDefinitionsSteps(file.program, state);
@@ -195,6 +200,11 @@ export function* analyzeParsedJavaScriptSemanticsSteps(
       ...(parserPartial
         ? [
             "The parser recovered from syntax errors; affected bindings are partial.",
+          ]
+        : []),
+      ...(hasUncertainTypeOnlyModuleSideEffect(file.program)
+        ? [
+            "Compiler options are unavailable; inline type-only imports or re-exports may preserve a module side-effect dependency.",
           ]
         : []),
       "Values and aliases were recovered from inert syntax only; no JavaScript was executed.",
@@ -436,15 +446,18 @@ export function* indexJavaScriptElectronIdentitySteps(
   };
   yield* collectJavaScriptIdentityWritesSteps(
     program,
-    (root, kind) => {
-      if (kind === "opaque-call") return interop.opaqueMutationPath(root);
+    (node, kind) => {
+      if (kind === "opaque-call") return [interop.opaqueMutationPath(node)];
+      const { root, members } = electronMemberPath(node);
       const exported = kind === "binding" ? undefined : rootExport(root);
-      return exported === undefined
-        ? (interop.intrinsicPath(root) ??
+      const path =
+        exported === undefined
+          ? (interop.intrinsicPath(root) ??
             (kind === "member"
               ? interop.boundIntrinsic(root)?.path
               : undefined))
-        : ["electron", ...exported];
+          : ["electron", ...exported];
+      return path === undefined ? [] : [[...path, ...members]];
     },
     interop.intrinsicInvocation,
     interop.staticString,
@@ -527,7 +540,7 @@ const bindingOrigin = (
 
 const createState = (
   program: t.Program,
-  staticImportResolutionMode: "import" | "require" = "import",
+  staticImportResolutionMode: JavaScriptModuleResolutionMode = "import",
 ): JavaScriptSemanticAnalysisState => {
   const root: JavaScriptSemanticScopeState = {
     scopeId: semanticScopeId("program", program),
@@ -550,6 +563,7 @@ const createState = (
     linkedRequireCalls: new WeakSet(),
     moduleLinkBindings: new WeakMap(),
     conditionalInitializers: new WeakSet(),
+    ambientWrites: new SemanticPropertyPathCoverage(),
   };
 };
 
@@ -1004,6 +1018,12 @@ const bindImports = (
       definitionNode: specifier.local,
       initializer: null,
       directOrigin: { specifier: node.source.value, importedPath },
+      runtimeImport:
+        node.importKind !== "type" &&
+        node.importKind !== "typeof" &&
+        (!t.isImportSpecifier(specifier) ||
+          (specifier.importKind !== "type" &&
+            specifier.importKind !== "typeof")),
     });
   }
 };
@@ -1180,6 +1200,7 @@ const addBinding = (input: AddBindingInput): void => {
     definitionNode,
     initializer,
     directOrigin,
+    runtimeImport,
     projection = [],
   } = input;
   let binding = scope.bindings.get(name);
@@ -1196,10 +1217,14 @@ const addBinding = (input: AddBindingInput): void => {
   if (directOrigin !== undefined)
     binding.directOrigins.push(
       directOrigin.resolutionMode === undefined &&
-        state.staticImportResolutionMode === "require"
-        ? { ...directOrigin, resolutionMode: "require" }
+        state.staticImportResolutionMode !== "import"
+        ? {
+            ...directOrigin,
+            resolutionMode: state.staticImportResolutionMode,
+          }
         : directOrigin,
     );
+  binding.runtimeImport ||= runtimeImport === true;
 };
 
 const createBinding = (
@@ -1219,6 +1244,7 @@ const createBinding = (
   initializers: [],
   referenceInitializers: [],
   directOrigins: [],
+  runtimeImport: false,
 });
 
 const addAssignment = (
