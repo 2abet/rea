@@ -405,12 +405,16 @@ describe("keyed archive hierarchy coverage", () => {
       const resources = join(bundle, "Contents", "Resources");
       await mkdir(resources, { recursive: true });
       const archive = join(resources, "Foundation.nib");
-      await compile("/usr/bin/xcrun", [
-        "swift",
-        "tests/conformance/native/keyed-archive-hierarchy.swift",
-        archive,
-        "40",
-      ]);
+      await compile(
+        "/usr/bin/xcrun",
+        [
+          "swift",
+          "tests/conformance/native/keyed-archive-hierarchy.swift",
+          archive,
+          "40",
+        ],
+        { timeout: 90_000 },
+      );
 
       const analysis = await analyzeInterfaceBuilderBundle({
         bundlePath: bundle,
@@ -431,6 +435,7 @@ describe("keyed archive hierarchy coverage", () => {
         ),
       ).toHaveLength(41);
     },
+    120_000,
   );
 });
 
@@ -695,6 +700,49 @@ describe("NIB projection byte amplification", () => {
     expect(Buffer.byteLength(serialized)).toBeLessThan(256 * 1024 * 1024);
   });
 });
+
+cliTest(
+  "compiled CLI preserves distinct NIB keys and class identity",
+  async ({ cli }) => {
+    const root = await createTestTempDirectory("rea-nib-name-identity-");
+    const bundle = join(root, "Example.app");
+    const resources = join(bundle, "Contents", "Resources");
+    await mkdir(resources, { recursive: true });
+    await mkdir(join(bundle, "Contents", "MacOS"), { recursive: true });
+    await writeFile(
+      join(bundle, "Contents", "MacOS", "App"),
+      thinMach(0xfeedfacf, 0x0100000c),
+    );
+    await writeFile(
+      join(bundle, "Contents", "Info.plist"),
+      "<plist><dict><key>CFBundleExecutable</key><string>App</string></dict></plist>",
+    );
+    await writeFile(
+      join(resources, "Identity.nib"),
+      encodeNibArchiveFixture({
+        classes: ["\uFEFFWidget"],
+        objects: [{ classIndex: 0, values: { count: 1, "\uFEFFcount": 2 } }],
+      }),
+    );
+    const output = await cli.run({
+      arguments: ["decode-interface-builder", bundle, "--json"],
+      environment: { REA_LOG_LEVEL: "silent", REA_ANALYSIS_PROVIDER: "auto" },
+    });
+    expect(output.exitCode, output.stderr).toBe(0);
+    const result = interfaceBuilderAnalysisSchema.parse(
+      parseEvidence(output.json).normalized_result,
+    );
+    expect(result.graph.nodes).toContainEqual(
+      expect.objectContaining({
+        attributes: expect.objectContaining({
+          class_name: "\uFEFFWidget",
+          nibValues: { count: 1, "\uFEFFcount": 2 },
+        }),
+      }),
+    );
+    expect(JSON.stringify(result)).toContain("\uFEFFWidget");
+  },
+);
 
 cliTest(
   "compiled CLI preserves a good archive and reports repeated key and data omissions",

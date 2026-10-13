@@ -243,6 +243,10 @@ describe("native IDA provider observations", () => {
         expect(dossier.value.result).toMatchObject({
           callers: [],
           callees: [{ address: "0x2000", name: "puts" }],
+          facet_availability: {
+            callers: { available: false },
+            callees: { available: true },
+          },
         });
         if (more)
           expect(dossier.value.limitations).toContain(
@@ -275,6 +279,11 @@ describe("native IDA provider observations", () => {
       );
       if (!result.ok) throw result.error;
       expect(result.value.provider.name).toBe("IDA MCP adapter");
+      if (operation === "xrefs")
+        expect(
+          result.value.referencesTruncated,
+          "the native producer's explicit cap flag is forwarded",
+        ).toBe(false);
       if (operation === "procedure_assembly")
         expect(result.value.result).toBe("0x1000: ret");
       if (operation === "procedure_pseudo_code") {
