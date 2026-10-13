@@ -187,10 +187,16 @@ def main():
                 if not isinstance(value, dict) or not isinstance(value.get('evidence_id'), str):
                     continue
                 identity = value['evidence_id']
-                entry = (tool, value)
+                normalized = value.get('normalized_result')
+                supported = isinstance(normalized, dict) and isinstance(value.get('limitations'), list)
+                if supported and normalized.get('kind') == 'summary':
+                    supported = isinstance(normalized.get('summary'), dict)
+                elif supported and normalized.get('kind') == 'pcap':
+                    supported = isinstance(normalized.get('page'), dict)
+                entry = (tool, value) if supported else None
                 if identity not in records:
                     records[identity] = entry
-                elif records[identity] != entry:
+                elif json.dumps(records[identity], sort_keys=True) != json.dumps(entry, sort_keys=True):
                     # An ID with conflicting producers or envelopes is ambiguous.
                     records[identity] = None
         observations = answer.get('delivery_observations')
@@ -304,7 +310,7 @@ def main():
                         and selected_page.get('facet') == 'http-uris'
                         and json.dumps(selected_page.get('items'), sort_keys=True) == json.dumps(prefix, sort_keys=True)
                         and page.get('source_coverage') == capture.get('coverage')
-                        and page.get('coverage') == reference['delivery_observations'][-1].get('coverage')
+                        and json.dumps(page.get('coverage'), sort_keys=True) == json.dumps(reference['delivery_observations'][-1].get('coverage'), sort_keys=True)
                         and page.get('artifact') == {key: capture['target'][key] for key in ['path', 'sha256']}
                     )
         else:

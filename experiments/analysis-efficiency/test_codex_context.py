@@ -251,6 +251,39 @@ class PcapGraderWorkflowTests(unittest.TestCase):
                 self.assertFalse(report['factual_checks']['pcap_cited_source_supports_uri_prefix'])
                 self.assertFalse(report['all_factual_checks_pass'])
 
+    def test_cited_coverage_preserves_exact_json_scalar_types(self):
+        for field, wrong in [('exhausted', 0), ('examined', 2.0), ('total', 3.0), ('next_offset', 2.0)]:
+            with self.subTest(field=field):
+                answer, records, reference = self.fixture()
+                records[-1]['normalized_result']['coverage'][field] = wrong
+                answer['delivery_observations'][-1] = self.observation(records[-1])
+                answer['http_request_uris_first2']['coverage'][field] = wrong
+                report = self.grade(answer, records, reference)
+                self.assertTrue(report['factual_checks']['pcap_original_delivery_observations'])
+                self.assertTrue(report['factual_checks']['pcap_prefix_coverage_observed'])
+                self.assertFalse(report['all_factual_checks_pass'])
+
+    def test_malformed_receipt_envelopes_write_failed_facts_instead_of_crashing(self):
+        tools = ['inspect_pcap_capture', 'inspect_analysis_view']
+        for index in [0, 1]:
+            for field, wrong in [('normalized_result', None), ('normalized_result', []),
+                                 ('normalized_result', 'capture'), ('limitations', None),
+                                 ('limitations', {})]:
+                with self.subTest(index=index, field=field, wrong=wrong):
+                    answer, records, reference = self.fixture();records[index][field] = wrong
+                    report = self.grade(answer, records, reference, tools)
+                    self.assertTrue(report['factual_checks']['capture'])
+                    self.assertFalse(report['all_factual_checks_pass'])
+            for field in ['normalized_result', 'limitations']:
+                with self.subTest(index=index, missing=field):
+                    answer, records, reference = self.fixture();records[index].pop(field)
+                    self.assertFalse(self.grade(answer, records, reference, tools)['all_factual_checks_pass'])
+        for index, field in [(0, 'summary'), (1, 'page')]:
+            for wrong in [None, [], 'view']:
+                with self.subTest(index=index, nested=field, wrong=wrong):
+                    answer, records, reference = self.fixture();records[index]['normalized_result'][field] = wrong
+                    self.assertFalse(self.grade(answer, records, reference, tools)['all_factual_checks_pass'])
+
     def test_retained_parents_require_declared_distinct_evidence_links(self):
         for index in [0, 1]:
             for links in [None, [], ['ev_' + 'f' * 64], {'parent': 'ev_' + 'a' * 64}]:
@@ -293,6 +326,9 @@ class PcapGraderWorkflowTests(unittest.TestCase):
                 tools = ['unrelated_tool', 'inspect_pcap_capture', 'inspect_analysis_view'] if duplicate_first else \
                         ['inspect_pcap_capture', 'inspect_analysis_view', 'unrelated_tool']
                 self.assertFalse(self.grade(answer, items, reference, tools)['all_factual_checks_pass'])
+        duplicate = copy.deepcopy(records[-1]);duplicate['normalized_result']['coverage']['exhausted'] = 0
+        for items in [[*records, duplicate], [records[0], duplicate, records[-1]]]:
+            self.assertFalse(self.grade(answer, items, reference)['all_factual_checks_pass'])
 
     def test_reported_ids_are_only_the_ordered_unique_response_receipts(self):
         answer, records, reference = self.fixture()
