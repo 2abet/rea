@@ -246,6 +246,16 @@ def main():
                 and record['subject'].get('local_path') == reference['capture']['target']['path']
                 for record in cited
             )
+            checks['pcap_cited_parents_linked'] = bool(cited) and all(isinstance(record, dict) for record in cited) and (
+                len(cited) == 1 or (len(cited) == 2 and all(
+                    isinstance(record['normalized_result'].get('parent_evidence_id'), str)
+                    and re.fullmatch(r'ev_[a-f0-9]{64}', record['normalized_result']['parent_evidence_id'])
+                    and record['normalized_result']['parent_evidence_id'] != record['evidence_id']
+                    and isinstance(record.get('evidence_links'), list)
+                    and record['normalized_result']['parent_evidence_id'] in record['evidence_links']
+                    for record in cited
+                ))
+            )
             checks['pcap_cited_source_supports_uri_prefix'] = False
             checks['pcap_cited_capture'] = False
             if all(isinstance(record, dict) for record in cited):
@@ -285,6 +295,7 @@ def main():
             checks['pcap_cited_source_supports_uri_prefix'] = False
             checks['pcap_cited_capture'] = False
             checks['pcap_cited_subjects_match_artifact'] = False
+            checks['pcap_cited_parents_linked'] = False
     elif domain == 'flutter-aot':
         for key in ['target', 'abi', 'libapp', 'string_pool', 'coverage', 'limitations']:
             check(key, answer.get(key), reference[key])

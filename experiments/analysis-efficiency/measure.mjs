@@ -525,6 +525,27 @@ const inspectEvmTarget = async () => {
 
 const pcapObservation = (evidence) => {
   const value = normalized(evidence);
+  const target =
+    value.kind === "summary"
+      ? value.summary?.target
+      : value.kind === "pcap"
+        ? value.artifact
+        : value.target;
+  if (
+    evidence.subject?.digest?.sha256 !== inputSha ||
+    evidence.subject?.local_path !== values.path ||
+    target?.sha256 !== inputSha ||
+    target?.path !== values.path
+  )
+    throw new Error("PCAP Evidence does not identify the selected capture");
+  if (
+    values.delivery === "summary" &&
+    (typeof value.parent_evidence_id !== "string" ||
+      value.parent_evidence_id === evidence.evidence_id ||
+      !Array.isArray(evidence.evidence_links) ||
+      !evidence.evidence_links.includes(value.parent_evidence_id))
+  )
+    throw new Error("PCAP retained parent lacks a distinct Evidence link");
   return {
     evidence_id: evidence.evidence_id,
     limitations: evidence.limitations,
@@ -588,9 +609,7 @@ const inspectPcapTarget = async () => {
       !isDeepStrictEqual(page.view, view) ||
       page.page.facet !== "http-uris" ||
       page.source_coverage !== capture.coverage ||
-      !isDeepStrictEqual(page.coverage, expectedCoverage) ||
-      page.artifact.path !== capture.target.path ||
-      page.artifact.sha256 !== capture.target.sha256
+      !isDeepStrictEqual(page.coverage, expectedCoverage)
     )
       throw new Error(
         "PCAP page identity, scope or coverage differs from its parent",

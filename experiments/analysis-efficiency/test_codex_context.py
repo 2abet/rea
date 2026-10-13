@@ -82,12 +82,14 @@ class PcapGraderWorkflowTests(unittest.TestCase):
         prefix = ['http://example.test/one', 'http://example.test/two']
         coverage = {'status': 'page', 'examined': 2, 'total': 3, 'next_offset': 2, 'exhausted': False}
         subject = {'digest': {'sha256': capture['target']['sha256']}, 'local_path': capture['target']['path']}
-        summary = {'evidence_id': summary_id, 'subject': copy.deepcopy(subject), 'limitations': ['source', 'view'],
+        summary = {'evidence_id': summary_id, 'subject': copy.deepcopy(subject), 'evidence_links': [parent],
+                   'limitations': ['source', 'view'],
                    'normalized_result': {'kind': 'summary', 'view': {'kind': 'summary'},
                        'parent_operation': 'inspect_pcap_capture', 'parent_evidence_id': parent,
                        'summary': capture, 'coverage': {'status': 'complete-within-view', 'examined': 1, 'total': 1, 'next_offset': None, 'exhausted': True},
                        'limitations': ['source', 'view'], 'unknowns': ['unrecorded traffic']}}
-        page = {'evidence_id': page_id, 'subject': copy.deepcopy(subject), 'limitations': ['source', 'view'],
+        page = {'evidence_id': page_id, 'subject': copy.deepcopy(subject), 'evidence_links': [parent],
+                'limitations': ['source', 'view'],
                 'normalized_result': {'kind': 'pcap',
                     'view': {'kind': 'pcap', 'facet': 'http-uris', 'offset': 0, 'limit': 2},
                     'parent_operation': 'inspect_pcap_capture', 'parent_evidence_id': parent,
@@ -185,7 +187,7 @@ class PcapGraderWorkflowTests(unittest.TestCase):
         source.update({key: [] for key in capture['retained_counts']})
         source['http_request_uris'] = reference['http_request_uris_first2'] + ['http://example.test/three']
         source['diagnostics'] = {'tshark_stderr': '', 'capinfos_stderr': '\U0001f4a5'}
-        receipt = {'evidence_id': 'ev_' + 'a' * 64, 'subject': copy.deepcopy(records[0]['subject']),
+        receipt = {'evidence_id': 'ev_' + 'a' * 64, 'subject': copy.deepcopy(records[0]['subject']), 'evidence_links': [],
                    'limitations': ['source'], 'normalized_result': source}
         reference['delivery_observations'] = [{'evidence_id': receipt['evidence_id'],
                                               'limitations': receipt['limitations'], 'coverage': source['coverage']}]
@@ -241,6 +243,26 @@ class PcapGraderWorkflowTests(unittest.TestCase):
                 self.assertTrue(report['factual_checks']['pcap_prefix_coverage_observed'])
                 self.assertFalse(report['factual_checks']['pcap_cited_source_supports_uri_prefix'])
                 self.assertFalse(report['all_factual_checks_pass'])
+
+    def test_retained_parents_require_declared_distinct_evidence_links(self):
+        for index in [0, 1]:
+            for links in [None, [], ['ev_' + 'f' * 64], {'parent': 'ev_' + 'a' * 64}]:
+                with self.subTest(index=index, links=links):
+                    answer, records, reference = self.fixture();records[index]['evidence_links'] = links
+                    report = self.grade(answer, records, reference)
+                    self.assertTrue(report['factual_checks']['pcap_original_delivery_observations'])
+                    self.assertFalse(report['factual_checks']['pcap_cited_parents_linked'])
+                    self.assertFalse(report['all_factual_checks_pass'])
+            answer, records, reference = self.fixture();records[index].pop('evidence_links')
+            self.assertFalse(self.grade(answer, records, reference)['all_factual_checks_pass'])
+            answer, records, reference = self.fixture()
+            parent = records[index]['evidence_id']
+            for record in records:
+                record['normalized_result']['parent_evidence_id'] = parent;record['evidence_links'] = [parent]
+            answer['delivery_observations'] = [self.observation(record) for record in records]
+            report = self.grade(answer, records, reference)
+            self.assertFalse(report['factual_checks']['pcap_cited_parents_linked'])
+            self.assertFalse(report['all_factual_checks_pass'])
 
     def test_reported_ids_are_only_the_ordered_unique_response_receipts(self):
         answer, records, reference = self.fixture()
