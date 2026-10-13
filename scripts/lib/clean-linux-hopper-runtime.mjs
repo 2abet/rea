@@ -17,8 +17,9 @@ export const assertCleanLinuxHopperRuntime = async (
       : [process.env.HOPPER_LAUNCHER_PATH]),
   ],
   procRoot = "/proc",
+  listProcesses = () => execFileAsync("ps", ["-ax", "-o", "command="]),
 ) => {
-  const { stdout } = await execFileAsync("ps", ["-ax", "-o", "command="]);
+  const { stdout } = await listProcesses();
   if (/\/opt\/hopper\/bin\/Hopper|\bXvfb\b|hopper-demo-x11\.py/u.test(stdout))
     throw new Error("Clean Linux runner retained a Hopper demo process");
   const launchers = [];
