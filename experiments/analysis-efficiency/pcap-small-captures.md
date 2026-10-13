@@ -126,7 +126,9 @@ validated.
 Both real CLI complete results match full MCP normalized results, subjects,
 parameters, IDs and limitations. Portable CLI summary/URI views match MCP retained
 normalized facts and subjects; source forms/caller parameters remain distinct.
-Source bytes stay unchanged. Twelve context/grading regressions pass. Five real-answer
+Source bytes stay unchanged. Fourteen context/grading regressions pass, including
+cited complete metadata/counts/UTF-16 diagnostics and exact ordered response ID
+lists that reject parent lookups, duplicates and nested representations. Five real-answer
 mutations—omitted null, false page exhaustion, contradictory source scope,
 unsupported absence claim and non-string receipt identity—fail correctly.
 Malformed identities produce failed facts rather than crashing the grader.

@@ -86,6 +86,25 @@ def pcap_observation_fields(value):
     return result
 
 
+def pcap_complete_capture(value):
+    """Project the selected metadata/counts from the cited complete receipt."""
+    inventories = ['endpoints', 'dns_queries', 'tls_sni_values', 'protocol_distribution',
+                   'http_request_uris', 'unattributed_dns_addresses']
+    if not isinstance(value, dict) or not all(isinstance(value.get(key), list) for key in inventories):
+        return None
+    capture = {key: item for key, item in value.items() if key not in inventories + ['diagnostics']}
+    capture['retained_counts'] = {key: len(value[key]) for key in inventories}
+    diagnostics = value.get('diagnostics')
+    if 'diagnostics' not in value:
+        capture['diagnostics_code_units'] = None
+    elif isinstance(diagnostics, dict) and all(isinstance(diagnostics.get(key + '_stderr'), str) for key in ['tshark', 'capinfos']):
+        capture['diagnostics_code_units'] = {key: len(diagnostics[key + '_stderr'].encode('utf-16-le', errors='surrogatepass')) // 2
+                                             for key in ['tshark', 'capinfos']}
+    else:
+        return None
+    return capture
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--domain', choices=['wasm', 'evm', 'android', 'flutter-aot', 'sqlite', 'pcap', 'managed', 'managed-nonempty', 'firmware', 'inventory', 'javascript', 'native', 'browser'], required=True)
@@ -206,12 +225,20 @@ def main():
             check('pcap_requested_views', [x.get('view') for x in canonical_observations],
                   [x.get('view') for x in reference['delivery_observations']])
             identities = [x.get('evidence_id') for x in canonical_observations]
-            checks['pcap_observations_have_reported_ids'] = all(isinstance(value, str) for value in identities) and set(identities) <= reported_ids
+            checks['pcap_observations_have_reported_ids'] = (
+                isinstance(answer.get('evidence_ids'), list)
+                and answer['evidence_ids'] == identities
+                and all(isinstance(value, str) and re.fullmatch(r'ev_[a-f0-9]{64}', value) for value in identities)
+                and len(set(identities)) == len(identities)
+            )
             cited = [records.get(identity) if isinstance(identity, str) else None for identity in identities]
             checks['pcap_cited_source_supports_uri_prefix'] = False
+            checks['pcap_cited_capture'] = False
             if all(isinstance(record, dict) for record in cited):
                 if len(cited) == 1:
                     source = cited[0]['normalized_result']
+                    check('pcap_cited_capture', json.dumps(answer.get('capture'), sort_keys=True),
+                          json.dumps(pcap_complete_capture(source), sort_keys=True))
                     checks['pcap_cited_source_supports_uri_prefix'] = (
                         source.get('target') == reference['capture']['target']
                         and isinstance(source.get('http_request_uris'), list)
@@ -220,6 +247,8 @@ def main():
                 elif len(cited) == 2:
                     source, page = [record['normalized_result'] for record in cited]
                     capture = source.get('summary', {})
+                    check('pcap_cited_capture', json.dumps(answer.get('capture'), sort_keys=True),
+                          json.dumps(capture, sort_keys=True))
                     selected_page = page.get('page', {})
                     checks['pcap_cited_source_supports_uri_prefix'] = (
                         source.get('kind') == 'summary'
@@ -239,6 +268,7 @@ def main():
             checks['pcap_observations_have_reported_ids'] = False
             checks['pcap_requested_views'] = False
             checks['pcap_cited_source_supports_uri_prefix'] = False
+            checks['pcap_cited_capture'] = False
     elif domain == 'flutter-aot':
         for key in ['target', 'abi', 'libapp', 'string_pool', 'coverage', 'limitations']:
             check(key, answer.get(key), reference[key])

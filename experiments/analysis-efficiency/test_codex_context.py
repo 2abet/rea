@@ -117,7 +117,7 @@ class PcapGraderWorkflowTests(unittest.TestCase):
                 (trial / name).write_text(json.dumps(value))
             (trial / 'answer.txt').write_text(json.dumps(answer))
             events = [{'type': 'item.completed', 'item': {'type': 'mcp_tool_call',
-                       'tool': 'inspect_pcap_capture' if value['normalized_result']['kind'] == 'summary' else 'inspect_analysis_view',
+                       'tool': 'inspect_analysis_view' if value['normalized_result'].get('kind') == 'pcap' else 'inspect_pcap_capture',
                        'status': 'completed', 'result': {'structuredContent': value}}} for value in records]
             (trial / 'events.jsonl').write_text(''.join(json.dumps(value) + '\n' for value in events))
             source = root / 'reference';source.mkdir();(source / 'answer.json').write_text(json.dumps(reference))
@@ -170,6 +170,53 @@ class PcapGraderWorkflowTests(unittest.TestCase):
                 report = self.grade(answer, records, reference)
                 self.assertTrue(report['factual_checks']['pcap_original_delivery_observations'])
                 self.assertFalse(report['factual_checks']['pcap_cited_source_supports_uri_prefix'])
+                self.assertFalse(report['all_factual_checks_pass'])
+
+    def test_complete_receipt_metadata_counts_and_diagnostics_support_reported_capture(self):
+        answer, records, reference = self.fixture()
+        capture = reference['capture']
+        capture.update({'packet_count': 3, 'client': {'name': 'fixture', 'version': '1'},
+                        'retained_counts': {key: 0 for key in ['endpoints', 'dns_queries', 'tls_sni_values',
+                                            'protocol_distribution', 'http_request_uris', 'unattributed_dns_addresses']},
+                        'diagnostics_code_units': {'tshark': 0, 'capinfos': 2}})
+        capture['retained_counts']['http_request_uris'] = 3
+        source = {key: value for key, value in capture.items() if key not in ['retained_counts', 'diagnostics_code_units']}
+        source.update({key: [] for key in capture['retained_counts']})
+        source['http_request_uris'] = reference['http_request_uris_first2'] + ['http://example.test/three']
+        source['diagnostics'] = {'tshark_stderr': '', 'capinfos_stderr': '\U0001f4a5'}
+        receipt = {'evidence_id': 'ev_' + 'a' * 64, 'limitations': ['source'], 'normalized_result': source}
+        reference['delivery_observations'] = [{'evidence_id': receipt['evidence_id'],
+                                              'limitations': receipt['limitations'], 'coverage': source['coverage']}]
+        answer = copy.deepcopy({**reference, 'evidence_ids': [receipt['evidence_id']]})
+        self.assertTrue(self.grade(answer, [receipt], reference)['all_factual_checks_pass'])
+        mutations = [lambda x: x.__setitem__('packet_count', 4),
+                     lambda x: x['client'].__setitem__('version', '2'),
+                     lambda x: x.__setitem__('capture_start', 'changed'),
+                     lambda x: x.__setitem__('coverage', 'partial'),
+                     lambda x: x['endpoints'].append({'address': '127.0.0.1'}),
+                     lambda x: x['diagnostics'].__setitem__('capinfos_stderr', '')]
+        for mutate in mutations:
+            changed = copy.deepcopy(receipt);mutate(changed['normalized_result'])
+            report = self.grade(answer, [changed], reference)
+            self.assertTrue(report['factual_checks']['capture'])
+            self.assertFalse(report['factual_checks']['pcap_cited_capture'])
+            self.assertFalse(report['all_factual_checks_pass'])
+        receipt['normalized_result'].pop('diagnostics')
+        reference['capture']['diagnostics_code_units'] = None
+        answer['capture']['diagnostics_code_units'] = None
+        self.assertTrue(self.grade(answer, [receipt], reference)['all_factual_checks_pass'])
+
+    def test_reported_ids_are_only_the_ordered_unique_response_receipts(self):
+        answer, records, reference = self.fixture()
+        original = answer['evidence_ids']
+        parent = records[0]['normalized_result']['parent_evidence_id']
+        for ids in [original + [parent], original + [original[-1]], original[::-1],
+                    [parent, *original], [original], {'receipts': original},
+                    [*original, {'extra': parent}], original + ['not-an-id']]:
+            with self.subTest(ids=ids):
+                changed = copy.deepcopy(answer);changed['evidence_ids'] = ids
+                report = self.grade(changed, records, reference)
+                self.assertFalse(report['factual_checks']['pcap_observations_have_reported_ids'])
                 self.assertFalse(report['all_factual_checks_pass'])
 
 
