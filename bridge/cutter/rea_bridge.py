@@ -396,13 +396,21 @@ class _RequestDispatcher(QObject):
             request["_event"].set()
             return
         if request.get("expected_generation") != self.generation:
-            reply.update({"ok": False, "error": "active-document-generation-changed"})
+            reply.update({
+                "ok": False,
+                "error": "active-document-generation-changed",
+                "execution_state": "not_started",
+            })
             self._record_command_completion(request_id, "not_started")
             request["_event"].set()
             return
         command = request.get("command")
         if not isinstance(command, str) or not command.strip():
-            reply.update({"ok": False, "error": "invalid-command"})
+            reply.update({
+                "ok": False,
+                "error": "invalid-command",
+                "execution_state": "not_started",
+            })
             self._record_command_completion(request_id, "not_started")
             request["_event"].set()
             return

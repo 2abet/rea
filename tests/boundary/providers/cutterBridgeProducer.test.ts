@@ -89,6 +89,17 @@ it("round-trips authenticated status and command bytes across the Python produce
     expect(session.document_generation).toBe(4);
     expect(session.current_file).toBe("/tmp/cutter-interop-雪.bin");
 
+    for (let index = 0; index <= 64; index += 1) {
+      await expect(
+        client.execute({
+          sessionId: session.session_id,
+          expectedGeneration: 3,
+          command: "iI",
+          json: false,
+        }),
+      ).rejects.toThrow("List sessions again");
+    }
+
     const result = await client.execute({
       sessionId: session.session_id,
       expectedGeneration: session.document_generation,

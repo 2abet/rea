@@ -12,6 +12,7 @@ import threading
 import time
 import types
 import unittest
+import uuid
 from pathlib import Path
 
 
@@ -136,6 +137,13 @@ class ServeDispatcher:
                 "ok": True,
                 "acknowledged": self.completed_commands.pop(request["request_id"], None) is not None,
             })
+        elif request.get("kind") == "command" and request.get("expected_generation") != self.generation:
+            reply.update({
+                "ok": False,
+                "error": "active-document-generation-changed",
+                "execution_state": "not_started",
+            })
+            self.completed_commands[request["request_id"]] = "not_started"
         else:
             reply.update({
                 "ok": True,
@@ -267,6 +275,51 @@ class ProtocolProducerTest(unittest.TestCase):
             [receipt["request_id"] for receipt in after_ack["completed_commands"]],
             [request_b],
         )
+
+    def test_stale_generation_rejections_are_terminal_and_acknowledged(self):
+        dispatcher = object.__new__(bridge._RequestDispatcher)
+        dispatcher.generation = 4
+        dispatcher.current_file = "/tmp/sample.bin"
+        dispatcher.cutter_version = "test"
+        dispatcher.completed_commands = {}
+        dispatcher._receipt_lock = threading.Lock()
+        dispatcher._refresh_document_identity = lambda: None
+
+        def handle(value):
+            request = {
+                **value,
+                "_event": threading.Event(),
+                "_cancelled": threading.Event(),
+            }
+            reply = {}
+            bridge._RequestDispatcher._handle(dispatcher, request, reply)
+            self.assertTrue(request["_event"].is_set())
+            return reply
+
+        invalid_id = str(uuid.UUID(int=bridge.MAX_COMPLETION_RECEIPTS + 10))
+        invalid = handle({
+            "kind": "command",
+            "request_id": invalid_id,
+            "expected_generation": 4,
+            "command": "",
+        })
+        self.assertEqual(invalid["execution_state"], "not_started")
+        self.assertTrue(handle({"kind": "ack", "request_id": invalid_id})["acknowledged"])
+
+        for index in range(bridge.MAX_COMPLETION_RECEIPTS + 1):
+            request_id = str(uuid.UUID(int=index + 1))
+            response = handle({
+                "kind": "command",
+                "request_id": request_id,
+                "expected_generation": 3,
+                "command": "iI",
+            })
+            self.assertEqual(response["execution_state"], "not_started")
+            self.assertEqual(response["error"], "active-document-generation-changed")
+            self.assertTrue(handle({"kind": "ack", "request_id": request_id})["acknowledged"])
+
+        self.assertEqual(dispatcher.completed_commands, {})
+        self.assertTrue(dispatcher.can_accept_command())
 
     def test_poisoned_rejection_is_definitively_not_started_without_dispatch(self):
         self.server.poisoned = True
