@@ -16,6 +16,7 @@ const gdbCommandResult = z.strictObject({
   process_exit_code: z.number().int().nullable().optional(),
   process_exit_signal: z.string().nullable().optional(),
   output_truncated: z.boolean(),
+  output_invalid_utf8: z.literal(true).optional(),
   completion_status: z.enum(["complete", "unknown"]),
 });
 

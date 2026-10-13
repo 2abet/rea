@@ -88,6 +88,7 @@ export class ReverseEngineeringService {
     {
       readonly observation: AnalysisCleanupObservation;
       readonly failures: Set<AnalysisError>;
+      readonly retryFailure?: AnalysisError;
     }
   >();
   readonly #activeOperations = new Map<
@@ -134,17 +135,21 @@ export class ReverseEngineeringService {
           reason: stopped.reason,
           resources: retained.observation.resources,
         };
-        this.#pendingCleanup.set(owner, {
-          observation,
-          failures: retained.failures,
-        });
-        if (failure === undefined) {
-          failure = new AnalysisOutputError(
+        let retryFailure = retained.retryFailure;
+        if (retryFailure === undefined) {
+          retryFailure = new AnalysisOutputError(
             operation,
             "A previous provider process still requires cleanup.",
             { cleanup: observation },
           );
+          retained.failures.add(retryFailure);
         }
+        this.#pendingCleanup.set(owner, {
+          observation,
+          failures: retained.failures,
+          retryFailure,
+        });
+        if (failure === undefined) failure = retryFailure;
       } else {
         for (const previous of retained.failures) previous.resolveCleanup();
         this.#pendingCleanup.delete(owner);

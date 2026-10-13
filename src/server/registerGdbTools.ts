@@ -127,9 +127,13 @@ export const registerGdbTools = (
   server.registerTool(
     close.name,
     toolRegistrationOptions(close),
-    async (input) => {
-      const result = await logToolExecution(logger, close.name, () =>
-        manager.close(input.session_id),
+    async (input, context: ServerContext) => {
+      const result = await runWithExternalMutationAdmission(
+        session,
+        close.name,
+        context.mcpReq.signal,
+        () => logToolExecution(logger, close.name, () => manager.close(input.session_id)),
+        undefined,
       );
       return result.ok
         ? delivery.toCallToolResult({ ok: true, value: result.value }, close)

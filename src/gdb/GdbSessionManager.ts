@@ -1,4 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { constants as fsConstants } from "node:fs";
+import { isUtf8 } from "node:buffer";
+import { readFile, readlink, realpath, stat } from "node:fs/promises";
 
 import {
   AnalysisCapabilityUnavailableError,
@@ -21,6 +24,7 @@ import {
   stopOwnedDebuggerProcess,
   type OwnedDebuggerDetachResult,
 } from "../process/ownedDebuggerSession.js";
+import { parseLinuxProcessStartTime } from "../process/ProcessOwnershipObservation.js";
 
 const STARTUP_TIMEOUT_MS = 10_000;
 const COMMAND_TIMEOUT_MS = 120_000;
@@ -46,6 +50,7 @@ interface PendingCommand {
   readonly lines: string[];
   outputBytes: number;
   outputTruncated: boolean;
+  outputInvalidUtf8: boolean;
   readonly resolve: (result: GdbCommandResult) => void;
   readonly reject: (error: Error) => void;
   readonly cleanup: () => void;
@@ -64,6 +69,7 @@ export interface GdbCommandResult {
   readonly process_exit_signal?: NodeJS.Signals | null;
   readonly output_truncated: boolean;
   readonly completion_status: "complete" | "unknown";
+  readonly output_invalid_utf8?: true;
 }
 
 class GdbCommandTimeoutError extends AnalysisTimeoutError {
@@ -91,8 +97,10 @@ const truncateUtf8RecordPrefix = (line: string): string => {
   return `${prefix}${RECENT_RECORD_TRUNCATION_MARKER}`;
 };
 
-/** @internal Pure parser for recursive GDB MI thread-group responses. */
-export const gdbThreadGroupCount = (mi: string): number | undefined => {
+/** @internal Pure parser for live PIDs in recursive GDB MI thread groups. */
+export const gdbThreadGroupPids = (
+  mi: string,
+): readonly string[] | undefined => {
   const marker = mi.indexOf("groups=[");
   if (marker < 0) return undefined;
   const start = marker + "groups=[".length;
@@ -100,10 +108,11 @@ export const gdbThreadGroupCount = (mi: string): number | undefined => {
   let objectDepth = 0;
   let quoted = false;
   let escaped = false;
-  let count = 0;
+  const pids: string[] = [];
   let fieldStart = start;
   let pidStart: number | undefined;
   let hasLivePid = false;
+  let currentPid: string | undefined;
   for (let index = start; index < mi.length; index += 1) {
     const character = mi[index];
     if (quoted) {
@@ -112,8 +121,10 @@ export const gdbThreadGroupCount = (mi: string): number | undefined => {
       else if (character === '"') {
         quoted = false;
         if (pidStart !== undefined) {
-          if (!/^[1-9]\d*$/u.test(mi.slice(pidStart, index))) return undefined;
+          const pid = mi.slice(pidStart, index);
+          if (!/^[1-9]\d*$/u.test(pid)) return undefined;
           hasLivePid = true;
+          currentPid = pid;
           pidStart = undefined;
         }
       }
@@ -138,11 +149,12 @@ export const gdbThreadGroupCount = (mi: string): number | undefined => {
         if (objectDepth !== 0) return undefined;
         const body = mi.slice(start, index);
         if (body.includes("groups=[")) return undefined;
-        return count;
+        return pids;
       }
     } else if (character === "{") {
       if (squareDepth === 1 && objectDepth === 0) {
         hasLivePid = false;
+        currentPid = undefined;
         fieldStart = index + 1;
       }
       objectDepth += 1;
@@ -154,7 +166,10 @@ export const gdbThreadGroupCount = (mi: string): number | undefined => {
       }
       objectDepth -= 1;
       if (objectDepth < 0) return undefined;
-      if (squareDepth === 1 && objectDepth === 0 && hasLivePid) count += 1;
+      if (squareDepth === 1 && objectDepth === 0 && hasLivePid) {
+        if (currentPid === undefined) return undefined;
+        pids.push(currentPid);
+      }
     } else if (character === "," && squareDepth === 1 && objectDepth === 1) {
       const field = mi.slice(fieldStart, index);
       if (field.startsWith("pid=") && !/^pid="[1-9]\d*"$/u.test(field))
@@ -163,6 +178,47 @@ export const gdbThreadGroupCount = (mi: string): number | undefined => {
     }
   }
   return undefined;
+};
+
+/** @internal Pure count of recursive GDB MI groups with live PIDs. */
+export const gdbThreadGroupCount = (mi: string): number | undefined => {
+  const pids = gdbThreadGroupPids(mi);
+  return pids?.length;
+};
+
+const verifyGdbInferiorOutputSink = async (
+  pid: string,
+  selectedTty: string,
+): Promise<void> => {
+  if (process.platform !== "linux")
+    throw new Error(
+      "GDB cannot confirm live inferior output descriptors outside Linux /proc.",
+    );
+  const statPath = `/proc/${pid}/stat`;
+  const before = parseLinuxProcessStartTime(await readFile(statPath, "utf8"));
+  if (before === undefined)
+    throw new Error("GDB could not establish the live inferior identity.");
+  const ttyPath = await realpath(selectedTty);
+  const tty = await stat(ttyPath);
+  if ((tty.mode & fsConstants.S_IFMT) !== fsConstants.S_IFCHR)
+    throw new Error("The selected GDB output sink is not a character device.");
+  for (const descriptor of ["1", "2"]) {
+    const descriptorPath = `/proc/${pid}/fd/${descriptor}`;
+    const destination = await readlink(descriptorPath);
+    const observed = await stat(descriptorPath);
+    if (
+      observed.dev !== tty.dev ||
+      observed.ino !== tty.ino ||
+      (observed.mode & fsConstants.S_IFMT) !== fsConstants.S_IFCHR ||
+      (await realpath(destination)) !== ttyPath
+    )
+      throw new Error(
+        `GDB inferior descriptor ${descriptor} no longer points to the selected TTY.`,
+      );
+  }
+  const after = parseLinuxProcessStartTime(await readFile(statPath, "utf8"));
+  if (after !== before)
+    throw new Error("The GDB inferior identity changed during descriptor readback.");
 };
 
 class GdbCommandProcessExitError extends Error {
@@ -203,8 +259,9 @@ interface GdbSession {
   readonly pending: Map<number, PendingCommand>;
   readonly cleanupFailures: Set<AnalysisError>;
   readonly lines: string[];
-  readonly bufferChunks: string[];
+  readonly bufferChunks: Buffer[];
   bufferBytes: number;
+  invalidUtf8Observed: boolean;
   promptTail: string;
   ready: boolean;
   exited: boolean;
@@ -445,6 +502,7 @@ export class GdbSessionManager {
       lines: [],
       bufferChunks: [],
       bufferBytes: 0,
+      invalidUtf8Observed: false,
       promptTail: "",
       ready: false,
       exited: false,
@@ -458,9 +516,11 @@ export class GdbSessionManager {
       protocolError: undefined,
       recentRecordsTruncated: false,
     };
-    launched.process.stdout?.setEncoding("utf8");
     launched.process.stdout?.on("data", (chunk: string | Buffer) =>
-      this.#receive(session, String(chunk)),
+      this.#receive(
+        session,
+        typeof chunk === "string" ? Buffer.from(chunk, "utf8") : chunk,
+      ),
     );
     if (launched.process.stdout === null) settleStdout();
     else launched.process.stdout.once("end", settleStdout);
@@ -793,6 +853,9 @@ export class GdbSessionManager {
                   target: result.target,
                   log: result.log,
                   output_truncated: result.output_truncated,
+                  ...(result.output_invalid_utf8
+                    ? { output_invalid_utf8: true as const }
+                    : {}),
                   completion_status: result.completion_status,
                 },
                 rawResult: {
@@ -803,12 +866,20 @@ export class GdbSessionManager {
                   target: result.target,
                   log: result.log,
                   output_truncated: result.output_truncated,
+                  ...(result.output_invalid_utf8
+                    ? { output_invalid_utf8: true as const }
+                    : {}),
                   completion_status: result.completion_status,
                 },
                 subjectUnavailableReason:
                   "The active GDB inferior identity is not established by the debugger session identifier.",
                 limitations: [
-                  "MI records are preserved raw; their semantics depend on GDB version and target.",
+                  "MI records are returned as decoded text; their semantics depend on GDB version and target.",
+                  ...(result.output_invalid_utf8
+                    ? [
+                        "MI stream bytes were not valid UTF-8; returned text contains replacement characters.",
+                      ]
+                    : []),
                   "The unrestricted GDB console can access local shell, filesystem, network, and target controls.",
                 ],
               },
@@ -1092,9 +1163,9 @@ export class GdbSessionManager {
     }
   }
 
-  #receive(session: GdbSession, data: string): void {
+  #receive(session: GdbSession, data: Buffer): void {
     if (session.startupResolve !== undefined) {
-      const prompt = session.promptTail + data;
+      const prompt = session.promptTail + data.toString("utf8");
       if (prompt.includes("(gdb)")) {
         const resolve = session.startupResolve;
         session.startupResolve = undefined;
@@ -1102,14 +1173,15 @@ export class GdbSessionManager {
       }
       session.promptTail = prompt.slice(-4);
     }
-    const lines: string[] = [];
+    const lines: { readonly value: string; readonly invalidUtf8: boolean }[] = [];
     let offset = 0;
-    while (offset < data.length) {
-      const newline = data.indexOf("\n", offset);
-      const piece = data.slice(offset, newline < 0 ? data.length : newline);
-      session.bufferBytes += Buffer.byteLength(piece, "utf8");
+    while (offset < data.byteLength) {
+      const newline = data.indexOf(0x0a, offset);
+      const piece = data.subarray(offset, newline < 0 ? data.byteLength : newline);
+      session.bufferBytes += piece.byteLength;
       const lineBytes =
-        session.bufferBytes - (newline >= 0 && piece.endsWith("\r") ? 1 : 0);
+        session.bufferBytes -
+        (newline >= 0 && piece.at(-1) === 0x0d ? 1 : 0);
       if (lineBytes > MAX_MI_LINE_BYTES) {
         this.#failProtocol(
           session,
@@ -1117,16 +1189,20 @@ export class GdbSessionManager {
         );
         return;
       }
-      if (piece.length > 0) session.bufferChunks.push(piece);
+      if (piece.byteLength > 0) session.bufferChunks.push(Buffer.from(piece));
       if (newline < 0) break;
-      const record = session.bufferChunks.join("");
-      const line = record.endsWith("\r") ? record.slice(0, -1) : record;
+      const record = Buffer.concat(session.bufferChunks, session.bufferBytes);
+      const withoutCarriageReturn =
+        record.at(-1) === 0x0d ? record.subarray(0, -1) : record;
+      const invalidUtf8 = !isUtf8(withoutCarriageReturn);
+      const line = withoutCarriageReturn.toString("utf8");
       session.bufferChunks.length = 0;
       session.bufferBytes = 0;
-      if (line.length > 0) lines.push(line);
+      if (invalidUtf8) session.invalidUtf8Observed = true;
+      if (line.length > 0) lines.push({ value: line, invalidUtf8 });
       offset = newline + 1;
     }
-    for (const line of lines) {
+    for (const { value: line } of lines) {
       if (Buffer.byteLength(line, "utf8") > MAX_RECENT_MI_LINE_BYTES) {
         session.lines.push(truncateUtf8RecordPrefix(line));
         session.recentRecordsTruncated = true;
@@ -1136,7 +1212,7 @@ export class GdbSessionManager {
       session.lines.splice(0, session.lines.length - 256);
       session.recentRecordsTruncated = true;
     }
-    for (const line of lines) {
+    for (const { value: line, invalidUtf8 } of lines) {
       for (const pending of session.pending.values()) {
         const lineBytes = Buffer.byteLength(line, "utf8") + 1;
         if (
@@ -1146,6 +1222,7 @@ export class GdbSessionManager {
         ) {
           pending.lines.push(line);
           pending.outputBytes += lineBytes;
+          pending.outputInvalidUtf8 ||= invalidUtf8;
         } else pending.outputTruncated = true;
       }
       const match = /^(\d+)\^(done|running|connected|error|exit)(?:,|$)/u.exec(
@@ -1167,6 +1244,7 @@ export class GdbSessionManager {
         target: records.filter((record) => record.startsWith("@")).join("\n"),
         log: records.filter((record) => record.startsWith("&")).join("\n"),
         output_truncated: pending.outputTruncated,
+        ...(pending.outputInvalidUtf8 ? { output_invalid_utf8: true as const } : {}),
         completion_status: "complete",
       });
     }
@@ -1188,6 +1266,7 @@ export class GdbSessionManager {
           target: records.filter((line) => line.startsWith("@")).join("\n"),
           log: records.filter((line) => line.startsWith("&")).join("\n"),
           output_truncated: pending.outputTruncated,
+          ...(pending.outputInvalidUtf8 ? { output_invalid_utf8: true as const } : {}),
           completion_status: "unknown",
         }),
       );
@@ -1287,15 +1366,15 @@ export class GdbSessionManager {
       !/^\d+\^done(?:,|$)/u.test(groups.mi)
     )
       throw new Error("GDB could not confirm its inferior state.");
-    const groupCount = gdbThreadGroupCount(groups.mi);
-    if (groupCount === 0) {
+    const inferiorPids = gdbThreadGroupPids(groups.mi);
+    if (inferiorPids?.length === 0) {
       session.noInferiorVerified = true;
       return { status: "no-inferior" };
     }
     session.noInferiorVerified = false;
-    if (groupCount !== 1)
+    if (inferiorPids?.length !== 1)
       throw new Error(
-        groupCount === undefined
+        inferiorPids === undefined
           ? "GDB returned an unknown recursive inferior list."
           : "GDB reports multiple inferiors; automatic detach cannot be confirmed safely.",
       );
@@ -1314,6 +1393,7 @@ export class GdbSessionManager {
       throw new Error(
         "GDB no longer reports the caller-selected inferior TTY; detachment cannot be confirmed safely.",
       );
+    await verifyGdbInferiorOutputSink(inferiorPids[0]!, session.inferiorTty!);
     const detached = await this.#request(session, "-target-detach");
     if (
       detached.completion_status !== "complete" ||
@@ -1348,6 +1428,7 @@ export class GdbSessionManager {
           process_exit_code: code,
           process_exit_signal: signalCode,
           output_truncated: pending.outputTruncated,
+          ...(pending.outputInvalidUtf8 ? { output_invalid_utf8: true as const } : {}),
           completion_status: "unknown",
         }),
       );
@@ -1418,6 +1499,7 @@ export class GdbSessionManager {
             .join("\n"),
           log: pending.lines.filter((line) => line.startsWith("&")).join("\n"),
           output_truncated: pending.outputTruncated,
+          ...(pending.outputInvalidUtf8 ? { output_invalid_utf8: true as const } : {}),
           completion_status: "unknown",
         };
         const timeout = new AnalysisTimeoutError(
@@ -1520,6 +1602,7 @@ export class GdbSessionManager {
         timer,
         outputBytes: 0,
         outputTruncated: false,
+        outputInvalidUtf8: false,
       };
       session.pending.set(token, pending);
       abortListener = (): void => {
@@ -1536,6 +1619,7 @@ export class GdbSessionManager {
             .join("\n"),
           log: pending.lines.filter((line) => line.startsWith("&")).join("\n"),
           output_truncated: pending.outputTruncated,
+          ...(pending.outputInvalidUtf8 ? { output_invalid_utf8: true as const } : {}),
           completion_status: "unknown",
         };
         const evidence = createEvidence(undefined, GDB_PROVIDER_IDENTITY, {

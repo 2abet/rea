@@ -88,6 +88,7 @@ export const TOOL_EFFECTS: Readonly<Record<string, ToolEffects>> = {
     mutatesSession: true,
     launchesProcess: true,
     executesForeignCode: true,
+    idempotent: false,
   }),
   rizin_debug_command: effects({
     mutatesTarget: true,

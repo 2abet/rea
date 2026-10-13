@@ -15,7 +15,7 @@ import { err, ok, type Result } from "../domain/result.js";
 import type { GhidraInstallationInspection } from "./GhidraInstallation.js";
 import {
   ghidraMipsProfileParameters,
-  ghidraMipsSharedLanguageOverride,
+  ghidraMipsLanguageOverride,
 } from "./GhidraMipsProfile.js";
 import {
   ghidraRiscvLanguageOverride,
@@ -44,8 +44,7 @@ import {
 export const ghidraPinnedLanguage = (
   target: BinaryTarget,
 ): GhidraLanguageOverride | undefined =>
-  ghidraMipsSharedLanguageOverride(target) ??
-  ghidraRiscvLanguageOverride(target);
+  ghidraMipsLanguageOverride(target) ?? ghidraRiscvLanguageOverride(target);
 
 /** Resolve version-bound, deterministic semantics before Ghidra imports a target. */
 export const resolveGhidraAnalysisProfile = async (
@@ -168,7 +167,7 @@ export const resolveGhidraAnalysisProfile = async (
         `The caller-selected processor or compiler specification is outside the verified ${
           target.architecture === "riscv"
             ? "generic little-endian RISC-V"
-            : "endian-matched MIPS32 shared-image"
+            : "endian-matched MIPS32"
         } profile. The requested override has not been changed.`,
       ),
     );
@@ -207,6 +206,9 @@ export const resolveGhidraAnalysisProfile = async (
           ...(target.availableArchitectures ?? []),
         ].sort(),
         import_mode: "ephemeral-source-immutable",
+        ...(target.format === "pe"
+          ? { pdb_observations: "program-info-v1" }
+          : {}),
         annotation_policy: "atomic-function-entry-metadata-v1",
         load_image_observations: "source-mappings-entry-context-v2",
         function_body_evidence: "complete-inclusive-ranges-v1",
@@ -273,7 +275,7 @@ export const resolveGhidraAnalysisProfile = async (
             }
           : {}),
         ...analyzerParameters,
-        ...ghidraMipsProfileParameters(target),
+        ...ghidraMipsProfileParameters(target, languageOverride),
         ...ghidraRiscvProfileParameters(target),
         ...(pspExtension?.ok === true
           ? {

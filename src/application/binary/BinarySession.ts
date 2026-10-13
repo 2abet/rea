@@ -378,15 +378,27 @@ export class BinarySession
       error: AnalysisError,
     ) => AnalysisError,
     operationName = "execute_rizin_command",
+    cleanupRecovery?: () => Promise<Result<null, AnalysisError>>,
   ): Promise<Result<Result<Value, AnalysisError>, AnalysisError>> {
     return this.#serialize(async (admittedThrough) => {
-      if (this.#externalMutationCleanupFailure?.cleanupIncomplete === true)
-        return err(this.#externalMutationCleanupFailure);
       if (isAborted(signal))
         return err(new AnalysisCancelledError(operationName));
       await this.#drainCalls(admittedThrough);
       if (isAborted(signal))
         return err(new AnalysisCancelledError(operationName));
+
+      if (this.#externalMutationCleanupFailure?.cleanupIncomplete === true) {
+        if (cleanupRecovery === undefined)
+          return err(this.#externalMutationCleanupFailure);
+        const recovered = await cleanupRecovery();
+        if (!recovered.ok) return recovered;
+        if (this.#externalMutationCleanupFailure.cleanupIncomplete)
+          return err(this.#externalMutationCleanupFailure);
+        this.#externalMutationCleanupFailure = undefined;
+      }
+
+      const pendingCleanup = await this.#retryPendingCleanup();
+      if (!pendingCleanup.ok) return pendingCleanup;
 
       const activeAtDispatch = this.#active;
       if (activeAtDispatch?.route.identity.id === "ghidra")

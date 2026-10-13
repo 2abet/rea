@@ -142,6 +142,19 @@ class RizinProcessExitError extends Error {
   }
 }
 
+class RizinCommandCancelledError extends AnalysisCancelledError {
+  constructor(readonly partialOutput: string, cause: unknown) {
+    super("rizin_debug_command", {
+      cause,
+      capturedOutput: {
+        stdout: partialOutput,
+        stderr: "",
+        truncated: false,
+      },
+    });
+  }
+}
+
 class RizinFrameTimeoutError extends Error {
   constructor() {
     super("Timed out waiting for the next Rizin NUL frame");
@@ -595,6 +608,55 @@ export class RizinDebugSessionManager {
           return err(
             new AnalysisCancelledError("rizin_debug_command", { cause }),
           );
+        const partialOutput =
+          cause instanceof RizinCommandCancelledError
+            ? cause.partialOutput
+            : undefined;
+        const partialEvidence =
+          partialOutput === undefined
+            ? undefined
+            : createEvidence(
+                undefined,
+                RIZIN_DEBUGGER_PROVIDER_IDENTITY,
+                {
+                  predicateType: "rea.debugger.command-observation",
+                  operation: "rizin_debug_command",
+                  parameters: {
+                    session_id: sessionId,
+                    command,
+                    inferior_tty: session.inferiorTty,
+                  },
+                  result: {
+                    command,
+                    output: partialOutput,
+                    output_scope: "command_and_interleaved_session_output",
+                    output_truncated: false,
+                    completion_status: "unknown",
+                    backend: session.backend,
+                    ...(session.invalidUtf8Observed
+                      ? { output_invalid_utf8: true as const }
+                      : {}),
+                  },
+                  rawResult: {
+                    command,
+                    output: partialOutput,
+                    output_scope: "command_and_interleaved_session_output",
+                    output_truncated: false,
+                    completion_status: "unknown",
+                    backend: session.backend,
+                    ...(session.invalidUtf8Observed
+                      ? { output_invalid_utf8: true as const }
+                      : {}),
+                  },
+                  subjectUnavailableReason:
+                    "The current debugger target identity is not established by the Rizin session identifier.",
+                  limitations: [
+                    "The Rizin command was cancelled; collected frame output is partial and command completion is unknown.",
+                    "The owned debugger session was stopped because command output can no longer be correlated safely.",
+                    "The command is unrestricted and may access local files, the shell, network, or mutate the target.",
+                  ],
+                },
+              );
         session.protocolError =
           "A Rizin command was cancelled; the owned session was stopped because command output can no longer be correlated safely.";
         const stopped = await this.#stopDebuggerOnly(session, true);
@@ -604,11 +666,29 @@ export class RizinDebugSessionManager {
               session,
               "rizin_debug_command",
               stopped.reason,
-              { cause: new AnalysisCancelledError("rizin_debug_command") },
+              {
+                cause: new AnalysisCancelledError("rizin_debug_command", {
+                  cause,
+                  ...(cause instanceof RizinCommandCancelledError
+                    ? { capturedOutput: cause.capturedOutput }
+                    : {}),
+                }),
+                ...(partialEvidence === undefined
+                  ? {}
+                  : { partialObservation: partialEvidence }),
+              },
             ),
           );
         return err(
-          new AnalysisCancelledError("rizin_debug_command", { cause }),
+          new AnalysisCancelledError("rizin_debug_command", {
+            cause,
+            ...(cause instanceof RizinCommandCancelledError
+              ? { capturedOutput: cause.capturedOutput }
+              : {}),
+            ...(partialEvidence === undefined
+              ? {}
+              : { partialObservation: partialEvidence }),
+          }),
         );
       }
       if (session.protocolError !== undefined)
@@ -1185,7 +1265,8 @@ const waitForCommandFrames = async (
         commandTimeoutError,
       );
     } catch (cause) {
-      if (cause instanceof AnalysisCancelledError) throw cause;
+      if (cause instanceof AnalysisCancelledError)
+        throw new RizinCommandCancelledError(output.join("\n"), cause);
       if (cause instanceof RizinProcessExitError)
         throw new RizinProcessExitError(output.join("\n"));
       throw cause;

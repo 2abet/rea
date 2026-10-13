@@ -51,6 +51,7 @@ export const registerCutterTools = (
             service.execute(input, { signal: context.mcpReq.signal }),
           ),
         (value) => value,
+        () => service.retryCleanup(),
       );
       if (!result.ok) {
         const partial = evidenceSchema.safeParse(

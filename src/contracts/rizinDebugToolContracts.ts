@@ -10,6 +10,7 @@ const commandResult = z.strictObject({
   output: z.string(),
   output_scope: z.literal("command_and_interleaved_session_output"),
   output_truncated: z.boolean(),
+  output_invalid_utf8: z.literal(true).optional(),
   completion_status: z.enum(["complete", "unknown"]),
   backend: z.string().nullable(),
 });

@@ -2,6 +2,7 @@ import { defineConfig } from "vitest/config";
 
 const REVERSE_TOOL_MODULES = [
   "src/application/reverse/ReverseEngineeringService.ts",
+  "src/application/binary/BinarySession.ts",
   "src/cutter/CutterBridgeClient.ts",
   "src/cutter/CutterBridgeService.ts",
   "src/gdb/GdbSessionManager.ts",
@@ -9,6 +10,7 @@ const REVERSE_TOOL_MODULES = [
   "src/process/ownedDebuggerSession.ts",
   "src/process/ExecFileOutput.ts",
   "src/server/registerReverseEngineeringTools.ts",
+  "src/server/externalMutationAdmission.ts",
   "src/server/providerEnvironment.ts",
   "src/rizin/RizinCommand.ts",
   "src/rizin/RizinDebugSessionManager.ts",

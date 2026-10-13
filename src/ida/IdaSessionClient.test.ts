@@ -9,6 +9,7 @@ import {
 import { IdaSessionClient } from "./IdaSessionClient.js";
 import { functionDossierSchema } from "../domain/hopperValues.js";
 import { jsonValueSchema, type JsonValue } from "../domain/jsonValue.js";
+import { ProviderAdapterError } from "../domain/providerAdapterError.js";
 import { projectAnalysisError } from "../domain/analysisErrorProjection.js";
 
 const roots: string[] = [];
@@ -31,6 +32,7 @@ const LIVE_PEER = {
 const fixture = async (
   mode: "attached" | "headless" = "attached",
   timeoutMs = 1000,
+  protocol?: "native",
 ) => {
   const { root, target } = await createIdaTarget();
   roots.push(root);
@@ -41,6 +43,7 @@ const fixture = async (
       args: [],
       env: {},
       mode,
+      ...(protocol === undefined ? {} : { protocol }),
       timeoutMs,
       workspaceRoot: root,
     },
@@ -709,6 +712,74 @@ describe("headless IDA non-busy health payloads", () => {
   });
 });
 
+describe("IDA compatibility profile mismatch", () => {
+  it("reports the native profile for an incompatible catalog", async () => {
+    const { producer, client } = await fixture("attached", 1000, "native");
+    producer.tools = [];
+    const result = await client.execute("health", {});
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("Expected incompatible native catalog");
+    expect(projectAnalysisError(result.error).details).toMatchObject({
+      diagnostics: {
+        mode: "attached",
+        expected_profile: "native",
+        missing_tools: expect.arrayContaining(["decompile"]),
+      },
+    });
+    expect(producer.calls).toEqual([]);
+    expect((await client.close()).ok).toBe(true);
+  });
+
+  it("names every missing tool so the caller can identify the upstream profile", async () => {
+    const { producer, client } = await fixture("headless");
+    producer.tools = [
+      "idb_open",
+      "idb_list",
+      "server_health",
+      "list_funcs",
+      "lookup_funcs",
+      "find_regex",
+      "decompile",
+      "disasm",
+      "callees",
+      "xrefs_to",
+    ];
+    const result = await client.execute("health", {});
+    expect(result.ok, "an incomplete profile cannot serve analysis").toBe(
+      false,
+    );
+    if (result.ok) return;
+    const projected = projectAnalysisError(result.error);
+    expect(
+      projected.details,
+      "the absent tool and the expected profile are both reported",
+    ).toMatchObject({
+      provider_id: "ida",
+      diagnostics: {
+        mode: "headless",
+        expected_profile: "database-supervisor",
+        missing_tools: ["idb_close"],
+      },
+    });
+  });
+
+  it("reports the legacy profile when an attached producer serves modern tools", async () => {
+    const { producer, client } = await fixture("attached");
+    producer.tools = ["server_health", "lookup_funcs", "decompile", "disasm"];
+    const result = await client.execute("health", {});
+    expect(result.ok, "an incomplete profile cannot serve analysis").toBe(
+      false,
+    );
+    if (result.ok) return;
+    expect(
+      projectAnalysisError(result.error).details,
+      "attached mode names the legacy profile it expected",
+    ).toMatchObject({
+      diagnostics: { mode: "attached", expected_profile: "legacy-1.4" },
+    });
+  });
+});
+
 describe("headless IDA lifecycle boundaries", () => {
   it("never closes an unowned worker even when open echoes the requested private identity", async () => {
     const { producer, client } = await fixture("headless");
@@ -1006,6 +1077,7 @@ describe("headless IDA cleanup diagnostics", () => {
           backend: "worker",
           owned: false,
           input_path: producer.inputPath,
+          is_active: false,
         },
       ),
     );
@@ -1295,4 +1367,163 @@ describe("headless IDA cleanup verification", () => {
     ).toMatch(/^rea-/u);
     expect(await readdir(root)).toEqual(["target.elf"]);
   });
+});
+
+it("retains a conflicting requested session ID during pre-close recovery", async () => {
+  const { producer, client, root } = await fixture("headless");
+  producer.overrideCall = (name) =>
+    name === "idb_list"
+      ? {
+          sessions: [
+            {
+              session_id: String(producer.database),
+              input_path: "/conflicting/input",
+              owned: true,
+              backend: "worker",
+              is_active: false,
+            },
+          ],
+        }
+      : undefined;
+  expect((await client.execute("health", {})).ok).toBe(false);
+  const requested = String(producer.database);
+  const result = await client.close();
+  expect(result).toMatchObject(
+    reportsSessions({
+      session_id: requested,
+      input_path: "/conflicting/input",
+      owned: true,
+      backend: "worker",
+      is_active: false,
+    }),
+  );
+  expect(producer.calls.some(({ name }) => name === "idb_close")).toBe(false);
+  expect(
+    (await readdir(root)).some((name) => name.startsWith("rea-ida-")),
+  ).toBe(true);
+});
+
+it.each(["unavailable", "malformed"] as const)(
+  "does not invent a worker after explicit rejection and %s inventory",
+  async (kind) => {
+    const { producer, client } = await fixture("headless");
+    producer.overrideCall = (name) =>
+      name === "idb_open"
+        ? { error: "rejected before worker creation" }
+        : name === "idb_list" && kind === "malformed"
+          ? {}
+          : undefined;
+    expect((await client.execute("health", {})).ok).toBe(false);
+    producer.beforeCall = async (name) => {
+      if (name === "idb_list" && kind === "unavailable")
+        throw new Error("inventory unavailable");
+    };
+    const result = await client.close();
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("Expected retained cleanup");
+    expect(result.error).not.toHaveProperty("diagnostics.upstream_sessions");
+  },
+);
+
+it.each(["idb_close", "idb_list", "connection_close"])(
+  "preserves transport stderr through cleanup at %s",
+  async (stage) => {
+    const { producer, client } = await fixture("headless");
+    expect((await client.execute("health", {})).ok).toBe(true);
+    const failure = new ProviderAdapterError("ida", "transport", {
+      diagnostics: {
+        reason: "upstream transport closed",
+      },
+      capturedOutput: {
+        stdout: "",
+        stderr: "IDA shutdown diagnostic",
+        truncated: false,
+      },
+    });
+    const originalClose = producer.close.bind(producer);
+    producer.beforeCall = async (name) => {
+      if (name === stage) throw failure;
+    };
+    if (stage === "connection_close")
+      producer.close = async () => {
+        throw failure;
+      };
+    try {
+      const result = await client.close();
+      if (result.ok) throw new Error("expected cleanup failure");
+      expect(result.error.capturedOutput?.stderr).toBe(
+        "IDA shutdown diagnostic",
+      );
+      expect(result.error.diagnostics).toMatchObject({
+        failure_reason: "upstream transport closed",
+      });
+      expect(result.error.cleanupIncomplete).toBe(true);
+    } finally {
+      delete producer.beforeCall;
+      producer.close = originalClose;
+      await client.close();
+    }
+  },
+);
+
+it("binds retained transport diagnostics to the requested operation and recovery", async () => {
+  const { producer, client } = await fixture("attached");
+  await client.execute("health", {});
+  producer.beforeCall = async (name) => {
+    if (name === "list_functions")
+      throw new ProviderAdapterError("ida", "transport", {
+        diagnostics: { reason: "upstream closed" },
+        capturedOutput: {
+          stdout: "",
+          stderr: "IDA diagnostic",
+          truncated: false,
+        },
+      });
+  };
+  const result = await client.execute("list_procedures", {});
+  if (result.ok) throw new Error("expected upstream failure");
+  expect(projectAnalysisError(result.error)).toMatchObject({
+    details: {
+      operation: "list_procedures",
+      diagnostics: {
+        reason: "upstream closed",
+        recovery: expect.stringContaining("docs/ida-provider.md"),
+      },
+      captured_output: { stderr: "IDA diagnostic" },
+    },
+  });
+  await client.close();
+});
+
+it("retains transport diagnostics on a cancellation regardless of stderr", async () => {
+  const { producer, client } = await fixture("attached");
+  await client.execute("health", {});
+  const controller = new AbortController();
+  producer.beforeCall = async (name) => {
+    if (name === "list_functions") {
+      controller.abort();
+      throw new ProviderAdapterError("ida", "transport", {
+        diagnostics: { reason: "upstream closed after cancellation" },
+        capturedOutput: {
+          stdout: "",
+          stderr: "shutdown diagnostic",
+          truncated: false,
+        },
+      });
+    }
+  };
+  const result = await client.execute(
+    "list_procedures",
+    {},
+    { signal: controller.signal },
+  );
+  if (result.ok) throw new Error("expected cancellation");
+  expect(projectAnalysisError(result.error)).toMatchObject({
+    code: "cancelled",
+    details: {
+      diagnostics: { reason: "upstream closed after cancellation" },
+      captured_output: { stderr: "shutdown diagnostic" },
+    },
+  });
+  await client.close();
 });

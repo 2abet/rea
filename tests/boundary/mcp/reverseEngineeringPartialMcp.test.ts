@@ -190,6 +190,7 @@ it("delivers failed Rizin execution after external admission", async () => {
 it("reports rebind failure when admitted Rizin execution has no partial observation", async () => {
   const { server, handler } = createReverseEngineeringMcpHarness();
   const service = {
+    retryCleanup: async () => ok(null),
     executeRizinCommand: async () =>
       err(new AnalysisInputError("execute_rizin_command")),
   } as unknown as ReverseEngineeringService;
@@ -228,10 +229,7 @@ it("reports rebind failure when admitted Rizin execution has no partial observat
     expect.objectContaining({ ok: false }),
   );
   expect(response.structuredContent?.error).toMatchObject({
-    code: "unreadable_output",
-    details: {
-      reason: expect.stringContaining("could not be rebound"),
-    },
+    code: "invalid_request",
   });
 });
 

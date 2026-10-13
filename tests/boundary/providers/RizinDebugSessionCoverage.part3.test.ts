@@ -1,4 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
+import { AnalysisInputError } from "../../../src/domain/analysisErrorCore.js";
 import { RizinDebugSessionManager } from "../../../src/rizin/RizinDebugSessionManager.js";
 import {
   createRizinTestManager,
@@ -262,8 +263,10 @@ it.skipIf(process.platform === "win32")(
 it.skipIf(process.platform === "win32")(
   "rejects a queued command when the process exits before its frame wait begins",
   async () => {
+    const writes: string[] = [];
     const injected = createInjectedProcess({
       onWrite: (text, control) => {
+        writes.push(text);
         const marker = /!echo (.+)\n/u.exec(text)?.[1];
         if (marker !== undefined) setImmediate(() => control.exit());
       },
@@ -275,8 +278,8 @@ it.skipIf(process.platform === "win32")(
     const queued = manager.execute(started.value.session_id, "second");
     expect((await first).ok).toBe(true);
     const second = await queued;
-    expect(second.ok).toBe(true);
-    if (second.ok)
-      expect(second.value.result.completion_status).toBe("unknown");
+    expect(second.ok).toBe(false);
+    if (!second.ok) expect(second.error).toBeInstanceOf(AnalysisInputError);
+    expect(writes.some((text) => text.includes("second\n"))).toBe(false);
   },
 );

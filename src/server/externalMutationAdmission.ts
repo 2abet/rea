@@ -16,9 +16,14 @@ export const runWithExternalMutationAdmission = async <Value>(
   operationName: string,
   signal: AbortSignal | undefined,
   operation: () => Promise<Result<Value, AnalysisError>>,
-  evidenceOf: (value: Value) => Evidence,
+  evidenceOf: ((value: Value) => Evidence) | undefined,
+  cleanupRecovery?: () => Promise<Result<null, AnalysisError>>,
 ): Promise<Result<Value, AnalysisError>> => {
-  if (session === undefined) return operation();
+  if (session === undefined) {
+    const recovered = await cleanupRecovery?.();
+    if (recovered !== undefined && !recovered.ok) return recovered;
+    return operation();
+  }
   const admitted = await session.withAdmittedExternalMutation(
     undefined,
     signal,
@@ -30,7 +35,9 @@ export const runWithExternalMutationAdmission = async <Value>(
             "The external command may have changed the bound artifact, but the active analysis session could not be rebound.",
             {
               cause,
-              partialObservation: evidenceOf(value.value),
+              ...(evidenceOf === undefined
+                ? {}
+                : { partialObservation: evidenceOf(value.value) }),
               ...(cause.cleanup === undefined
                 ? {}
                 : { cleanup: cause.cleanup }),
@@ -43,6 +50,7 @@ export const runWithExternalMutationAdmission = async <Value>(
             rebind_error: projectAnalysisError(cause),
           }),
     operationName,
+    cleanupRecovery,
   );
   return admitted.ok ? admitted.value : err(admitted.error);
 };

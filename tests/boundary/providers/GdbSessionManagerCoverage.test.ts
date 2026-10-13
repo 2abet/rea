@@ -28,17 +28,18 @@ const managers: GdbSessionManager[] = [];
 
 it.each([
   ["empty list", "1^done,groups=[]", 0],
-  ["one group", '1^done,groups=[{id="i1"}]', 1],
-  ["multiple groups", '1^done,groups=[{id="i1"},{id="i2"}]', 2],
+  ["one group", '1^done,groups=[{id="i1",pid="123"}]', 1],
+  ["multiple groups", '1^done,groups=[{id="i1",pid="123"},{id="i2",pid="456"}]', 2],
+  ["group without a live pid", '1^done,groups=[{id="i1"}]', 0],
   [
     "nested group-like object",
-    '1^done,groups=[{id="i1",children=[{id="i2"}]}]',
+    '1^done,groups=[{id="i1",pid="123",children=[{id="i2"}]}]',
     1,
   ],
-  ["quoted brackets", '1^done,groups=[{id="i1",description="[{}]"}]', 1],
+  ["quoted brackets", '1^done,groups=[{id="i1",pid="123",description="[{}]"}]', 1],
   [
     "escaped quote and backslash",
-    '1^done,groups=[{id="i1",description="\\\\\\\""}]',
+    '1^done,groups=[{id="i1",pid="123",description="\\\\\\\""}]',
     1,
   ],
   [
