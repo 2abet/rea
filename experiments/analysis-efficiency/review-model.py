@@ -191,10 +191,11 @@ def main():
                 continue
             identity = value['evidence_id']
             normalized = value.get('normalized_result')
-            supported = isinstance(normalized, dict) and isinstance(value.get('limitations'), list)
-            if supported and normalized.get('kind') == 'summary':
+            supported = (isinstance(normalized, dict) and isinstance(value.get('limitations'), list)
+                         and all(isinstance(item, str) for item in value['limitations']))
+            if supported and ('summary' in normalized or normalized.get('kind') == 'summary'):
                 supported = isinstance(normalized.get('summary'), dict)
-            elif supported and normalized.get('kind') == 'pcap':
+            if supported and ('page' in normalized or normalized.get('kind') == 'pcap'):
                 supported = isinstance(normalized.get('page'), dict)
             entry = (tool, arguments, value) if supported else None
             if identity not in records:

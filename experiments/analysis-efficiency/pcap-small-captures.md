@@ -126,7 +126,7 @@ validated.
 Both real CLI complete results match full MCP normalized results, subjects,
 parameters, IDs and limitations. Portable CLI summary/URI views match MCP retained
 normalized facts and subjects; source forms/caller parameters remain distinct.
-Source bytes stay unchanged. Twenty-five context/grading regressions pass, including
+Source bytes stay unchanged. Twenty-six context/grading regressions pass, including
 cited complete metadata/counts/UTF-16 diagnostics and exact ordered response ID
 lists that reject parent lookups, duplicates and nested representations. URI
 prefix coverage must come from its cited page, even if an uncited page has the
@@ -159,7 +159,7 @@ the preceding driver accepts inconsistent coverage, while the corrected driver
 rejects wrong status, next offset or exhaustion. Unmodified exhausted and
 continuable URI pages still pass. The grader also requires each cited receipt's
 subject digest and local path to identify the reference capture, and uses the
-reference page's verified coverage. Twenty-five grading/context regressions pass,
+reference page's verified coverage. Twenty-six grading/context regressions pass,
 including missing or malformed subjects and faithful but inconsistent coverage;
 all four original model answers still pass factual regrading. Strict resource
 grades remain false where terminal whole-scope counters are unknown.

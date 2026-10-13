@@ -525,6 +525,11 @@ const inspectEvmTarget = async () => {
 
 const PCAP_EVIDENCE_ID = /^ev_[a-f0-9]{64}$/u;
 const pcapObservation = (evidence, requestedView) => {
+  if (
+    !Array.isArray(evidence.limitations) ||
+    !evidence.limitations.every((item) => typeof item === "string")
+  )
+    throw new Error("PCAP Evidence lacks a valid limitations list");
   const evidenceId = evidence.evidence_id;
   if (typeof evidenceId !== "string" || !PCAP_EVIDENCE_ID.test(evidenceId))
     throw new Error("PCAP Evidence receipt identity is missing or malformed");

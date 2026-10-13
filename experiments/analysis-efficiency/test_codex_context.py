@@ -335,9 +335,12 @@ class PcapGraderWorkflowTests(unittest.TestCase):
         for index in [0, 1]:
             for field, wrong in [('normalized_result', None), ('normalized_result', []),
                                  ('normalized_result', 'capture'), ('limitations', None),
-                                 ('limitations', {})]:
+                                 ('limitations', {}), ('limitations', [None]),
+                                 ('limitations', ['source', 1])]:
                 with self.subTest(index=index, field=field, wrong=wrong):
                     answer, records, reference = self.fixture();records[index][field] = wrong
+                    if field == 'limitations':
+                        answer['delivery_observations'][index]['limitations'] = copy.deepcopy(wrong)
                     report = self.grade(answer, records, reference, tools)
                     self.assertTrue(report['factual_checks']['capture'])
                     self.assertFalse(report['all_factual_checks_pass'])
@@ -350,6 +353,21 @@ class PcapGraderWorkflowTests(unittest.TestCase):
                 with self.subTest(index=index, nested=field, wrong=wrong):
                     answer, records, reference = self.fixture();records[index]['normalized_result'][field] = wrong
                     self.assertFalse(self.grade(answer, records, reference, tools)['all_factual_checks_pass'])
+
+    def test_missing_or_wrong_kind_does_not_hide_malformed_view_containers(self):
+        for index, container in [(0, 'summary'), (1, 'page')]:
+            for kind in [None, 'unexpected']:
+                for wrong in [None, [], 'view']:
+                    with self.subTest(index=index, kind=kind, container=container):
+                        answer, records, reference = self.fixture()
+                        if kind is None:
+                            records[index]['normalized_result'].pop('kind')
+                        else:
+                            records[index]['normalized_result']['kind'] = kind
+                        records[index]['normalized_result'][container] = wrong
+                        report = self.grade(answer, records, reference,
+                                            producer_tools=['inspect_pcap_capture', 'inspect_analysis_view'])
+                        self.assertFalse(report['all_factual_checks_pass'])
 
     def test_retained_parents_require_declared_distinct_evidence_links(self):
         for index in [0, 1]:
