@@ -376,6 +376,10 @@ class _RequestDispatcher(QObject):
             })
             request["_event"].set()
             return
+        if kind != "command":
+            reply.update({"ok": False, "error": "unsupported-request-kind"})
+            request["_event"].set()
+            return
         if request.get("expected_generation") != self.generation:
             reply.update({"ok": False, "error": "active-document-generation-changed"})
             self._record_command_completion(request_id, "not_started")
