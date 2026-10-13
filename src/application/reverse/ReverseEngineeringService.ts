@@ -144,7 +144,6 @@ export class ReverseEngineeringService {
             "A previous provider process still requires cleanup.",
             { cleanup: observation },
           );
-          retained.failures.add(failure);
         }
       } else {
         for (const previous of retained.failures) previous.resolveCleanup();
