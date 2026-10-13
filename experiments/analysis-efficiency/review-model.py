@@ -181,7 +181,8 @@ def main():
         expected_observations = []
         if isinstance(canonical_observations, list):
             for observation in canonical_observations:
-                record = records.get(observation.get('evidence_id')) if isinstance(observation, dict) else None
+                identity = observation.get('evidence_id') if isinstance(observation, dict) else None
+                record = records.get(identity) if isinstance(identity, str) else None
                 if record is None:
                     expected_observations.append(None)
                     continue
@@ -201,7 +202,8 @@ def main():
         if isinstance(canonical_observations, list) and all(isinstance(x, dict) for x in canonical_observations):
             check('pcap_requested_delivery_chain', [x.get('kind', 'complete') for x in canonical_observations],
                   [x.get('kind', 'complete') for x in reference['delivery_observations']])
-            checks['pcap_observations_have_reported_ids'] = {x.get('evidence_id') for x in canonical_observations} <= reported_ids
+            identities = [x.get('evidence_id') for x in canonical_observations]
+            checks['pcap_observations_have_reported_ids'] = all(isinstance(value, str) for value in identities) and set(identities) <= reported_ids
         else:
             checks['pcap_requested_delivery_chain'] = False
             checks['pcap_observations_have_reported_ids'] = False

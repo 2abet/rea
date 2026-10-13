@@ -122,9 +122,11 @@ validated.
 Both real CLI complete results match full MCP normalized results, subjects,
 parameters, IDs and limitations. Portable CLI summary/URI views match MCP retained
 normalized facts and subjects; source forms/caller parameters remain distinct.
-Source bytes stay unchanged. Nine context/grading regressions pass. Four real-answer
+Source bytes stay unchanged. Nine context/grading regressions pass. Five real-answer
 mutations—omitted null, false page exhaustion, contradictory source scope,
-unsupported absence claim—fail correctly. JS syntax, Python compilation and
+unsupported absence claim and non-string receipt identity—fail correctly.
+Malformed identities produce failed facts rather than crashing the grader.
+JS syntax, Python compilation and
 relevant standard lint pass.
 
 **Decision: keep existing complete defaults; add no production optimization.**
