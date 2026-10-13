@@ -183,21 +183,27 @@ def main():
         prefix = answer.get('http_request_uris_first2')
         records = {value['evidence_id']: value for values in producer_results.values()
                    for value in values if isinstance(value, dict) and 'evidence_id' in value}
+        observations = answer.get('delivery_observations')
+        canonical_observations = [pcap_observation_fields(value) for value in observations] if isinstance(observations, list) else observations
         if isinstance(prefix, dict):
             checks['pcap_prefix_fields_supported'] = set(prefix) <= {'items', 'coverage', 'source_coverage'} and 'items' in prefix
             if 'source_coverage' in prefix:
                 check('pcap_prefix_source_coverage', prefix['source_coverage'], reference['capture']['coverage'])
             if 'coverage' in prefix:
-                page_coverages = [value['normalized_result']['coverage'] for value in records.values()
-                                  if value['normalized_result'].get('kind') == 'pcap'
-                                  and value['normalized_result']['page'].get('facet') == 'http-uris'
-                                  and value['normalized_result']['page'].get('items') == prefix.get('items')]
-                checks['pcap_prefix_coverage_observed'] = any(json.dumps(prefix['coverage'], sort_keys=True) == json.dumps(value, sort_keys=True) for value in page_coverages)
+                last = canonical_observations[-1] if isinstance(canonical_observations, list) and canonical_observations else None
+                identity = last.get('evidence_id') if isinstance(last, dict) else None
+                record = records.get(identity) if isinstance(identity, str) else None
+                page = record['normalized_result'] if record is not None else {}
+                checks['pcap_prefix_coverage_observed'] = (
+                    page.get('kind') == 'pcap'
+                    and page.get('page', {}).get('facet') == 'http-uris'
+                    and json.dumps(page['page'].get('items'), sort_keys=True) == json.dumps(prefix.get('items'), sort_keys=True)
+                    and 'coverage' in page
+                    and json.dumps(prefix['coverage'], sort_keys=True) == json.dumps(page['coverage'], sort_keys=True)
+                )
             prefix = prefix.get('items')
         check('http_request_uris_first2', ('http_request_uris_first2' in answer, json.dumps(prefix, sort_keys=True)),
               (True, json.dumps(reference['http_request_uris_first2'], sort_keys=True)))
-        observations = answer.get('delivery_observations')
-        canonical_observations = [pcap_observation_fields(value) for value in observations] if isinstance(observations, list) else observations
         expected_observations = []
         if isinstance(canonical_observations, list):
             for observation in canonical_observations:

@@ -126,14 +126,25 @@ validated.
 Both real CLI complete results match full MCP normalized results, subjects,
 parameters, IDs and limitations. Portable CLI summary/URI views match MCP retained
 normalized facts and subjects; source forms/caller parameters remain distinct.
-Source bytes stay unchanged. Fourteen context/grading regressions pass, including
+Source bytes stay unchanged. Fifteen context/grading regressions pass, including
 cited complete metadata/counts/UTF-16 diagnostics and exact ordered response ID
-lists that reject parent lookups, duplicates and nested representations. Five real-answer
+lists that reject parent lookups, duplicates and nested representations. URI
+prefix coverage must come from its cited page, even if an uncited page has the
+same items. The SDK driver also checks the returned view against the exact
+requested kind, facet, offset and limit. Five real-answer
 mutations—omitted null, false page exhaustion, contradictory source scope,
 unsupported absence claim and non-string receipt identity—fail correctly.
 Malformed identities produce failed facts rather than crashing the grader.
 JS syntax, Python compilation and
 relevant standard lint pass.
+
+A fresh real SDK summary/URI smoke matches the original selected facts. Three
+private consumer fault injections alter the returned view's offset, limit or
+presence after a real SDK reply; the driver rejects each. These establish the
+experiment consumer's guard, not provider malformed-reply behavior. The initial
+injection setup loaded the separate CommonJS client and did not inject a fault;
+that discarded setup attempt remains private alongside the corrected ESM runs.
+Original measured driver sources, token totals and timing data remain unchanged.
 
 **Decision: keep existing complete defaults; add no production optimization.**
 For these compact recordings and this question, summary/page costs more total

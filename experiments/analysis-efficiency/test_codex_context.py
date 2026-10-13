@@ -219,6 +219,19 @@ class PcapGraderWorkflowTests(unittest.TestCase):
                 self.assertFalse(report['factual_checks']['pcap_observations_have_reported_ids'])
                 self.assertFalse(report['all_factual_checks_pass'])
 
+    def test_prefix_coverage_must_come_from_the_cited_uri_receipt(self):
+        answer, records, reference = self.fixture()
+        extra = copy.deepcopy(records[-1]);extra['evidence_id'] = 'ev_' + 'e' * 64
+        extra['normalized_result']['coverage']['next_offset'] = None
+        extra['normalized_result']['coverage']['exhausted'] = True
+        records.append(extra)
+        answer['http_request_uris_first2']['coverage'] = extra['normalized_result']['coverage']
+        report = self.grade(answer, records, reference)
+        self.assertTrue(report['factual_checks']['pcap_original_delivery_observations'])
+        self.assertTrue(report['factual_checks']['pcap_cited_source_supports_uri_prefix'])
+        self.assertFalse(report['factual_checks']['pcap_prefix_coverage_observed'])
+        self.assertFalse(report['all_factual_checks_pass'])
+
 
 class ContextCaptureTests(unittest.TestCase):
     def test_filters_ambient_account_and_nested_usage_state(self):

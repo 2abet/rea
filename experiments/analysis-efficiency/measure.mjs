@@ -566,15 +566,17 @@ const inspectPcapTarget = async () => {
     if (n.kind !== "summary" || n.parent_operation !== "inspect_pcap_capture")
       throw new Error("Runtime returned no requested PCAP summary");
     capture = n.summary;
+    const view = { kind: "pcap", facet: "http-uris", offset: 0, limit: 2 };
     const selected = await call("inspect_analysis_view", {
       source: { kind: "retained-evidence", evidence_id: n.parent_evidence_id },
-      view: { kind: "pcap", facet: "http-uris", offset: 0, limit: 2 },
+      view,
     });
     const page = normalized(selected);
     if (
       page.parent_evidence_id !== n.parent_evidence_id ||
       page.parent_operation !== "inspect_pcap_capture" ||
       page.kind !== "pcap" ||
+      !isDeepStrictEqual(page.view, view) ||
       page.page.facet !== "http-uris" ||
       page.source_coverage !== capture.coverage ||
       page.coverage.total !== capture.retained_counts.http_request_uris ||
