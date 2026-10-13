@@ -20,7 +20,9 @@ npx rea-agents setup
 Choose the agents to configure, review the proposed paths and changes, and
 approve the plan. npm's package-download approval and REA's setup approval are
 separate. Setup asks before changing agent configuration or installing Hopper.
-Restart the agents named in the completion message.
+Restart the agents named in the completion message. Quit Claude Desktop fully
+before approving, because a running app can overwrite the registration; on
+Windows, see [where Claude Desktop reads its configuration](client-configuration.md#claude-desktop).
 
 For the latest published release, use `npx rea-agents@latest setup`.
 [Package-runner and global-installation options](#package-runners-and-global-installation)
@@ -283,6 +285,7 @@ hosted connector; see [its configuration](client-configuration.md#other-client-s
 | Pi                 | `pi`             |
 | Hermes             | `hermes`         |
 | Qoder              | `qoder`          |
+| Factory Droid      | `droid`          |
 | Trae               | `trae`           |
 | ZCode              | `zcode`          |
 | DeepSeek Harness   | `dsh`            |
@@ -512,7 +515,10 @@ and `set_addresses_names` name a function entry or any other mapped address
 session metadata edits leave executable bytes unchanged and are discarded on close. GUI controls
 require Hopper; Windows P0 remains read-only.
 
-Windows P0 admits native x86 and x86-64 PE applications and DLLs on fixed local NTFS volumes.
+Windows P0 admits native x86 and x86-64 PE applications and DLLs, plus explicitly
+selected [raw NMOS 6502 images](raw-binary.md#nmos-6502) with a caller-supplied
+entry at file offset 0, on fixed local NTFS volumes. Other raw CPU families remain
+unsupported on Windows.
 The npm package bundles native Job Object ownership, protected private runtime
 DACLs, and handle-based path admission; no separate addon installation is needed.
 See the [Windows Ghidra P0 guide](windows-ghidra-p0.md) for verified scope and
