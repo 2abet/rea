@@ -1,8 +1,5 @@
 import { z } from "zod";
-import {
-  ABORTED,
-  waitForAbortable,
-} from "../application/binary/AbortablePromise.js";
+import { ABORTED, waitForAbortable } from "../process/AbortablePromise.js";
 import {
   createAnalysisExecution,
   type AnalysisClient,
@@ -114,10 +111,18 @@ class IdaCleanupError extends ProviderAdapterError {
   ) {
     super("ida", "close", {
       cause,
+      capturedOutput:
+        cause instanceof AnalysisError ? cause.capturedOutput : undefined,
       diagnostics: {
+        ...(cause instanceof AnalysisError ? cause.diagnostics : undefined),
         reason:
           "IDA cleanup could not be verified; the remaining connection or private workspace is retained for retry.",
-        failure_reason: cause instanceof Error ? cause.message : String(cause),
+        failure_reason:
+          cause instanceof AnalysisError
+            ? (cause.diagnostics?.reason ?? cause.message)
+            : cause instanceof Error
+              ? cause.message
+              : String(cause),
         workspace: path,
         ...(sessions === undefined
           ? {}
@@ -378,15 +383,47 @@ export class IdaSessionClient implements AnalysisClient {
     context: IdaOperationFailureContext,
   ) {
     let failure: AnalysisError;
-    if (
+    if (wasCancelled(options))
+      failure = new AnalysisCancelledError(operation, {
+        cause,
+        ...(cause instanceof AnalysisError
+          ? {
+              capturedOutput: cause.capturedOutput,
+              diagnostics: cause.diagnostics,
+              partialObservation: cause.partialObservation,
+              cleanup:
+                cause.cleanup ??
+                (cause.cleanupIncomplete
+                  ? {
+                      reason: cause.message,
+                      resources: cause.cleanupResources,
+                    }
+                  : undefined),
+            }
+          : {}),
+      });
+    else if (
+      cause instanceof ProviderAdapterError &&
+      cause.operation === "transport"
+    )
+      failure = new ProviderAdapterError("ida", operation, {
+        cause,
+        capturedOutput: cause.capturedOutput,
+        partialObservation: cause.partialObservation,
+        cleanup: cause.cleanup,
+        diagnostics: {
+          ...cause.diagnostics,
+          recovery:
+            "Check the configured upstream MCP registration and selected target; see docs/ida-provider.md.",
+        },
+      });
+    else if (
       cause instanceof AnalysisError &&
       (cause.partialObservation !== undefined ||
         cause.cleanupIncomplete ||
         cause.capturedOutput !== undefined)
     )
       failure = cause;
-    else if (wasCancelled(options))
-      failure = new AnalysisCancelledError(operation);
     else if (cause instanceof AnalysisError) failure = cause;
     else if (cause instanceof z.ZodError)
       failure = new AnalysisOutputError(
@@ -483,10 +520,27 @@ export class IdaSessionClient implements AnalysisClient {
           ? legacyTools
           : modernTools;
     const missing = expected.filter((name) => !tools.has(name));
-    if (missing.length > 0)
-      throw new AnalysisProtocolError(
-        `IDA MCP ${this.config.protocol === "native" ? "native attached" : this.config.mode} compatibility profile is missing tools: ${missing.join(", ")}. Native attached mode requires the native IDA MCP tool catalog; legacy attached mode requires the legacy 1.4 profile; headless mode requires the database supervisor profile. See docs/ida-provider.md.`,
-      );
+    if (missing.length > 0) {
+      const summary = `IDA MCP ${this.config.protocol === "native" ? "native attached" : this.config.mode} compatibility profile is missing tools: ${missing.join(", ")}. Native attached mode requires the native IDA MCP tool catalog; legacy attached mode requires the legacy 1.4 profile; headless mode requires the database supervisor profile. See docs/ida-provider.md.`;
+      // The caller cannot act on a profile mismatch it never sees, so the
+      // missing names travel as adapter diagnostics rather than a bare message.
+      throw new ProviderAdapterError("ida", "initialize", {
+        userMessage: summary,
+        diagnostics: {
+          reason: summary,
+          mode: this.config.mode,
+          expected_profile:
+            this.config.protocol === "native"
+              ? "native"
+              : this.config.mode === "attached"
+                ? "legacy-1.4"
+                : "database-supervisor",
+          missing_tools: [...missing],
+          recovery:
+            "Install an IDA MCP build that serves the selected profile; see docs/ida-provider.md.",
+        },
+      });
+    }
     if (this.config.mode === "headless") {
       this.#workspace = await IdaWorkspace.allocate(
         this.target,
