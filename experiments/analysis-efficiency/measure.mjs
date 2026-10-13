@@ -523,12 +523,11 @@ const inspectEvmTarget = async () => {
   };
 };
 
+const PCAP_EVIDENCE_ID = /^ev_[a-f0-9]{64}$/u;
 const pcapObservation = (evidence) => {
-  if (
-    typeof evidence.evidence_id !== "string" ||
-    !/^ev_[a-f0-9]{64}$/.test(evidence.evidence_id)
-  )
-    throw new Error("PCAP Evidence lacks a valid receipt identity");
+  const evidenceId = evidence.evidence_id;
+  if (typeof evidenceId !== "string" || !PCAP_EVIDENCE_ID.test(evidenceId))
+    throw new Error("PCAP Evidence receipt identity is missing or malformed");
   const value = normalized(evidence);
   const target =
     value.kind === "summary"
@@ -556,13 +555,14 @@ const pcapObservation = (evidence) => {
   if (
     values.delivery === "summary" &&
     (typeof value.parent_evidence_id !== "string" ||
-      value.parent_evidence_id === evidence.evidence_id ||
+      !PCAP_EVIDENCE_ID.test(value.parent_evidence_id) ||
+      value.parent_evidence_id === evidenceId ||
       !Array.isArray(evidence.evidence_links) ||
       !evidence.evidence_links.includes(value.parent_evidence_id))
   )
     throw new Error("PCAP retained parent lacks a distinct Evidence link");
   return {
-    evidence_id: evidence.evidence_id,
+    evidence_id: evidenceId,
     limitations: evidence.limitations,
     ...Object.fromEntries(
       [
@@ -602,9 +602,10 @@ const inspectPcapTarget = async () => {
     if (n.kind !== "summary" || n.parent_operation !== "inspect_pcap_capture")
       throw new Error("Runtime returned no requested PCAP summary");
     capture = n.summary;
+    const parentEvidenceId = observations[0].parent_evidence_id;
     const view = { kind: "pcap", facet: "http-uris", offset: 0, limit: 2 };
     const selected = await call("inspect_analysis_view", {
-      source: { kind: "retained-evidence", evidence_id: n.parent_evidence_id },
+      source: { kind: "retained-evidence", evidence_id: parentEvidenceId },
       view,
     });
     const page = normalized(selected);
@@ -618,7 +619,7 @@ const inspectPcapTarget = async () => {
       exhausted: examined >= total,
     };
     if (
-      page.parent_evidence_id !== n.parent_evidence_id ||
+      page.parent_evidence_id !== parentEvidenceId ||
       page.parent_operation !== "inspect_pcap_capture" ||
       page.kind !== "pcap" ||
       !isDeepStrictEqual(page.view, view) ||
@@ -630,9 +631,12 @@ const inspectPcapTarget = async () => {
         "PCAP page identity, scope or coverage differs from its parent",
       );
     uris = page.page.items;
-    if (observations.some((item) => item.evidence_id === selected.evidence_id))
+    const observation = pcapObservation(selected);
+    if (
+      observations.some((item) => item.evidence_id === observation.evidence_id)
+    )
       throw new Error("PCAP retained read reused an Evidence identity");
-    observations.push(pcapObservation(selected));
+    observations.push(observation);
   } else {
     const {
       endpoints,
