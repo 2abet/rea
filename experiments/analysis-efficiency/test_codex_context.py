@@ -98,6 +98,8 @@ class PcapGraderWorkflowTests(unittest.TestCase):
                     'page': {'facet': 'http-uris', 'items': prefix}, 'coverage': coverage,
                     'source_coverage': 'complete', 'artifact': capture['target'],
                     'limitations': ['source', 'view'], 'unknowns': ['unrecorded traffic']}}
+        for record in [summary, page]:
+            record['parameters'] = {'parent_evidence_id': parent, 'view': copy.deepcopy(record['normalized_result']['view'])}
         observations = [self.observation(value) for value in [summary, page]]
         reference = {'artifact_sha256': 'd' * 64, 'capture': capture,
                      'http_request_uris_first2': prefix, 'delivery_observations': observations}
@@ -113,7 +115,7 @@ class PcapGraderWorkflowTests(unittest.TestCase):
                 'parent_evidence_id': value['parent_evidence_id'], 'coverage': value['coverage'],
                 'unknowns': value['unknowns'], 'normalized_limitations': value['limitations']}
 
-    def grade(self, answer, records, reference, producer_tools=None):
+    def grade(self, answer, records, reference, producer_tools=None, producer_arguments=None):
         review = runpy.run_path(str(Path(__file__).with_name('review-model.py')))
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory);trial = root / 'trial';trial.mkdir()
@@ -121,10 +123,23 @@ class PcapGraderWorkflowTests(unittest.TestCase):
                                 ('trial-settings.json', {}), ('cleanup.json', {'profile_removed': True})]:
                 (trial / name).write_text(json.dumps(value))
             (trial / 'answer.txt').write_text(json.dumps(answer))
-            events = [{'type': 'item.completed', 'item': {'type': 'mcp_tool_call',
-                       'tool': producer_tools[index] if producer_tools is not None else
-                           ('inspect_analysis_view' if value['normalized_result'].get('kind') == 'pcap' else 'inspect_pcap_capture'),
-                       'status': 'completed', 'result': {'structuredContent': value}}} for index, value in enumerate(records)]
+            events = []
+            for index, value in enumerate(records):
+                tool = producer_tools[index] if producer_tools is not None else \
+                    ('inspect_analysis_view' if value['normalized_result'].get('kind') == 'pcap' else 'inspect_pcap_capture')
+                arguments = {'path': reference['capture']['target']['path']}
+                if tool == 'inspect_analysis_view':
+                    normalized = value.get('normalized_result')
+                    parent = normalized.get('parent_evidence_id') if isinstance(normalized, dict) else None
+                    arguments = {'source': {'kind': 'retained-evidence', 'evidence_id': parent},
+                                 'view': reference['delivery_observations'][-1].get('view')}
+                elif len(reference['delivery_observations']) == 2:
+                    arguments['detail'] = 'summary'
+                if producer_arguments is not None:
+                    arguments = producer_arguments[index]
+                events.append({'type': 'item.completed', 'item': {'type': 'mcp_tool_call',
+                               'tool': tool, 'arguments': arguments, 'status': 'completed',
+                               'result': {'structuredContent': value}}})
             (trial / 'events.jsonl').write_text(''.join(json.dumps(value) + '\n' for value in events))
             source = root / 'reference';source.mkdir();(source / 'answer.json').write_text(json.dumps(reference))
             resource = root / 'resource.log'
@@ -191,12 +206,20 @@ class PcapGraderWorkflowTests(unittest.TestCase):
         source['http_request_uris'] = reference['http_request_uris_first2'] + ['http://example.test/three']
         source['diagnostics'] = {'tshark_stderr': '', 'capinfos_stderr': '\U0001f4a5'}
         receipt = {'evidence_id': 'ev_' + 'a' * 64, 'operation': 'inspect_pcap_capture',
+                   'parameters': {'path': source['target']['path']},
                    'subject': copy.deepcopy(records[0]['subject']), 'evidence_links': [],
                    'limitations': ['source'], 'normalized_result': source}
         reference['delivery_observations'] = [{'evidence_id': receipt['evidence_id'],
                                               'limitations': receipt['limitations'], 'coverage': source['coverage']}]
         answer = copy.deepcopy({**reference, 'evidence_ids': [receipt['evidence_id']]})
         self.assertTrue(self.grade(answer, [receipt], reference)['all_factual_checks_pass'])
+        for parameters in [None, {}, {'path': '/fixture/other.pcapng'}]:
+            changed = copy.deepcopy(receipt);changed['parameters'] = parameters
+            report = self.grade(answer, [changed], reference)
+            self.assertFalse(report['factual_checks']['pcap_cited_parameters'])
+            self.assertFalse(report['all_factual_checks_pass'])
+        self.assertFalse(self.grade(answer, [receipt], reference,
+                                   producer_arguments=[{'path': '/fixture/other.pcapng'}])['all_factual_checks_pass'])
         self.assertFalse(self.grade(answer, [receipt], reference, ['inspect_analysis_view'])['all_factual_checks_pass'])
         wrong_operation = copy.deepcopy(receipt);wrong_operation['operation'] = 'inspect_analysis_view'
         self.assertFalse(self.grade(answer, [wrong_operation], reference)['all_factual_checks_pass'])
@@ -273,6 +296,28 @@ class PcapGraderWorkflowTests(unittest.TestCase):
                 self.assertTrue(report['factual_checks']['pcap_original_delivery_observations'])
                 self.assertFalse(report['factual_checks']['pcap_requested_views'])
                 self.assertFalse(report['factual_checks']['pcap_cited_source_supports_uri_prefix'])
+                self.assertFalse(report['all_factual_checks_pass'])
+
+    def test_cited_view_parameters_and_call_arguments_bind_actual_requests(self):
+        for index in [0, 1]:
+            for parameters in [None, {}, {'parent_evidence_id': 'ev_' + 'f' * 64,
+                                          'view': {'kind': 'summary'}}]:
+                with self.subTest(index=index, parameters=parameters):
+                    answer, records, reference = self.fixture()
+                    records[index]['parameters'] = parameters
+                    report = self.grade(answer, records, reference)
+                    self.assertTrue(report['factual_checks']['pcap_original_delivery_observations'])
+                    self.assertFalse(report['factual_checks']['pcap_cited_parameters'])
+                    self.assertFalse(report['all_factual_checks_pass'])
+        for wrong in [None, {}, {'source': {'kind': 'retained-evidence', 'evidence_id': 'ev_' + 'f' * 64},
+                                'view': {'kind': 'pcap', 'facet': 'http-uris', 'offset': 0, 'limit': 2}},
+                      {'source': {'kind': 'retained-evidence', 'evidence_id': 'ev_' + 'a' * 64},
+                       'view': {'kind': 'pcap', 'facet': 'http-uris', 'offset': False, 'limit': 2}}]:
+            with self.subTest(arguments=wrong):
+                answer, records, reference = self.fixture()
+                report = self.grade(answer, records, reference,
+                                    producer_arguments=[{'path': reference['capture']['target']['path'], 'detail': 'summary'}, wrong])
+                self.assertFalse(report['factual_checks']['pcap_cited_call_arguments'])
                 self.assertFalse(report['all_factual_checks_pass'])
 
     def test_malformed_receipt_envelopes_write_failed_facts_instead_of_crashing(self):

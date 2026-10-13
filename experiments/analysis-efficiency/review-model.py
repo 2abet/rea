@@ -121,6 +121,7 @@ def main():
     reference = read(args.reference / 'answer.json') if args.reference else None
     observed_ids = set()
     producer_results = {}
+    pcap_calls = []
     tool_errors = []
     with (args.trial / 'events.jsonl').open() as event_lines:
         for line in event_lines:
@@ -135,7 +136,10 @@ def main():
                 for text in strings(result):
                     observed_ids.update(re.findall(r'ev_[a-f0-9]{64}', text))
                 if parsed is not None:
-                    producer_results.setdefault(item['tool'], []).append(parsed)
+                    if args.domain == 'pcap':
+                        pcap_calls.append((item['tool'], item.get('arguments'), parsed))
+                    else:
+                        producer_results.setdefault(item['tool'], []).append(parsed)
             else:
                 tool_errors.append({'tool': item['tool'], 'arguments': item['arguments'], 'response': parsed if parsed is not None else result})
                 if parsed is not None and parsed.get('error', {}).get('code') == 'resource_constraint':
@@ -182,23 +186,22 @@ def main():
               (True, json.dumps(reference['capture'], sort_keys=True)))
         prefix = answer.get('http_request_uris_first2')
         records = {}
-        for tool, values in producer_results.items():
-            for value in values:
-                if not isinstance(value, dict) or not isinstance(value.get('evidence_id'), str):
-                    continue
-                identity = value['evidence_id']
-                normalized = value.get('normalized_result')
-                supported = isinstance(normalized, dict) and isinstance(value.get('limitations'), list)
-                if supported and normalized.get('kind') == 'summary':
-                    supported = isinstance(normalized.get('summary'), dict)
-                elif supported and normalized.get('kind') == 'pcap':
-                    supported = isinstance(normalized.get('page'), dict)
-                entry = (tool, value) if supported else None
-                if identity not in records:
-                    records[identity] = entry
-                elif json.dumps(records[identity], sort_keys=True) != json.dumps(entry, sort_keys=True):
-                    # An ID with conflicting producers or envelopes is ambiguous.
-                    records[identity] = None
+        for tool, arguments, value in pcap_calls:
+            if not isinstance(value, dict) or not isinstance(value.get('evidence_id'), str):
+                continue
+            identity = value['evidence_id']
+            normalized = value.get('normalized_result')
+            supported = isinstance(normalized, dict) and isinstance(value.get('limitations'), list)
+            if supported and normalized.get('kind') == 'summary':
+                supported = isinstance(normalized.get('summary'), dict)
+            elif supported and normalized.get('kind') == 'pcap':
+                supported = isinstance(normalized.get('page'), dict)
+            entry = (tool, arguments, value) if supported else None
+            if identity not in records:
+                records[identity] = entry
+            elif json.dumps(records[identity], sort_keys=True) != json.dumps(entry, sort_keys=True):
+                # An ID with conflicting producers or envelopes is ambiguous.
+                records[identity] = None
         observations = answer.get('delivery_observations')
         canonical_observations = [pcap_observation_fields(value) for value in observations] if isinstance(observations, list) else observations
         if isinstance(prefix, dict):
@@ -209,7 +212,7 @@ def main():
                 last = canonical_observations[-1] if isinstance(canonical_observations, list) and canonical_observations else None
                 identity = last.get('evidence_id') if isinstance(last, dict) else None
                 entry = records.get(identity) if isinstance(identity, str) else None
-                record = entry[1] if entry is not None else None
+                record = entry[2] if entry is not None else None
                 page = record['normalized_result'] if record is not None else {}
                 checks['pcap_prefix_coverage_observed'] = (
                     page.get('kind') == 'pcap'
@@ -226,7 +229,7 @@ def main():
             for observation in canonical_observations:
                 identity = observation.get('evidence_id') if isinstance(observation, dict) else None
                 entry = records.get(identity) if isinstance(identity, str) else None
-                record = entry[1] if entry is not None else None
+                record = entry[2] if entry is not None else None
                 if record is None:
                     expected_observations.append(None)
                     continue
@@ -256,13 +259,26 @@ def main():
                 and len(set(identities)) == len(identities)
             )
             entries = [records.get(identity) if isinstance(identity, str) else None for identity in identities]
-            cited = [entry[1] if entry is not None else None for entry in entries]
+            cited = [entry[2] if entry is not None else None for entry in entries]
             expected_tools = ['inspect_pcap_capture'] + (['inspect_analysis_view'] if len(reference['delivery_observations']) == 2 else [])
             check('pcap_cited_producer_tools', [entry[0] if entry is not None else None for entry in entries], expected_tools)
             # Summary delivery delegates to a retained view; its envelope operation
             # is inspect_analysis_view even though the requested tool is inspect_pcap_capture.
             expected_operations = ['inspect_pcap_capture'] if len(expected_tools) == 1 else ['inspect_analysis_view'] * 2
             check('pcap_cited_operations', [record.get('operation') if isinstance(record, dict) else None for record in cited], expected_operations)
+            path = reference['capture']['target']['path']
+            expected_arguments = [{'path': path}]
+            expected_parameters = [{'path': path}]
+            if len(expected_tools) == 2:
+                parent = cited[0]['normalized_result'].get('parent_evidence_id') if isinstance(cited[0], dict) else None
+                views = [observation.get('view') for observation in reference['delivery_observations']]
+                expected_arguments = [{'path': path, 'detail': 'summary'},
+                                      {'source': {'kind': 'retained-evidence', 'evidence_id': parent}, 'view': views[-1]}]
+                expected_parameters = [{'parent_evidence_id': parent, 'view': view} for view in views]
+            check('pcap_cited_call_arguments', json.dumps([entry[1] if entry is not None else None for entry in entries], sort_keys=True),
+                  json.dumps(expected_arguments, sort_keys=True))
+            check('pcap_cited_parameters', json.dumps([record.get('parameters') if isinstance(record, dict) else None for record in cited], sort_keys=True),
+                  json.dumps(expected_parameters, sort_keys=True))
             checks['pcap_cited_subjects_match_artifact'] = bool(cited) and all(
                 isinstance(record, dict)
                 and isinstance(record.get('subject'), dict)
@@ -323,6 +339,8 @@ def main():
             checks['pcap_cited_parents_linked'] = False
             checks['pcap_cited_producer_tools'] = False
             checks['pcap_cited_operations'] = False
+            checks['pcap_cited_call_arguments'] = False
+            checks['pcap_cited_parameters'] = False
     elif domain == 'flutter-aot':
         for key in ['target', 'abi', 'libapp', 'string_pool', 'coverage', 'limitations']:
             check(key, answer.get(key), reference[key])

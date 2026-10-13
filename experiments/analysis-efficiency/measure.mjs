@@ -524,7 +524,7 @@ const inspectEvmTarget = async () => {
 };
 
 const PCAP_EVIDENCE_ID = /^ev_[a-f0-9]{64}$/u;
-const pcapObservation = (evidence) => {
+const pcapObservation = (evidence, requestedView) => {
   const evidenceId = evidence.evidence_id;
   if (typeof evidenceId !== "string" || !PCAP_EVIDENCE_ID.test(evidenceId))
     throw new Error("PCAP Evidence receipt identity is missing or malformed");
@@ -544,16 +544,15 @@ const pcapObservation = (evidence) => {
     throw new Error("PCAP Evidence does not identify the selected capture");
   // Summary delivery delegates to a retained view, whose Evidence operation is
   // inspect_analysis_view even when inspect_pcap_capture was requested.
-  const operation =
-    values.delivery === "summary"
-      ? "inspect_analysis_view"
-      : "inspect_pcap_capture";
+  const operation = requestedView
+    ? "inspect_analysis_view"
+    : "inspect_pcap_capture";
   if (evidence.operation !== operation)
     throw new Error(
       "PCAP Evidence operation differs from the requested delivery",
     );
   if (
-    values.delivery === "summary" &&
+    requestedView &&
     (typeof value.parent_evidence_id !== "string" ||
       !PCAP_EVIDENCE_ID.test(value.parent_evidence_id) ||
       value.parent_evidence_id === evidenceId ||
@@ -561,6 +560,14 @@ const pcapObservation = (evidence) => {
       !evidence.evidence_links.includes(value.parent_evidence_id))
   )
     throw new Error("PCAP retained parent lacks a distinct Evidence link");
+  const parameters = requestedView
+    ? { parent_evidence_id: value.parent_evidence_id, view: requestedView }
+    : { path: values.path };
+  if (
+    !isDeepStrictEqual(evidence.parameters, parameters) ||
+    (requestedView && !isDeepStrictEqual(value.view, requestedView))
+  )
+    throw new Error("PCAP Evidence parameters or view differ from the request");
   return {
     evidence_id: evidenceId,
     limitations: evidence.limitations,
@@ -596,7 +603,12 @@ const inspectPcapTarget = async () => {
     throw new Error("Selected PCAP request is not advertised by this runtime");
   const inspected = await call("inspect_pcap_capture", input);
   const n = normalized(inspected);
-  const observations = [pcapObservation(inspected)];
+  const observations = [
+    pcapObservation(
+      inspected,
+      values.delivery === "summary" ? { kind: "summary" } : undefined,
+    ),
+  ];
   let capture, uris;
   if (values.delivery === "summary") {
     if (n.kind !== "summary" || n.parent_operation !== "inspect_pcap_capture")
@@ -609,6 +621,7 @@ const inspectPcapTarget = async () => {
       view,
     });
     const page = normalized(selected);
+    const observation = pcapObservation(selected, view);
     const total = capture.retained_counts.http_request_uris;
     const examined = Math.min(view.limit, total);
     const expectedCoverage = {
@@ -622,7 +635,6 @@ const inspectPcapTarget = async () => {
       page.parent_evidence_id !== parentEvidenceId ||
       page.parent_operation !== "inspect_pcap_capture" ||
       page.kind !== "pcap" ||
-      !isDeepStrictEqual(page.view, view) ||
       page.page.facet !== "http-uris" ||
       page.source_coverage !== capture.coverage ||
       !isDeepStrictEqual(page.coverage, expectedCoverage)
@@ -631,7 +643,6 @@ const inspectPcapTarget = async () => {
         "PCAP page identity, scope or coverage differs from its parent",
       );
     uris = page.page.items;
-    const observation = pcapObservation(selected);
     if (
       observations.some((item) => item.evidence_id === observation.evidence_id)
     )
